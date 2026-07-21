@@ -8,10 +8,10 @@ ARQUIVO = "dados_funcionarios.xlsx"
 PASTA_DOCS = "Documentos_Lojas"
 os.makedirs(PASTA_DOCS, exist_ok=True)
 
-MESES = ["Todos", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+MESES = ["Todos", "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 MAP_MES = {
-    "Jan":1, "Fev":2, "Mar":3, "Abr":4, "Mai":5, "Jun":6,
-    "Jul":7, "Ago":8, "Set":9, "Out":10, "Nov":11, "Dez":12
+    "Janeiro":1, "Fevereiro":2, "Marco":3, "Abril":4, "Maio":5, "Junho":6,
+    "Julho":7, "Agosto":8, "Setembro":9, "Outubro":10, "Novembro":11, "Dezembro":12
 }
 
 SITUACOES = [
