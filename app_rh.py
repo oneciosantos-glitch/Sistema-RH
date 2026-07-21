@@ -498,25 +498,38 @@ with aba6:
     sm = m.selectbox("Mês", MESES)
     sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
     st.markdown("---")
-    arq = st.file_uploader("Anexar", type=["pdf","doc","docx","xls","xlsx","jpg","png"])
+    
+    # ✅ PERMITE SELECIONAR VÁRIOS ARQUIVOS DE UMA VEZ
+    arquivos = st.file_uploader("Anexar um ou mais arquivos", 
+                               type=["pdf","doc","docx","xls","xlsx","jpg","png"],
+                               accept_multiple_files=True)
     resp = st.text_input("Responsável")
-    if arq and st.button("SALVAR"):
-        nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{arq.name}"
-        cam = os.path.join(PASTA_DOCS, nome)
-        with open(cam,"wb") as f: f.write(arq.read())
-        dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{"Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,"DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp}])], ignore_index=True)
+    
+    if arquivos and st.button("SALVAR TODOS", type="primary"):
+        salvos = 0
+        for arq in arquivos:
+            nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
+            cam = os.path.join(PASTA_DOCS, nome)
+            with open(cam,"wb") as f: f.write(arq.read())
+            dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{
+                "Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,
+                "DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp
+            }])], ignore_index=True)
+            salvos += 1
         salvar_dados(dados)
-        st.success("Anexado!")
+        st.success(f"✅ {salvos} arquivo(s) salvo(s) com sucesso!")
         st.rerun()
+    
     st.markdown("---")
     filt = dados["Docs_Lojas"].copy()
     if sl != "Todas": filt = filt[filt["Loja"]==sl]
     if sm != "Todos": filt = filt[filt["Mes"]==sm]
     filt = filt[filt["Ano"]==sa]
-    if filt.empty: st.info("Nenhum documento")
+    if filt.empty: st.info("Nenhum documento encontrado para este filtro")
     else:
+        st.markdown(f"**Total: {len(filt)} arquivo(s)**")
         for i,d in filt.iterrows():
-            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
+            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']} | Anexado por: {d['Responsavel']}"):
                 with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
                     os.remove(d["Caminho"])
