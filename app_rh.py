@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
 PASTA_DOCS = "Documentos_Lojas"
-PASTA_DOCS_FUNC = "Documentos_Funcionarios" 
+PASTA_DOCS_FUNC = "Documentos_Funcionarios"
 os.makedirs(PASTA_DOCS, exist_ok=True)
-os.makedirs(PASTA_DOCS_FUNC, exist_ok=True) 
+os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 
 MESES = ["Todos", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MAP_MES = {
@@ -94,7 +94,9 @@ def lista_cargos():
     ))
     return todas if todas else ["Sem Cargo"]
 
+# ✅ FUNÇÃO CORRIGIDA: NÃO ALTERA SITUAÇÃO SE JÁ ESTIVER EM FÉRIAS
 def calcular_e_atualizar(form):
+    # Aviso Prévio
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_aviso"], "%d/%m/%Y")
@@ -102,6 +104,7 @@ def calcular_e_atualizar(form):
         except: form["termino_aviso"] = ""
     else: form["termino_aviso"] = ""
 
+    # Licença
     if form.get("dt_lic") and form.get("dias_lic") and str(form["dias_lic"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_lic"], "%d/%m/%Y")
@@ -109,18 +112,22 @@ def calcular_e_atualizar(form):
         except: form["termino_lic"] = ""
     else: form["termino_lic"] = ""
 
+    # FÉRIAS: CALCULA O RETORNO, MAS NÃO MUDA A SITUAÇÃO SE JÁ ESTIVER CORRETA
     if form.get("dt_fer") and form.get("dias_fer") and str(form["dias_fer"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]))).strftime("%d/%m/%Y")
-            form["situacao"] = "Férias"
+            # SÓ DEFINE COMO FÉRIAS SE NÃO ESTIVER PREENCHIDO NENHUM OUTRO CAMPO DE DESLIGAMENTO
+            if not any([form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(), form.get("dt_abandono","").strip()]):
+                form["situacao"] = "Férias"
         except:
             form["retorno_fer"] = ""
-            if form.get("situacao") == "Férias": form["situacao"] = "Ativo"
     else:
         form["retorno_fer"] = ""
-        if form.get("situacao") == "Férias": form["situacao"] = "Ativo"
+        # NÃO RETORNA AUTOMATICAMENTE PARA ATIVO — VOCÊ QUANDO VOLTAR DAS FÉRIAS QUE ALTERA MANUALMENTE
+        # if form.get("situacao") == "Férias": form["situacao"] = "Ativo"
 
+    # Afastamento
     if form.get("dt_af") and form.get("dias_af") and str(form["dias_af"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_af"], "%d/%m/%Y")
@@ -128,19 +135,14 @@ def calcular_e_atualizar(form):
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
+    # Desligamentos
     if form.get("dt_pedido") and form.get("dt_pedido").strip():
         form["situacao"] = "Pedido de Conta"
     elif form.get("dt_rescisao") and form.get("dt_rescisao").strip():
         form["situacao"] = "Rescisão Indireta"
     elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
-    elif not any([
-        form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-        form.get("dt_abandono","").strip(), form.get("dt_fer","").strip(),
-        form.get("dt_lic","").strip(), form.get("dt_af","").strip()
-    ]):
-        if form.get("situacao") not in ["Ativo", "Pré-cadastro"]:
-            form["situacao"] = "Ativo"
+    # REMOVIDO O CÓDIGO QUE FORÇAVA VOLTAR PARA ATIVO SEMPRE
     return form
 
 def add_historico_auto(mat, nome, acao, dados_completos):
@@ -205,7 +207,6 @@ with aba1:
 
     # Cálculo automático dos prazos de experiência INDIVIDUAIS
     prazos_exp = []
-    dias_restantes = {}
     if not reg.empty and val_campo("Admissao").strip():
         try:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
@@ -220,7 +221,6 @@ with aba1:
                 else:
                     status = f"Vencido há {abs(rest)} dias"
                 prazos_exp.append([f"{prazo} dias", (dt_adm + timedelta(days=prazo)).strftime("%d/%m/%Y"), status])
-                dias_restantes[str(prazo)] = rest
         except:
             pass
 
@@ -267,7 +267,7 @@ with aba1:
             idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
             situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
 
-        # === ÁREA DOS PRAZOS DE EXPERIÊNCIA INDIVIDUAIS ===
+        # ÁREA DOS PRAZOS DE EXPERIÊNCIA INDIVIDUAIS
         if prazos_exp:
             st.markdown("---")
             st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
@@ -277,7 +277,6 @@ with aba1:
             )
         elif not reg.empty:
             st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos de experiência.")
-        # ====================================================
 
         st.markdown("---")
         st.subheader("Eventos Trabalhistas")
@@ -422,77 +421,19 @@ with aba1:
     else:
         st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ DEMAIS ABAS ================
-with aba6:
-    st.subheader("📎 DOCUMENTOS DAS LOJAS")
-    ls = lista_lojas()
-    l,m,a = st.columns(3)
-    sl = l.selectbox("Loja", ls)
-    sm = m.selectbox("Mês", MESES)
-    sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
-    st.markdown("---")
-    arquivos = st.file_uploader("Anexar um ou mais arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
-    resp = st.text_input("Responsável")
-    if arquivos and st.button("SALVAR TODOS", type="primary"):
-        salvos = 0
-        for arq in arquivos:
-            nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
-            cam = os.path.join(PASTA_DOCS, nome)
-            with open(cam,"wb") as f: f.write(arq.read())
-            dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{
-                "Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,
-                "DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp
-            }])], ignore_index=True)
-            salvos += 1
-        salvar_dados(dados)
-        st.success(f"✅ {salvos} arquivo(s) salvo(s)!")
-        st.rerun()
-    st.markdown("---")
-    filt = dados["Docs_Lojas"].copy()
-    if sl != "Todas": filt = filt[filt["Loja"]==sl]
-    if sm != "Todos": filt = filt[filt["Mes"]==sm]
-    filt = filt[filt["Ano"]==sa]
-    if filt.empty: st.info("Nenhum documento.")
-    else:
-        for i,d in filt.iterrows():
-            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
-                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
-                if st.button("🗑️ EXCLUIR", key=f"x{i}"):
-                    os.remove(d["Caminho"])
-                    dados["Docs_Lojas"].drop(i,inplace=True)
-                    salvar_dados(dados)
-                    st.rerun()
-
-with aba7:
-    st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
-    dados = carregar_dados()
-    col1, col2 = st.columns(2)
-    with col1:
-        nova_loja = st.text_input("Nova Loja")
-        if st.button("➕ ADICIONAR LOJA", type="primary") and nova_loja.strip():
-            if not dados["Auxiliares"]["Loja"].str.strip().eq(nova_loja.strip()).any():
-                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": nova_loja.strip(), "Cargo": ""}])], ignore_index=True)
-                salvar_dados(dados)
-                st.success("✅ Loja cadastrada!")
-                st.rerun()
-            else: st.warning("⚠️ Já existe!")
-    with col2:
-        novo_cargo = st.text_input("Novo Cargo")
-        if st.button("➕ ADICIONAR CARGO", type="primary") and novo_cargo.strip():
-            if not dados["Auxiliares"]["Cargo"].str.strip().eq(novo_cargo.strip()).any():
-                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": "", "Cargo": novo_cargo.strip()}])], ignore_index=True)
-                salvar_dados(dados)
-                st.success("✅ Cargo cadastrado!")
-                st.rerun()
-            else: st.warning("⚠️ Já existe!")
-
+# ================ ABA 2 - PAINEL COM CONTAGEM CORRIGIDA ================
 with aba2:
     st.subheader("📊 RESUMO GERAL")
-    ativos = len(dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Ativo"])
-    pre_cad = len(dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Pré-cadastro"])
-    ferias = len(dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Férias"])
-    licencas = len(dados["Base_Dados"][dados["Base_Dados"]["Situacao"].isin(["Doença","Acidente","Maternidade"])])
-    desligados = len(dados["Base_Dados"][~dados["Base_Dados"]["Situacao"].isin(["Ativo","Pré-cadastro","Férias","Doença","Acidente","Maternidade"])])
+    # ✅ RECARREGA OS DADOS NOVAMENTE PARA GARANTIR LEITURA ATUALIZADA
+    dados_painel = carregar_dados()
+    base = dados_painel["Base_Dados"]
+    
+    ativos = len(base[base["Situacao"] == "Ativo"])
+    pre_cad = len(base[base["Situacao"] == "Pré-cadastro"])
+    ferias = len(base[base["Situacao"] == "Férias"])
+    licencas = len(base[base["Situacao"].isin(["Doença","Acidente","Maternidade"])])
+    desligados = len(base[~base["Situacao"].isin(["Ativo","Pré-cadastro","Férias","Doença","Acidente","Maternidade"])])
+    
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("👷 Ativos", ativos)
     c2.metric("📝 Pré-cadastro", pre_cad)
@@ -500,6 +441,7 @@ with aba2:
     c4.metric("🏥 Afastados", licencas)
     c5.metric("📤 Desligados", desligados)
 
+# ================ DEMAIS ABAS ================
 with aba3:
     hoje = datetime.now()
     st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
@@ -578,3 +520,66 @@ with aba5:
         with pd.ExcelWriter("rel_temp.xlsx") as arq: df.to_excel(arq, index=False, sheet_name=rel)
         with open("rel_temp.xlsx","rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{rel.replace(' ','_')}.xlsx")
         os.remove("rel_temp.xlsx")
+
+with aba6:
+    st.subheader("📎 DOCUMENTOS DAS LOJAS")
+    ls = lista_lojas()
+    l,m,a = st.columns(3)
+    sl = l.selectbox("Loja", ls)
+    sm = m.selectbox("Mês", MESES)
+    sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
+    st.markdown("---")
+    arquivos = st.file_uploader("Anexar um ou mais arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
+    resp = st.text_input("Responsável")
+    if arquivos and st.button("SALVAR TODOS", type="primary"):
+        salvos = 0
+        for arq in arquivos:
+            nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
+            cam = os.path.join(PASTA_DOCS, nome)
+            with open(cam,"wb") as f: f.write(arq.read())
+            dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{
+                "Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,
+                "DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp
+            }])], ignore_index=True)
+            salvos += 1
+        salvar_dados(dados)
+        st.success(f"✅ {salvos} arquivo(s) salvo(s)!")
+        st.rerun()
+    st.markdown("---")
+    filt = dados["Docs_Lojas"].copy()
+    if sl != "Todas": filt = filt[filt["Loja"]==sl]
+    if sm != "Todos": filt = filt[filt["Mes"]==sm]
+    filt = filt[filt["Ano"]==sa]
+    if filt.empty: st.info("Nenhum documento.")
+    else:
+        for i,d in filt.iterrows():
+            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
+                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                if st.button("🗑️ EXCLUIR", key=f"x{i}"):
+                    os.remove(d["Caminho"])
+                    dados["Docs_Lojas"].drop(i,inplace=True)
+                    salvar_dados(dados)
+                    st.rerun()
+
+with aba7:
+    st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
+    dados = carregar_dados()
+    col1, col2 = st.columns(2)
+    with col1:
+        nova_loja = st.text_input("Nova Loja")
+        if st.button("➕ ADICIONAR LOJA", type="primary") and nova_loja.strip():
+            if not dados["Auxiliares"]["Loja"].str.strip().eq(nova_loja.strip()).any():
+                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": nova_loja.strip(), "Cargo": ""}])], ignore_index=True)
+                salvar_dados(dados)
+                st.success("✅ Loja cadastrada!")
+                st.rerun()
+            else: st.warning("⚠️ Já existe!")
+    with col2:
+        novo_cargo = st.text_input("Novo Cargo")
+        if st.button("➕ ADICIONAR CARGO", type="primary") and novo_cargo.strip():
+            if not dados["Auxiliares"]["Cargo"].str.strip().eq(novo_cargo.strip()).any():
+                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": "", "Cargo": novo_cargo.strip()}])], ignore_index=True)
+                salvar_dados(dados)
+                st.success("✅ Cargo cadastrado!")
+                st.rerun()
+            else: st.warning("⚠️ Já existe!")
