@@ -159,19 +159,38 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO (TODOS COMBOS GARANTIDOS) ================
+# ================ ABA 1 - CADASTRO + FILTROS NA BUSCA ================
 with aba1:
     dados = carregar_dados()
+    
+    # 🔍 BUSCA PRINCIPAL
     busca = st.text_input("🔍 Buscar por Matrícula ou Nome", placeholder="Digite e pressione Enter")
+    
+    # ⚡ FILTROS ADICIONAIS POR LOJA, SITUAÇÃO E CARGO
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        filtro_loja = st.selectbox("Filtrar por Loja", ["Todas"] + lista_lojas())
+    with col_f2:
+        filtro_sit = st.selectbox("Filtrar por Situação", ["Todas"] + SITUACOES)
+    with col_f3:
+        filtro_cargo = st.selectbox("Filtrar por Cargo", ["Todos"] + lista_cargos())
+
     lista = dados["Base_Dados"].copy()
     lista["Matricula"] = lista["Matricula"].fillna("VAZIO").astype(str).str.strip()
     lista["Nome"] = lista["Nome"].fillna("").astype(str).str.strip()
 
+    # APLICA TODOS OS FILTROS
     if busca.strip():
         lista = lista[
             (lista["Matricula"].str.contains(busca, case=False, na=False)) |
             (lista["Nome"].str.contains(busca, case=False, na=False))
         ]
+    if filtro_loja != "Todas":
+        lista = lista[lista["Loja"] == filtro_loja]
+    if filtro_sit != "Todas":
+        lista = lista[lista["Situacao"] == filtro_sit]
+    if filtro_cargo != "Todos":
+        lista = lista[lista["Cargo"] == filtro_cargo]
 
     st.dataframe(
         lista[["Matricula","Nome","Loja","Situacao","Cargo"]],
