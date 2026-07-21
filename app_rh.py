@@ -61,8 +61,9 @@ def carregar_dados():
             for c in cols:
                 if c not in dados[aba].columns:
                     dados[aba][c] = ""
+            # ✅ Matrícula carregada EXATA como está na planilha, sem alterações
             if "Matricula" in dados[aba].columns:
-                dados[aba]["Matricula"] = dados[aba]["Matricula"].fillna("").astype(str).str.strip()
+                dados[aba]["Matricula"] = dados[aba]["Matricula"].astype(str).str.strip()
     return dados
 
 def salvar_dados(dados):
@@ -78,7 +79,6 @@ def salvar_dados(dados):
         st.error(f"❌ Erro ao salvar: {str(e)}")
         st.stop()
 
-# ✅ FUNÇÕES QUE CARREGAM OS COMBOS AUTOMATICAMENTE
 def lista_lojas():
     d = carregar_dados()
     todas = sorted(set(
@@ -95,7 +95,6 @@ def lista_cargos():
     ))
     return todas if todas else ["Sem Cargo"]
 
-# ====================== CÁLCULOS E SITUAÇÃO ======================
 def calcular_e_atualizar(form):
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
         try:
@@ -149,7 +148,7 @@ def add_historico_auto(mat, nome, acao, dados_completos):
     dados = carregar_dados()
     registro = {"DataEvento": datetime.now().strftime("%d/%m/%Y"), "TipoEvento": acao, "Detalhes": ""}
     registro.update(dados_completos)
-    idx = dados["Historico"].index[dados["Historico"]["Matricula"].astype(str).str.strip() == mat].tolist()
+    idx = dados["Historico"].index[dados["Historico"]["Matricula"] == mat].tolist()
     if idx: dados["Historico"].iloc[idx[0]] = registro
     else: dados["Historico"] = pd.concat([dados["Historico"], pd.DataFrame([registro])], ignore_index=True)
     salvar_dados(dados)
@@ -162,14 +161,12 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO COM DOCUMENTOS ================
+# ================ ABA 1 - CADASTRO (MATRÍCULA EXATA DA PLANILHA) ================
 with aba1:
     dados = carregar_dados()
     
-    # 🔍 BUSCA PRINCIPAL
-    busca = st.text_input("🔍 Buscar por Matrícula ou Nome", placeholder="Digite e pressione Enter")
+    busca = st.text_input("🔍 Buscar por Matrícula ou Nome", placeholder="Digite exatamente como está na planilha")
     
-    # ⚡ FILTROS ADICIONAIS POR LOJA, SITUAÇÃO E CARGO
     col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:
         filtro_loja = st.selectbox("Filtrar por Loja", ["Todas"] + lista_lojas())
@@ -179,10 +176,9 @@ with aba1:
         filtro_cargo = st.selectbox("Filtrar por Cargo", ["Todos"] + lista_cargos())
 
     lista = dados["Base_Dados"].copy()
-    lista["Matricula"] = lista["Matricula"].fillna("VAZIO").astype(str).str.strip()
+    lista["Matricula"] = lista["Matricula"].fillna("").astype(str).str.strip()
     lista["Nome"] = lista["Nome"].fillna("").astype(str).str.strip()
 
-    # APLICA TODOS OS FILTROS
     if busca.strip():
         lista = lista[
             (lista["Matricula"].str.contains(busca, case=False, na=False)) |
@@ -200,11 +196,11 @@ with aba1:
         use_container_width=True, hide_index=True
     )
 
-    mat_sel = st.text_input("✏️ Digite a Matrícula para editar / excluir / ver documentos", placeholder="Informe a matrícula")
+    mat_sel = st.text_input("✏️ Digite a Matrícula EXATA para editar / excluir", placeholder="Igual coluna A da planilha")
     reg = pd.DataFrame()
     if mat_sel.strip():
         mat_busca = str(mat_sel).strip()
-        reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"].astype(str).str.strip() == mat_busca]
+        reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_busca]
 
     val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
 
@@ -227,7 +223,8 @@ with aba1:
         st.subheader("Dados Básicos")
         c1,c2,c3 = st.columns(3)
         with c1:
-            matricula = st.text_input("Matrícula *", value=val_campo("Matricula"))
+            # ✅ MATRÍCULA: NÃO GERA NENHUM NÚMERO, USA EXATAMENTE O QUE VOCÊ DIGITAR
+            matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
             nome = st.text_input("Nome Completo", value=val_campo("Nome"))
             cpf = st.text_input("CPF", value=val_campo("CPF"))
             rg = st.text_input("RG", value=val_campo("RG"))
@@ -238,19 +235,16 @@ with aba1:
             telefone = st.text_input("Telefone", value=val_campo("Telefone"))
             endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
         with c3:
-            # ✅ LOJA = COMBO
             lojas = lista_lojas()
             idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
             loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
 
-            # ✅ CARGO = COMBO
             cargos = lista_cargos()
             idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
             cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
 
             salario = st.text_input("Salário", value=val_campo("Salario"))
 
-            # ✅ SITUAÇÃO = COMBO
             idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
             situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
 
@@ -288,13 +282,14 @@ with aba1:
 
         btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
         if btn_salvar:
-            if not matricula.strip():
-                st.error("❌ A MATRÍCULA É OBRIGATÓRIA!")
+            matricula_tratada = str(matricula).strip()
+            if not matricula_tratada:
+                st.error("❌ INFORME A MATRÍCULA EXATAMENTE COMO ESTÁ NA PLANILHA!")
                 st.stop()
             if tipo_af != "Nenhum" and dt_af.strip():
                 situacao = tipo_af
             dados_form = calcular_e_atualizar({
-                "mat": matricula.strip(), "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
+                "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
                 "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
                 "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
                 "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
@@ -317,48 +312,43 @@ with aba1:
                 "DataTerminoLicenca": dados_form["termino_lic"], "DataAfastamento": dados_form["dt_af"],
                 "DiasAfastamento": dados_form["dias_af"], "DataRetornoAfastamento": dados_form["retorno_af"]
             }
-            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"].astype(str).str.strip() == dados_form["mat"]].tolist()
+            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
             acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
             if indice: dados["Base_Dados"].iloc[indice[0]] = registro_final
             else: dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
             salvar_dados(dados)
             add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
-            st.success(f"✅ Salvo! Situação: **{dados_form['situacao']}**")
+            st.success(f"✅ Salvo! Matrícula mantida: **{dados_form['mat']}**")
             st.rerun()
 
     if mat_sel.strip() and st.button("🗑️ EXCLUIR REGISTRO", use_container_width=True, type="secondary"):
         if st.checkbox("⚠️ CONFIRMA EXCLUSÃO PERMANENTE?"):
-            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"].astype(str).str.strip() == mat_sel.strip()].tolist()
+            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_sel.strip()].tolist()
             if indice:
                 dados_excluir = dados["Base_Dados"].iloc[indice[0]].to_dict()
-                # Exclui também os documentos do funcionário
-                docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"].str.strip() == mat_sel.strip()]
+                docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_sel.strip()]
                 for _, d in docs_excluir.iterrows():
                     if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
-                dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"].str.strip() != mat_sel.strip()]
+                dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_sel.strip()]
                 dados["Base_Dados"].drop(indice[0], inplace=True)
                 salvar_dados(dados)
                 add_historico_auto(mat_sel.strip(), dados_excluir["Nome"], "Exclusão de Cadastro", dados_excluir)
                 st.success("✅ Registro e documentos excluídos!")
                 st.rerun()
 
-    # ==============================================
-    # ✅ ÁREA DE DOCUMENTOS DO FUNCIONÁRIO
-    # ==============================================
+    # ÁREA DE DOCUMENTOS DO FUNCIONÁRIO
     st.markdown("---")
     st.subheader("📎 DOCUMENTOS DO FUNCIONÁRIO")
     if mat_sel.strip() and not reg.empty:
         mat_atual = mat_sel.strip()
         nome_atual = val_campo("Nome")
         
-        # Tipo de documento
         tipo_doc = st.selectbox("Tipo de Documento", [
             "RG", "CPF", "PIS", "Carteira de Trabalho", "Comprovante Residência",
             "Exame Admissional", "Exame Demissional", "Contrato", "Atestados",
             "Férias", "Rescisão", "Outros"
         ])
         
-        # Anexar vários arquivos
         arquivos_func = st.file_uploader("Anexar um ou mais documentos", 
                                        type=["pdf","doc","docx","xls","xlsx","jpg","png"],
                                        accept_multiple_files=True,
@@ -380,18 +370,15 @@ with aba1:
             st.success(f"✅ {qtd} documento(s) salvo(s)!")
             st.rerun()
         
-        # Listar documentos já salvos
         st.markdown("---")
-        docs_func = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"].str.strip() == mat_atual]
+        docs_func = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_atual]
         if docs_func.empty:
-            st.info("📂 Nenhum documento anexado para este funcionário.")
+            st.info("📂 Nenhum documento anexado.")
         else:
             st.markdown(f"**Total: {len(docs_func)} documento(s)**")
             for idx, doc in docs_func.iterrows():
                 with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
                     col_v, col_b, col_e = st.columns([3,1,1])
-                    with col_v:
-                        st.write("Clique para baixar:")
                     with col_b:
                         with open(doc["Caminho"], "rb") as f:
                             st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
@@ -402,9 +389,9 @@ with aba1:
                             salvar_dados(dados)
                             st.rerun()
     else:
-        st.info("ℹ️ Digite uma Matrícula acima para visualizar ou anexar documentos.")
+        st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ ABA 6 - DOCUMENTOS DAS LOJAS (ATUALIZADA) ================
+# ================ DEMAIS ABAS (MANTIDAS COM MESMO TRATAMENTO DE MATRÍCULA) ================
 with aba6:
     st.subheader("📎 DOCUMENTOS DAS LOJAS")
     ls = lista_lojas()
@@ -413,12 +400,8 @@ with aba6:
     sm = m.selectbox("Mês", MESES)
     sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
     st.markdown("---")
-    
-    arquivos = st.file_uploader("Anexar um ou mais arquivos", 
-                               type=["pdf","doc","docx","xls","xlsx","jpg","png"],
-                               accept_multiple_files=True)
+    arquivos = st.file_uploader("Anexar um ou mais arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
     resp = st.text_input("Responsável")
-    
     if arquivos and st.button("SALVAR TODOS", type="primary"):
         salvos = 0
         for arq in arquivos:
@@ -431,19 +414,17 @@ with aba6:
             }])], ignore_index=True)
             salvos += 1
         salvar_dados(dados)
-        st.success(f"✅ {salvos} arquivo(s) salvo(s) com sucesso!")
+        st.success(f"✅ {salvos} arquivo(s) salvo(s)!")
         st.rerun()
-    
     st.markdown("---")
     filt = dados["Docs_Lojas"].copy()
     if sl != "Todas": filt = filt[filt["Loja"]==sl]
     if sm != "Todos": filt = filt[filt["Mes"]==sm]
     filt = filt[filt["Ano"]==sa]
-    if filt.empty: st.info("Nenhum documento encontrado para este filtro")
+    if filt.empty: st.info("Nenhum documento.")
     else:
-        st.markdown(f"**Total: {len(filt)} arquivo(s)**")
         for i,d in filt.iterrows():
-            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']} | Anexado por: {d['Responsavel']}"):
+            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
                 with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
                     os.remove(d["Caminho"])
@@ -451,67 +432,28 @@ with aba6:
                     salvar_dados(dados)
                     st.rerun()
 
-# ================ DEMAIS ABAS (MANTIDAS IGUAIS) ================
 with aba7:
-    st.subheader("⚙️ CADASTRO DE NOVAS LOJAS E CARGOS")
+    st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
     dados = carregar_dados()
-
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("**🏬 Nova Loja**")
-        nova_loja = st.text_input("Nome da Loja", placeholder="Ex: Loja Centro, Filial 2...")
-        if st.button("➕ ADICIONAR LOJA", type="primary"):
-            if nova_loja.strip():
-                existe = dados["Auxiliares"]["Loja"].astype(str).str.strip().eq(nova_loja.strip()).any()
-                if not existe:
-                    dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": nova_loja.strip(), "Cargo": ""}])], ignore_index=True)
-                    salvar_dados(dados)
-                    st.success(f"✅ Loja **{nova_loja}** cadastrada!")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Essa loja já está cadastrada!")
-            else:
-                st.error("❌ Digite o nome da loja!")
-
+        nova_loja = st.text_input("Nova Loja")
+        if st.button("➕ ADICIONAR LOJA", type="primary") and nova_loja.strip():
+            if not dados["Auxiliares"]["Loja"].str.strip().eq(nova_loja.strip()).any():
+                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": nova_loja.strip(), "Cargo": ""}])], ignore_index=True)
+                salvar_dados(dados)
+                st.success("✅ Loja cadastrada!")
+                st.rerun()
+            else: st.warning("⚠️ Já existe!")
     with col2:
-        st.markdown("**💼 Novo Cargo**")
-        novo_cargo = st.text_input("Nome do Cargo", placeholder="Ex: Vendedor, Caixa...")
-        if st.button("➕ ADICIONAR CARGO", type="primary"):
-            if novo_cargo.strip():
-                existe = dados["Auxiliares"]["Cargo"].astype(str).str.strip().eq(novo_cargo.strip()).any()
-                if not existe:
-                    dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": "", "Cargo": novo_cargo.strip()}])], ignore_index=True)
-                    salvar_dados(dados)
-                    st.success(f"✅ Cargo **{novo_cargo}** cadastrado!")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Esse cargo já está cadastrado!")
-            else:
-                st.error("❌ Digite o nome do cargo!")
-
-    st.markdown("---")
-    c1,c2 = st.columns(2)
-    with c1:
-        st.markdown("**📋 Lojas Cadastradas**")
-        lojas_lista = lista_lojas()
-        for loja in lojas_lista:
-            cc, ee = st.columns([4,1])
-            cc.write(f"• {loja}")
-            if ee.button("🗑️", key=f"del_loja_{loja}"):
-                dados["Auxiliares"] = dados["Auxiliares"][dados["Auxiliares"]["Loja"].str.strip() != loja]
+        novo_cargo = st.text_input("Novo Cargo")
+        if st.button("➕ ADICIONAR CARGO", type="primary") and novo_cargo.strip():
+            if not dados["Auxiliares"]["Cargo"].str.strip().eq(novo_cargo.strip()).any():
+                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": "", "Cargo": novo_cargo.strip()}])], ignore_index=True)
                 salvar_dados(dados)
+                st.success("✅ Cargo cadastrado!")
                 st.rerun()
-
-    with c2:
-        st.markdown("**📋 Cargos Cadastrados**")
-        cargos_lista = lista_cargos()
-        for cargo in cargos_lista:
-            cc, ee = st.columns([4,1])
-            cc.write(f"• {cargo}")
-            if ee.button("🗑️", key=f"del_cargo_{cargo}"):
-                dados["Auxiliares"] = dados["Auxiliares"][dados["Auxiliares"]["Cargo"].str.strip() != cargo]
-                salvar_dados(dados)
-                st.rerun()
+            else: st.warning("⚠️ Já existe!")
 
 with aba2:
     st.subheader("📊 RESUMO GERAL")
@@ -529,7 +471,7 @@ with aba2:
 
 with aba3:
     hoje = datetime.now()
-    st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS (até 10 dias)")
+    st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
     tabela_exp = []
     for _, func in dados["Base_Dados"].iterrows():
         if func["Situacao"] not in ["Ativo","Pré-cadastro"]: continue
@@ -555,9 +497,9 @@ with aba3:
             if filtro_mes != "Todos" and dt.month != MAP_MES[filtro_mes]: continue
             meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
             if 23 <= meses < 24:
-                tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m", f["DataFeriasInicio"], f["DiasFerias"], f["DataRetornoFerias"]])
+                tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m"])
         except: pass
-    st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo","Início","Dias","Retorno"]), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo"]), use_container_width=True, hide_index=True)
 
 with aba4:
     st.subheader("📝 HISTÓRICO")
@@ -568,11 +510,11 @@ with aba4:
         de = d.text_input("Data", value=datetime.now().strftime("%d/%m/%Y"))
         dee = det.text_input("Detalhes")
         if st.form_submit_button("✅ ADICIONAR") and mat_sel.strip():
-            rf = dados["Base_Dados"][dados["Base_Dados"]["Matricula"].str.strip() == mat_sel.strip()]
+            rf = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_sel.strip()]
             if not rf.empty:
                 nr = {"DataEvento":de,"TipoEvento":te,"Detalhes":dee}
                 nr.update(rf.iloc[0].to_dict())
-                ih = dados["Historico"].index[dados["Historico"]["Matricula"].str.strip() == mat_sel.strip()].tolist()
+                ih = dados["Historico"].index[dados["Historico"]["Matricula"] == mat_sel.strip()].tolist()
                 if ih: dados["Historico"].iloc[ih[0]] = nr
                 else: dados["Historico"] = pd.concat([dados["Historico"], pd.DataFrame([nr])], ignore_index=True)
                 salvar_dados(dados)
@@ -585,8 +527,8 @@ with aba5:
     if rel == "Individual":
         mr = st.text_input("Matrícula")
         if mr.strip():
-            fd = dados["Base_Dados"][dados["Base_Dados"]["Matricula"].str.strip() == mr.strip()]
-            fh = dados["Historico"][dados["Historico"]["Matricula"].str.strip() == mr.strip()]
+            fd = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mr.strip()]
+            fh = dados["Historico"][dados["Historico"]["Matricula"] == mr.strip()]
             if fd.empty: st.error("Não encontrado")
             elif st.button("GERAR"):
                 with pd.ExcelWriter(f"Rel_{mr}_{fd.iloc[0]['Nome'].replace(' ','_')}.xlsx") as arq:
