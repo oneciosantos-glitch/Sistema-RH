@@ -344,10 +344,11 @@ with aba1:
         nome_atual = val_campo("Nome")
         
         tipo_doc = st.selectbox("Tipo de Documento", [
-            "RG", "CPF", "PIS", "Carteira de Trabalho", "Comprovante Residência",
+            "Documentos Pessoais", "Documentos Pessoais+Exames", "Étinico Racial", "ASO", "Carteira de Trabalho", "Comprovante Residência",
             "Exame Admissional", "Exame Demissional", "Contrato", "Atestados",
-            "Férias", "Rescisão", "Outros"
+            "Férias", "Rescisão", "Carta Pedido de conta", "Outros"
         ])
+
         
         arquivos_func = st.file_uploader("Anexar um ou mais documentos", 
                                        type=["pdf","doc","docx","xls","xlsx","jpg","png"],
