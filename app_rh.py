@@ -8,7 +8,7 @@ ARQUIVO = "dados_funcionarios.xlsx"
 PASTA_DOCS = "Documentos_Lojas"
 PASTA_DOCS_FUNC = "Documentos_Funcionarios" 
 os.makedirs(PASTA_DOCS, exist_ok=True)
-os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
+os.makedirs(PASTA_DOCS_FUNC, exist_ok=True) 
 
 MESES = ["Todos", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MAP_MES = {
