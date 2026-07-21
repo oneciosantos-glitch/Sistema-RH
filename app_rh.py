@@ -23,7 +23,8 @@ SITUACOES = [
 ]
 
 # ====================== BANCO DE DADOS ======================
-@st.cache_data(ttl=1)
+# SEM CACHE: LÊ O ARQUIVO SEMPRE DO ZERO
+@st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
     try:
         dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
@@ -63,6 +64,9 @@ def carregar_dados():
                     dados[aba][c] = ""
             if "Matricula" in dados[aba].columns:
                 dados[aba]["Matricula"] = dados[aba]["Matricula"].astype(str).str.strip()
+            # LIMPA ESPAÇOS EXTRAS NA SITUAÇÃO (ERRO MAIS COMUM)
+            if "Situacao" in dados[aba].columns:
+                dados[aba]["Situacao"] = dados[aba]["Situacao"].astype(str).str.strip()
     return dados
 
 def salvar_dados(dados):
@@ -70,7 +74,7 @@ def salvar_dados(dados):
         with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
             for aba, df in dados.items():
                 df.to_excel(f, sheet_name=aba, index=False)
-        st.cache_data.clear()
+        st.cache_data.clear()  # LIMPA MEMÓRIA DEPOIS DE SALVAR
     except PermissionError:
         st.error("❌ ERRO: O arquivo dados_funcionarios.xlsx está ABERTO! Feche o Excel e tente novamente.")
         st.stop()
@@ -94,7 +98,7 @@ def lista_cargos():
     ))
     return todas if todas else ["Sem Cargo"]
 
-# ✅ FUNÇÃO CORRIGIDA: NÃO ALTERA SITUAÇÃO SE JÁ ESTIVER EM FÉRIAS
+# ✅ FUNÇÃO CORRIGIDA: NÃO ALTERA SITUAÇÃO DE FÉRIAS AUTOMATICAMENTE
 def calcular_e_atualizar(form):
     # Aviso Prévio
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
@@ -112,20 +116,17 @@ def calcular_e_atualizar(form):
         except: form["termino_lic"] = ""
     else: form["termino_lic"] = ""
 
-    # FÉRIAS: CALCULA O RETORNO, MAS NÃO MUDA A SITUAÇÃO SE JÁ ESTIVER CORRETA
+    # Férias: calcula retorno, mas NÃO força voltar para Ativo
     if form.get("dt_fer") and form.get("dias_fer") and str(form["dias_fer"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]))).strftime("%d/%m/%Y")
-            # SÓ DEFINE COMO FÉRIAS SE NÃO ESTIVER PREENCHIDO NENHUM OUTRO CAMPO DE DESLIGAMENTO
             if not any([form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(), form.get("dt_abandono","").strip()]):
                 form["situacao"] = "Férias"
         except:
             form["retorno_fer"] = ""
     else:
         form["retorno_fer"] = ""
-        # NÃO RETORNA AUTOMATICAMENTE PARA ATIVO — VOCÊ QUANDO VOLTAR DAS FÉRIAS QUE ALTERA MANUALMENTE
-        # if form.get("situacao") == "Férias": form["situacao"] = "Ativo"
 
     # Afastamento
     if form.get("dt_af") and form.get("dias_af") and str(form["dias_af"]).isdigit():
@@ -142,7 +143,7 @@ def calcular_e_atualizar(form):
         form["situacao"] = "Rescisão Indireta"
     elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
-    # REMOVIDO O CÓDIGO QUE FORÇAVA VOLTAR PARA ATIVO SEMPRE
+
     return form
 
 def add_historico_auto(mat, nome, acao, dados_completos):
@@ -162,7 +163,7 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO COM PRAZOS INDIVIDUAIS ================
+# ================ ABA 1 - CADASTRO ================
 with aba1:
     dados = carregar_dados()
     
@@ -205,7 +206,7 @@ with aba1:
 
     val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
 
-    # Cálculo automático dos prazos de experiência INDIVIDUAIS
+    # Cálculo dos prazos de experiência
     prazos_exp = []
     if not reg.empty and val_campo("Admissao").strip():
         try:
@@ -267,7 +268,6 @@ with aba1:
             idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
             situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
 
-        # ÁREA DOS PRAZOS DE EXPERIÊNCIA INDIVIDUAIS
         if prazos_exp:
             st.markdown("---")
             st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
@@ -276,7 +276,7 @@ with aba1:
                 use_container_width=True, hide_index=True
             )
         elif not reg.empty:
-            st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos de experiência.")
+            st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos.")
 
         st.markdown("---")
         st.subheader("Eventos Trabalhistas")
@@ -314,7 +314,7 @@ with aba1:
         if btn_salvar:
             matricula_tratada = str(matricula).strip()
             if not matricula_tratada:
-                st.error("❌ INFORME A MATRÍCULA EXATAMENTE COMO ESTÁ NA PLANILHA!")
+                st.error("❌ INFORME A MATRÍCULA!")
                 st.stop()
             if tipo_af != "Nenhum" and dt_af.strip():
                 situacao = tipo_af
@@ -339,8 +339,9 @@ with aba1:
                 "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
                 "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
                 "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
-                "DataTerminoLicenca": dados_form["termino_lic"], "DataAfastamento": dados_form["dt_af"],
-                "DiasAfastamento": dados_form["dias_af"], "DataRetornoAfastamento": dados_form["retorno_af"]
+                "DataTerminoLicenca": dados_form["termino_lic"],
+                "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
+                "DataRetornoAfastamento": dados_form["retorno_af"]
             }
             indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
             acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
@@ -348,7 +349,7 @@ with aba1:
             else: dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
             salvar_dados(dados)
             add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
-            st.success(f"✅ Salvo! Matrícula mantida: **{dados_form['mat']}**")
+            st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
             st.rerun()
 
     if mat_sel.strip() and st.button("🗑️ EXCLUIR REGISTRO", use_container_width=True, type="secondary"):
@@ -366,24 +367,17 @@ with aba1:
                 st.success("✅ Registro e documentos excluídos!")
                 st.rerun()
 
-    # ÁREA DE DOCUMENTOS DO FUNCIONÁRIO
     st.markdown("---")
     st.subheader("📎 DOCUMENTOS DO FUNCIONÁRIO")
     if mat_sel.strip() and not reg.empty:
         mat_atual = mat_sel.strip()
         nome_atual = val_campo("Nome")
-        
         tipo_doc = st.selectbox("Tipo de Documento", [
             "RG", "CPF", "PIS", "Carteira de Trabalho", "Comprovante Residência",
             "Exame Admissional", "Exame Demissional", "Contrato", "Atestados",
             "Férias", "Rescisão", "Outros"
         ])
-        
-        arquivos_func = st.file_uploader("Anexar um ou mais documentos", 
-                                       type=["pdf","doc","docx","xls","xlsx","jpg","png"],
-                                       accept_multiple_files=True,
-                                       key=f"up_{mat_atual}")
-        
+        arquivos_func = st.file_uploader("Anexar documentos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True, key=f"up_{mat_atual}")
         if arquivos_func and st.button("SALVAR DOCUMENTOS", type="primary"):
             qtd = 0
             for arq in arquivos_func:
@@ -399,19 +393,16 @@ with aba1:
             salvar_dados(dados)
             st.success(f"✅ {qtd} documento(s) salvo(s)!")
             st.rerun()
-        
         st.markdown("---")
         docs_func = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_atual]
-        if docs_func.empty:
-            st.info("📂 Nenhum documento anexado.")
+        if docs_func.empty: st.info("📂 Nenhum documento anexado.")
         else:
             st.markdown(f"**Total: {len(docs_func)} documento(s)**")
             for idx, doc in docs_func.iterrows():
                 with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
                     col_v, col_b, col_e = st.columns([3,1,1])
                     with col_b:
-                        with open(doc["Caminho"], "rb") as f:
-                            st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
+                        with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
                     with col_e:
                         if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
                             if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
@@ -421,27 +412,43 @@ with aba1:
     else:
         st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ ABA 2 - PAINEL COM CONTAGEM CORRIGIDA ================
+# ================ ABA 2 - PAINEL COM CONTAGEM 100% CORRIGIDA ================
 with aba2:
     st.subheader("📊 RESUMO GERAL")
-    # ✅ RECARREGA OS DADOS NOVAMENTE PARA GARANTIR LEITURA ATUALIZADA
+    # FORÇA LEITURA NOVA DO ARQUIVO
     dados_painel = carregar_dados()
-    base = dados_painel["Base_Dados"]
-    
-    ativos = len(base[base["Situacao"] == "Ativo"])
-    pre_cad = len(base[base["Situacao"] == "Pré-cadastro"])
-    ferias = len(base[base["Situacao"] == "Férias"])
-    licencas = len(base[base["Situacao"].isin(["Doença","Acidente","Maternidade"])])
-    desligados = len(base[~base["Situacao"].isin(["Ativo","Pré-cadastro","Férias","Doença","Acidente","Maternidade"])])
-    
+    base = dados_painel["Base_Dados"].copy()
+    base["Situacao"] = base["Situacao"].fillna("").astype(str).str.strip()
+
+    # CONTAGEM EXATA
+    ativos    = len(base[base["Situacao"] == "Ativo"])
+    pre_cad   = len(base[base["Situacao"] == "Pré-cadastro"])
+    ferias    = len(base[base["Situacao"] == "Férias"])
+    afastados = len(base[base["Situacao"].isin(["Doença","Acidente","Maternidade"])])
+    desligados= len(base[~base["Situacao"].isin(["Ativo","Pré-cadastro","Férias","Doença","Acidente","Maternidade"])])
+
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("👷 Ativos", ativos)
     c2.metric("📝 Pré-cadastro", pre_cad)
     c3.metric("🏖️ Férias", ferias)
-    c4.metric("🏥 Afastados", licencas)
+    c4.metric("🏥 Afastados", afastados)
     c5.metric("📤 Desligados", desligados)
 
-# ================ DEMAIS ABAS ================
+    # BOTÃO PARA ATUALIZAR NA MÃO
+    if st.button("🔄 Atualizar Resumo"):
+        st.cache_data.clear()
+        st.rerun()
+
+    # TABELA DE CONFERÊNCIA RÁPIDA
+    st.markdown("---")
+    st.subheader("🔍 Conferência Rápida - Apenas Férias")
+    tab_fer = base[base["Situacao"] == "Férias"][["Matricula","Nome","Loja","DataFeriasInicio","DataRetornoFerias"]]
+    if tab_fer.empty:
+        st.info("Nenhum funcionário com situação 'Férias' encontrado.")
+    else:
+        st.dataframe(tab_fer, use_container_width=True, hide_index=True)
+
+# ================ ABA 3 - PRAZOS E FÉRIAS ================
 with aba3:
     hoje = datetime.now()
     st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
@@ -474,6 +481,7 @@ with aba3:
         except: pass
     st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo"]), use_container_width=True, hide_index=True)
 
+# ================ ABA 4 - HISTÓRICO ================
 with aba4:
     st.subheader("📝 HISTÓRICO")
     st.dataframe(dados["Historico"][["DataEvento","TipoEvento","Matricula","Nome","Situacao","Detalhes"]], use_container_width=True, hide_index=True)
@@ -494,6 +502,7 @@ with aba4:
                 st.success("Adicionado!")
                 st.rerun()
 
+# ================ ABA 5 - RELATÓRIOS ================
 with aba5:
     st.subheader("📄 RELATÓRIOS")
     rel = st.selectbox("Escolha", ["Prazos Experiência","Ativos","Pré-cadastro","Férias","Afastados","Avisos","Histórico","Individual"])
@@ -521,6 +530,7 @@ with aba5:
         with open("rel_temp.xlsx","rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{rel.replace(' ','_')}.xlsx")
         os.remove("rel_temp.xlsx")
 
+# ================ ABA 6 - DOCUMENTOS DAS LOJAS ================
 with aba6:
     st.subheader("📎 DOCUMENTOS DAS LOJAS")
     ls = lista_lojas()
@@ -529,7 +539,7 @@ with aba6:
     sm = m.selectbox("Mês", MESES)
     sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
     st.markdown("---")
-    arquivos = st.file_uploader("Anexar um ou mais arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
+    arquivos = st.file_uploader("Anexar arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
     resp = st.text_input("Responsável")
     if arquivos and st.button("SALVAR TODOS", type="primary"):
         salvos = 0
@@ -561,6 +571,7 @@ with aba6:
                     salvar_dados(dados)
                     st.rerun()
 
+# ================ ABA 7 - LOJAS E CARGOS ================
 with aba7:
     st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
     dados = carregar_dados()
