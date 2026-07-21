@@ -61,7 +61,6 @@ def carregar_dados():
             for c in cols:
                 if c not in dados[aba].columns:
                     dados[aba][c] = ""
-            # ✅ Matrícula carregada EXATA como está na planilha, sem alterações
             if "Matricula" in dados[aba].columns:
                 dados[aba]["Matricula"] = dados[aba]["Matricula"].astype(str).str.strip()
     return dados
@@ -129,11 +128,11 @@ def calcular_e_atualizar(form):
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
-    if form.get("dt_pedido") and form["dt_pedido"].strip():
+    if form.get("dt_pedido") and form.get("dt_pedido").strip():
         form["situacao"] = "Pedido de Conta"
-    elif form.get("dt_rescisao") and form["dt_rescisao"].strip():
+    elif form.get("dt_rescisao") and form.get("dt_rescisao").strip():
         form["situacao"] = "Rescisão Indireta"
-    elif form.get("dt_abandono") and form["dt_abandono"].strip():
+    elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
     elif not any([
         form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
@@ -161,7 +160,7 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO (MATRÍCULA EXATA DA PLANILHA) ================
+# ================ ABA 1 - CADASTRO COM PRAZOS INDIVIDUAIS ================
 with aba1:
     dados = carregar_dados()
     
@@ -204,6 +203,27 @@ with aba1:
 
     val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
 
+    # Cálculo automático dos prazos de experiência INDIVIDUAIS
+    prazos_exp = []
+    dias_restantes = {}
+    if not reg.empty and val_campo("Admissao").strip():
+        try:
+            dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
+            hoje = datetime.now()
+            dias_corridos = (hoje - dt_adm).days
+            for prazo in [30, 45, 60, 90]:
+                rest = prazo - dias_corridos
+                if rest > 0:
+                    status = f"Faltam {rest} dias"
+                elif rest == 0:
+                    status = "HOJE"
+                else:
+                    status = f"Vencido há {abs(rest)} dias"
+                prazos_exp.append([f"{prazo} dias", (dt_adm + timedelta(days=prazo)).strftime("%d/%m/%Y"), status])
+                dias_restantes[str(prazo)] = rest
+        except:
+            pass
+
     if not reg.empty:
         temp = {
             "dt_aviso": val_campo("DataAvisoPrevio"), "dias_aviso": val_campo("DiasAvisoPrevio"),
@@ -223,7 +243,6 @@ with aba1:
         st.subheader("Dados Básicos")
         c1,c2,c3 = st.columns(3)
         with c1:
-            # ✅ MATRÍCULA: NÃO GERA NENHUM NÚMERO, USA EXATAMENTE O QUE VOCÊ DIGITAR
             matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
             nome = st.text_input("Nome Completo", value=val_campo("Nome"))
             cpf = st.text_input("CPF", value=val_campo("CPF"))
@@ -247,6 +266,18 @@ with aba1:
 
             idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
             situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
+
+        # === ÁREA DOS PRAZOS DE EXPERIÊNCIA INDIVIDUAIS ===
+        if prazos_exp:
+            st.markdown("---")
+            st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
+            st.dataframe(
+                pd.DataFrame(prazos_exp, columns=["Prazo", "Data Final", "Situação"]),
+                use_container_width=True, hide_index=True
+            )
+        elif not reg.empty:
+            st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos de experiência.")
+        # ====================================================
 
         st.markdown("---")
         st.subheader("Eventos Trabalhistas")
@@ -391,7 +422,7 @@ with aba1:
     else:
         st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ DEMAIS ABAS (MANTIDAS COM MESMO TRATAMENTO DE MATRÍCULA) ================
+# ================ DEMAIS ABAS ================
 with aba6:
     st.subheader("📎 DOCUMENTOS DAS LOJAS")
     ls = lista_lojas()
