@@ -6,12 +6,14 @@ from datetime import datetime, timedelta
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
 PASTA_DOCS = "Documentos_Lojas"
+PASTA_DOCS_FUNC = "Documentos_Funcionarios"
 os.makedirs(PASTA_DOCS, exist_ok=True)
+os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 
-MESES = ["Todos", "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+MESES = ["Todos", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MAP_MES = {
-    "Janeiro":1, "Fevereiro":2, "Marco":3, "Abril":4, "Maio":5, "Junho":6,
-    "Julho":7, "Agosto":8, "Setembro":9, "Outubro":10, "Novembro":11, "Dezembro":12
+    "Jan":1, "Fev":2, "Mar":3, "Abr":4, "Mai":5, "Jun":6,
+    "Jul":7, "Ago":8, "Set":9, "Out":10, "Nov":11, "Dez":12
 }
 
 SITUACOES = [
@@ -48,7 +50,8 @@ def carregar_dados():
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
         ],
         "Auxiliares": ["Loja", "Cargo"],
-        "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"]
+        "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
+        "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
     }
     
     for aba, cols in padrao.items():
@@ -159,7 +162,7 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO + FILTROS NA BUSCA ================
+# ================ ABA 1 - CADASTRO COM DOCUMENTOS ================
 with aba1:
     dados = carregar_dados()
     
@@ -197,7 +200,7 @@ with aba1:
         use_container_width=True, hide_index=True
     )
 
-    mat_sel = st.text_input("✏️ Digite a Matrícula para editar / excluir", placeholder="Informe a matrícula")
+    mat_sel = st.text_input("✏️ Digite a Matrícula para editar / excluir / ver documentos", placeholder="Informe a matrícula")
     reg = pd.DataFrame()
     if mat_sel.strip():
         mat_busca = str(mat_sel).strip()
@@ -328,13 +331,127 @@ with aba1:
             indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"].astype(str).str.strip() == mat_sel.strip()].tolist()
             if indice:
                 dados_excluir = dados["Base_Dados"].iloc[indice[0]].to_dict()
+                # Exclui também os documentos do funcionário
+                docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"].str.strip() == mat_sel.strip()]
+                for _, d in docs_excluir.iterrows():
+                    if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
+                dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"].str.strip() != mat_sel.strip()]
                 dados["Base_Dados"].drop(indice[0], inplace=True)
                 salvar_dados(dados)
                 add_historico_auto(mat_sel.strip(), dados_excluir["Nome"], "Exclusão de Cadastro", dados_excluir)
-                st.success("✅ Registro excluído!")
+                st.success("✅ Registro e documentos excluídos!")
                 st.rerun()
 
-# ================ ABA 7 - CADASTRO DE LOJAS E CARGOS ================
+    # ==============================================
+    # ✅ ÁREA DE DOCUMENTOS DO FUNCIONÁRIO
+    # ==============================================
+    st.markdown("---")
+    st.subheader("📎 DOCUMENTOS DO FUNCIONÁRIO")
+    if mat_sel.strip() and not reg.empty:
+        mat_atual = mat_sel.strip()
+        nome_atual = val_campo("Nome")
+        
+        # Tipo de documento
+        tipo_doc = st.selectbox("Tipo de Documento", [
+            "RG", "CPF", "PIS", "Carteira de Trabalho", "Comprovante Residência",
+            "Exame Admissional", "Exame Demissional", "Contrato", "Atestados",
+            "Férias", "Rescisão", "Outros"
+        ])
+        
+        # Anexar vários arquivos
+        arquivos_func = st.file_uploader("Anexar um ou mais documentos", 
+                                       type=["pdf","doc","docx","xls","xlsx","jpg","png"],
+                                       accept_multiple_files=True,
+                                       key=f"up_{mat_atual}")
+        
+        if arquivos_func and st.button("SALVAR DOCUMENTOS", type="primary"):
+            qtd = 0
+            for arq in arquivos_func:
+                nome_arq = f"{mat_atual}_{tipo_doc}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
+                caminho = os.path.join(PASTA_DOCS_FUNC, nome_arq)
+                with open(caminho, "wb") as f: f.write(arq.read())
+                dados["Docs_Funcionarios"] = pd.concat([dados["Docs_Funcionarios"], pd.DataFrame([{
+                    "Matricula": mat_atual, "Nome": nome_atual, "TipoDoc": tipo_doc,
+                    "NomeArquivo": arq.name, "Caminho": caminho,
+                    "DataAnexado": datetime.now().strftime("%d/%m/%Y %H:%M")
+                }])], ignore_index=True)
+                qtd += 1
+            salvar_dados(dados)
+            st.success(f"✅ {qtd} documento(s) salvo(s)!")
+            st.rerun()
+        
+        # Listar documentos já salvos
+        st.markdown("---")
+        docs_func = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"].str.strip() == mat_atual]
+        if docs_func.empty:
+            st.info("📂 Nenhum documento anexado para este funcionário.")
+        else:
+            st.markdown(f"**Total: {len(docs_func)} documento(s)**")
+            for idx, doc in docs_func.iterrows():
+                with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
+                    col_v, col_b, col_e = st.columns([3,1,1])
+                    with col_v:
+                        st.write("Clique para baixar:")
+                    with col_b:
+                        with open(doc["Caminho"], "rb") as f:
+                            st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
+                    with col_e:
+                        if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
+                            if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
+                            dados["Docs_Funcionarios"].drop(idx, inplace=True)
+                            salvar_dados(dados)
+                            st.rerun()
+    else:
+        st.info("ℹ️ Digite uma Matrícula acima para visualizar ou anexar documentos.")
+
+# ================ ABA 6 - DOCUMENTOS DAS LOJAS (ATUALIZADA) ================
+with aba6:
+    st.subheader("📎 DOCUMENTOS DAS LOJAS")
+    ls = lista_lojas()
+    l,m,a = st.columns(3)
+    sl = l.selectbox("Loja", ls)
+    sm = m.selectbox("Mês", MESES)
+    sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
+    st.markdown("---")
+    
+    arquivos = st.file_uploader("Anexar um ou mais arquivos", 
+                               type=["pdf","doc","docx","xls","xlsx","jpg","png"],
+                               accept_multiple_files=True)
+    resp = st.text_input("Responsável")
+    
+    if arquivos and st.button("SALVAR TODOS", type="primary"):
+        salvos = 0
+        for arq in arquivos:
+            nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
+            cam = os.path.join(PASTA_DOCS, nome)
+            with open(cam,"wb") as f: f.write(arq.read())
+            dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{
+                "Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,
+                "DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp
+            }])], ignore_index=True)
+            salvos += 1
+        salvar_dados(dados)
+        st.success(f"✅ {salvos} arquivo(s) salvo(s) com sucesso!")
+        st.rerun()
+    
+    st.markdown("---")
+    filt = dados["Docs_Lojas"].copy()
+    if sl != "Todas": filt = filt[filt["Loja"]==sl]
+    if sm != "Todos": filt = filt[filt["Mes"]==sm]
+    filt = filt[filt["Ano"]==sa]
+    if filt.empty: st.info("Nenhum documento encontrado para este filtro")
+    else:
+        st.markdown(f"**Total: {len(filt)} arquivo(s)**")
+        for i,d in filt.iterrows():
+            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']} | Anexado por: {d['Responsavel']}"):
+                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                if st.button("🗑️ EXCLUIR", key=f"x{i}"):
+                    os.remove(d["Caminho"])
+                    dados["Docs_Lojas"].drop(i,inplace=True)
+                    salvar_dados(dados)
+                    st.rerun()
+
+# ================ DEMAIS ABAS (MANTIDAS IGUAIS) ================
 with aba7:
     st.subheader("⚙️ CADASTRO DE NOVAS LOJAS E CARGOS")
     dados = carregar_dados()
@@ -396,7 +513,6 @@ with aba7:
                 salvar_dados(dados)
                 st.rerun()
 
-# ================ DEMAIS ABAS ================
 with aba2:
     st.subheader("📊 RESUMO GERAL")
     ativos = len(dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Ativo"])
@@ -489,50 +605,3 @@ with aba5:
         with pd.ExcelWriter("rel_temp.xlsx") as arq: df.to_excel(arq, index=False, sheet_name=rel)
         with open("rel_temp.xlsx","rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{rel.replace(' ','_')}.xlsx")
         os.remove("rel_temp.xlsx")
-
-with aba6:
-    st.subheader("📎 DOCUMENTOS DAS LOJAS")
-    ls = lista_lojas()
-    l,m,a = st.columns(3)
-    sl = l.selectbox("Loja", ls)
-    sm = m.selectbox("Mês", MESES)
-    sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
-    st.markdown("---")
-    
-    # ✅ PERMITE SELECIONAR VÁRIOS ARQUIVOS DE UMA VEZ
-    arquivos = st.file_uploader("Anexar um ou mais arquivos", 
-                               type=["pdf","doc","docx","xls","xlsx","jpg","png"],
-                               accept_multiple_files=True)
-    resp = st.text_input("Responsável")
-    
-    if arquivos and st.button("SALVAR TODOS", type="primary"):
-        salvos = 0
-        for arq in arquivos:
-            nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
-            cam = os.path.join(PASTA_DOCS, nome)
-            with open(cam,"wb") as f: f.write(arq.read())
-            dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{
-                "Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,
-                "DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp
-            }])], ignore_index=True)
-            salvos += 1
-        salvar_dados(dados)
-        st.success(f"✅ {salvos} arquivo(s) salvo(s) com sucesso!")
-        st.rerun()
-    
-    st.markdown("---")
-    filt = dados["Docs_Lojas"].copy()
-    if sl != "Todas": filt = filt[filt["Loja"]==sl]
-    if sm != "Todos": filt = filt[filt["Mes"]==sm]
-    filt = filt[filt["Ano"]==sa]
-    if filt.empty: st.info("Nenhum documento encontrado para este filtro")
-    else:
-        st.markdown(f"**Total: {len(filt)} arquivo(s)**")
-        for i,d in filt.iterrows():
-            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']} | Anexado por: {d['Responsavel']}"):
-                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
-                if st.button("🗑️ EXCLUIR", key=f"x{i}"):
-                    os.remove(d["Caminho"])
-                    dados["Docs_Lojas"].drop(i,inplace=True)
-                    salvar_dados(dados)
-                    st.rerun()
