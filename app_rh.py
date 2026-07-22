@@ -6,18 +6,20 @@ from PIL import Image
 
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
+ARQUIVO_DIARIAS = "controle_diarias.xlsx"
 PASTA_DOCS = "Documentos_Lojas"
 PASTA_DOCS_FUNC = "Documentos_Funcionarios"
 PASTA_FOTOS = "Fotos_Funcionarios"
+PASTA_COMPROVANTES = "Comprovantes_Diarias"
 os.makedirs(PASTA_DOCS, exist_ok=True)
 os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 os.makedirs(PASTA_FOTOS, exist_ok=True)
+os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
 
-MESES = ["Todos", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-MAP_MES = {
-    "Jan":1, "Fev":2, "Mar":3, "Abr":4, "Mai":5, "Jun":6,
-    "Jul":7, "Ago":8, "Set":9, "Out":10, "Nov":11, "Dez":12
-}
+MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+SEMANAS = ["Todas", "1º Semana", "2º Semana", "3º Semana", "4º Semana"]
+SITUACOES_DIARIA = ["Todas", "PENDENTE", "PAGO"]
+ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
     "Ativo", "Pré-cadastro", "Abandono", "Término de Contrato",
@@ -73,6 +75,22 @@ def carregar_dados():
                 dados[aba]["Situacao"] = dados[aba]["Situacao"].astype(str).str.strip()
     return dados
 
+@st.cache_data(ttl=0, show_spinner=False)
+def carregar_diarias():
+    try:
+        df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
+    except:
+        df = pd.DataFrame(columns=[
+            "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QUANTIDADE","VALOR UNITARIO","TOTAL",
+            "DADOS BANCARIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
+            "COMPROVANTE","CAMINHO_COMPROVANTE"
+        ])
+    # Padroniza campos
+    for col in df.columns:
+        if col in ["NOME COLABORADOR", "CPF", "LOJA", "MOTIVO"]:
+            df[col] = df[col].astype(str).str.strip()
+    return df
+
 def salvar_dados(dados):
     try:
         with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
@@ -80,10 +98,22 @@ def salvar_dados(dados):
                 df.to_excel(f, sheet_name=aba, index=False)
         st.cache_data.clear()
     except PermissionError:
-        st.error("❌ ERRO: O arquivo dados_funcionarios.xlsx está ABERTO! Feche o Excel e tente novamente.")
+        st.error("❌ ERRO: Arquivo dados_funcionarios.xlsx está ABERTO! Feche o Excel e tente novamente.")
         st.stop()
     except Exception as e:
         st.error(f"❌ Erro ao salvar: {str(e)}")
+        st.stop()
+
+def salvar_diarias(df_diarias):
+    try:
+        with pd.ExcelWriter(ARQUIVO_DIARIAS, engine="openpyxl", mode="w") as f:
+            df_diarias.to_excel(f, sheet_name="Diarias", index=False)
+        st.cache_data.clear()
+    except PermissionError:
+        st.error("❌ ERRO: O arquivo controle_diarias.xlsx está ABERTO! Feche o Excel e tente novamente.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar diárias: {str(e)}")
         st.stop()
 
 def lista_lojas():
@@ -162,8 +192,8 @@ def add_historico_auto(mat, nome, acao, dados_completos):
 st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
 st.title("📋 SISTEMA RH COMPLETO")
 
-aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
-    "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
+aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8 = st.tabs([
+    "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos", "💰 CONTROLE DE DIÁRIAS"
 ])
 
 # ================ ABA 1 - CADASTRO ================
@@ -215,7 +245,7 @@ with aba1:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
             hoje = datetime.now()
             dias_corridos = (hoje - dt_adm).days
-            for prazo in [29, 44, 59, 89]:
+            for prazo in [30, 45, 60, 90]:
                 rest = prazo - dias_corridos
                 if rest > 0:
                     status = f"Faltam {rest} dias"
@@ -243,11 +273,10 @@ with aba1:
         term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
         situacao_val = "Ativo"
 
-    # Botão de limpar FORA do formulário
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
         st.rerun()
 
-    with st.form("form_cadastro", clear_on_submit=True): # ✅ clear_on_submit=True = limpa automaticamente ao salvar
+    with st.form("form_cadastro", clear_on_submit=True):
         st.subheader("Dados Básicos")
         col_foto, col_dados = st.columns([1,3])
         
@@ -452,7 +481,7 @@ with aba1:
     else:
         st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ DEMAIS ABAS ================
+# ================ ABA 2 - PAINEL ================
 with aba2:
     st.subheader("📊 RESUMO GERAL")
     dados_painel = carregar_dados()
@@ -491,6 +520,7 @@ with aba2:
     else:
         st.dataframe(tab_fer, use_container_width=True, hide_index=True)
 
+# ================ DEMAIS ABAS (IGUAIS) ================
 with aba3:
     hoje = datetime.now()
     st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
@@ -516,7 +546,7 @@ with aba3:
         if filtro_loja != "Todas" and f["Loja"] != filtro_loja: continue
         try:
             dt = datetime.strptime(str(f["Admissao"]).strip(), "%d/%m/%Y")
-            if filtro_mes != "Todos" and dt.month != MAP_MES[filtro_mes]: continue
+            if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
             meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
             if 23 <= meses < 24:
                 tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m"])
@@ -576,7 +606,7 @@ with aba6:
     l,m,a = st.columns(3)
     sl = l.selectbox("Loja", ls)
     sm = m.selectbox("Mês", MESES)
-    sa = a.selectbox("Ano", [str(x) for x in range(2020, datetime.now().year+2)], index=datetime.now().year-2020)
+    sa = a.selectbox("Ano", ANOS, index=ANOS.index(str(datetime.now().year)))
     st.markdown("---")
     arquivos = st.file_uploader("Anexar arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
     resp = st.text_input("Responsável")
@@ -632,3 +662,52 @@ with aba7:
                 st.success("✅ Cargo cadastrado!")
                 st.rerun()
             else: st.warning("⚠️ Já existe!")
+
+# ================ ABA 8 - CONTROLE DE DIÁRIAS (NOVA) ================
+with aba8:
+    st.subheader("💰 CONTROLE DE DIÁRIAS")
+    st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária, não permitido conta de terceiros.")
+
+    # Filtros de pesquisa
+    col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
+    with col_p1: filtro_loja_d = st.selectbox("Loja", ["Todas"] + lista_lojas(), key="filtro_loja_d")
+    with col_p2: filtro_mes_d = st.selectbox("Mês", MESES, key="filtro_mes_d")
+    with col_p3: filtro_sem_d = st.selectbox("Semana", SEMANAS, key="filtro_sem_d")
+    with col_p4: filtro_ano_d = st.selectbox("Ano", ANOS, index=ANOS.index(str(datetime.now().year)), key="filtro_ano_d")
+    with col_p5: filtro_sit_d = st.selectbox("Situação", SITUACOES_DIARIA, key="filtro_sit_d")
+    
+    busca_d = st.text_input("🔍 Pesquisar por Nome ou CPF", placeholder="Digite para buscar...")
+
+    # Carrega e filtra dados
+    df_diarias = carregar_diarias()
+    df_filtrado = df_diarias.copy()
+
+    if filtro_loja_d != "Todas": df_filtrado = df_filtrado[df_filtrado["LOJA"] == filtro_loja_d]
+    if filtro_mes_d != "Todos": df_filtrado = df_filtrado[df_filtrado["MES"] == filtro_mes_d]
+    if filtro_sem_d != "Todas": df_filtrado = df_filtrado[df_filtrado["SEMANA"] == filtro_sem_d]
+    if filtro_ano_d != "Todos": df_filtrado = df_filtrado[df_filtrado["ANO"] == filtro_ano_d]
+    if filtro_sit_d != "Todas": df_filtrado = df_filtrado[df_filtrado["SITUACAO"] == filtro_sit_d]
+    if busca_d.strip():
+        df_filtrado = df_filtrado[
+            df_filtrado["NOME COLABORADOR"].str.contains(busca_d, case=False, na=False) |
+            df_filtrado["CPF"].str.contains(busca_d, case=False, na=False)
+        ]
+
+    # Mostra tabela
+    st.dataframe(
+        df_filtrado[["LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QUANTIDADE","VALOR UNITARIO","TOTAL","SITUACAO","MES","SEMANA","ANO"]],
+        use_container_width=True, hide_index=True
+    )
+
+    # Selecionar para editar
+    indice_sel = st.text_input("✏️ Digite o ÍNDICE da linha para editar/excluir", placeholder="Número da linha na tabela")
+    reg_d = pd.DataFrame()
+    if indice_sel.strip() and indice_sel.isdigit():
+        idx = int(indice_sel)
+        if 0 <= idx < len(df_diarias):
+            reg_d = df_diarias.iloc[[idx]]
+
+    val_d = lambda c: reg_d.iloc[0][c] if not reg_d.empty else ""
+
+    # Botão limpar
+    if st.button("🗑️ LIMPAR FORMULÁRIO", use_container_width=True, type="
