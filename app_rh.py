@@ -264,12 +264,37 @@ def exportar_diarias_formatado(df, caminho):
     wb.close()
 
 def lista_lojas():
-    d = carregar_dados()
-    todas = sorted(set(
-        [str(l).strip() for l in d["Base_Dados"]["Loja"] if str(l).strip() != ""] +
-        [str(l).strip() for l in d["Auxiliares"]["Loja"] if str(l).strip() != ""]
-    ))
-    return todas if todas else ["Sem Loja"]
+    return [
+        "Assaí Atacadista Batista Campos",
+        "Assaí Atacadista Almirante Barroso",
+        "Assaí Atacadista Castanhal",
+        "Assaí Atacadista Ananindeua",
+        "Assaí Atacadista Augusto Monte Negro",
+        "Assaí Atacadista Boa Vista",
+        "Assaí Atacadista Manaus",
+        "Assaí Atacadista Macapá",
+        "Assaí Atacadista Belém",
+        "Smart Fit Shopping Manoa",
+        "Smart Fit Shopping Cidade Leste",
+        "Smart Fit Macapá Shopping",
+        "Smart Fit Shopping Grande Circular",
+        "Smart Fit Shopping Via Norte",
+        "Smart Fit Cidade Nova",
+        "Smart Fit Parque Mosaico",
+        "Smart Fit Cachoeirinha",
+        "Smart Fit Flores",
+        "Smart Fit Ponta Negra",
+        "Smart Fit Nova Porto Velho",
+        "Smart Fit Porto Velho Flodoaldo",
+        "Smart Fit Alvorada",
+        "Smart Fit Novo Aleixo",
+        "Smart Fit São José do Operário",
+        "Smart Fit Santana Macapá",
+        "Smart Fit Toequato Tapajós",
+        "Self Fit Hiper DB Ponta Negra",
+        "Self Fit Manaus Plaza Shopping",
+        "Self Fit Vieira Alves",
+    ]
 
 def lista_cargos():
     d = carregar_dados()
