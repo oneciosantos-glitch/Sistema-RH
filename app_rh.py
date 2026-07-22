@@ -85,7 +85,6 @@ def carregar_diarias():
             "DADOS BANCARIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
             "COMPROVANTE","CAMINHO_COMPROVANTE"
         ])
-    # Padroniza campos
     for col in df.columns:
         if col in ["NOME COLABORADOR", "CPF", "LOJA", "MOTIVO"]:
             df[col] = df[col].astype(str).str.strip()
@@ -520,7 +519,7 @@ with aba2:
     else:
         st.dataframe(tab_fer, use_container_width=True, hide_index=True)
 
-# ================ DEMAIS ABAS (IGUAIS) ================
+# ================ ABA 3 - PRAZOS E FÉRIAS ================
 with aba3:
     hoje = datetime.now()
     st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
@@ -553,6 +552,7 @@ with aba3:
         except: pass
     st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo"]), use_container_width=True, hide_index=True)
 
+# ================ ABA 4 - HISTÓRICO ================
 with aba4:
     st.subheader("📝 HISTÓRICO")
     st.dataframe(dados["Historico"][["DataEvento","TipoEvento","Matricula","Nome","Situacao","Detalhes"]], use_container_width=True, hide_index=True)
@@ -573,6 +573,7 @@ with aba4:
                 st.success("Adicionado!")
                 st.rerun()
 
+# ================ ABA 5 - RELATÓRIOS ================
 with aba5:
     st.subheader("📄 RELATÓRIOS")
     rel = st.selectbox("Escolha", ["Prazos Experiência","Ativos","Pré-cadastro","Férias","Afastados","Avisos","Histórico","Individual"])
@@ -600,6 +601,7 @@ with aba5:
         with open("rel_temp.xlsx","rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{rel.replace(' ','_')}.xlsx")
         os.remove("rel_temp.xlsx")
 
+# ================ ABA 6 - DOCUMENTOS DAS LOJAS ================
 with aba6:
     st.subheader("📎 DOCUMENTOS DAS LOJAS")
     ls = lista_lojas()
@@ -640,6 +642,7 @@ with aba6:
                     salvar_dados(dados)
                     st.rerun()
 
+# ================ ABA 7 - LOJAS E CARGOS ================
 with aba7:
     st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
     dados = carregar_dados()
@@ -663,7 +666,7 @@ with aba7:
                 st.rerun()
             else: st.warning("⚠️ Já existe!")
 
-# ================ ABA 8 - CONTROLE DE DIÁRIAS (NOVA) ================
+# ================ ABA 8 - CONTROLE DE DIÁRIAS ================
 with aba8:
     st.subheader("💰 CONTROLE DE DIÁRIAS")
     st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária, não permitido conta de terceiros.")
@@ -705,9 +708,3 @@ with aba8:
     if indice_sel.strip() and indice_sel.isdigit():
         idx = int(indice_sel)
         if 0 <= idx < len(df_diarias):
-            reg_d = df_diarias.iloc[[idx]]
-
-    val_d = lambda c: reg_d.iloc[0][c] if not reg_d.empty else ""
-
-    # Botão limpar
-    if st.button("🗑️ LIMPAR FORMULÁRIO", use_container_width=True, type="
