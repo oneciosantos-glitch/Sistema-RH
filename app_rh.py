@@ -100,7 +100,7 @@ def lista_cargos():
         [str(c).strip() for c in d["Base_Dados"]["Cargo"] if str(c).strip() != ""] +
         [str(c).strip() for c in d["Auxiliares"]["Cargo"] if str(c).strip() != ""]
     ))
-    return todas se todas else ["Sem Cargo"]
+    return todas if todas else ["Sem Cargo"]
 
 def calcular_e_atualizar(form):
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
@@ -121,7 +121,11 @@ def calcular_e_atualizar(form):
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]))).strftime("%d/%m/%Y")
-            if not any([form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(), form.get("dt_abandono","").strip(), form.get("dt_termino_cont","").strip()]):
+            # Só define férias se não tiver nenhuma outra data de desligamento preenchida
+            if not any([
+                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
+                form.get("dt_abandono","").strip(), form.get("dt_termino_cont","").strip()
+            ]):
                 form["situacao"] = "Férias"
         except:
             form["retorno_fer"] = ""
@@ -135,7 +139,7 @@ def calcular_e_atualizar(form):
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
-    # Define situação automaticamente quando preenche a data de término de contrato
+    # Define situação automaticamente
     if form.get("dt_termino_cont") and form.get("dt_termino_cont").strip():
         form["situacao"] = "Término de Contrato"
     elif form.get("dt_pedido") and form.get("dt_pedido").strip():
@@ -324,7 +328,6 @@ with aba1:
             dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
             dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
             dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
-            # 📌 NOVO CAMPO ADICIONADO AQUI
             dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
 
         btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
@@ -483,11 +486,12 @@ with aba2:
     st.subheader("🔍 Conferência Rápida - Apenas Férias")
     tab_fer = base[base["Situacao"] == "Férias"][["Matricula","Nome","Loja","DataFeriasInicio","DataRetornoFerias"]]
     if tab_fer.empty:
-        st.info("Nenhum funcionário com situação 'Férias' encontrado.")
+        st.warning("⚠️ Nenhum funcionário com situação marcada como 'Férias' no momento.")
+        st.info("💡 Dica: Se a data de férias estiver preenchida mas a situação não for 'Férias', edite o cadastro e confirme se a situação está selecionada corretamente — os dados não são apagados!")
     else:
         st.dataframe(tab_fer, use_container_width=True, hide_index=True)
 
-# ================ DEMAIS ABAS (SEM ALTERAÇÕES) ================
+# ================ DEMAIS ABAS ================
 with aba3:
     hoje = datetime.now()
     st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
