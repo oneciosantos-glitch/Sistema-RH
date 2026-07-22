@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
@@ -79,32 +80,58 @@ def carregar_dados():
 
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_diarias():
-    # COLUNAS EXATAMENTE COMO NA PLANILHA ENVIADA
-    cols_originais = [
-        "LOJA", "NOME COMPLETO DO COLABORADOR", "CPF", "DATA DA EXECUÇÃO",
-        "QUANT.", "VALOR UNI.", "TOTAL", "DADOS BANCÁRIOS",
-        "SUBSTITUIÇÃO", "MOTIVO DA DIARIA", "DATA DE PAGAM.",
-        "situação", "Mês", "semana"
+    cols_padrao = [
+        "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QTDE DE DIARIAS","VALOR UNITARIO","VALOR TOTAL",
+        "CHAVE PIX","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
+        "CARGO","BANCO","AGENCIA","CONTA","DATA CADASTRO","COMPROVANTE"
     ]
     try:
-        # PULA A PRIMEIRA LINHA (instruções) E PEGA O CABEÇALHO NA LINHA 2
+        # Tenta ler com header na segunda linha (pula texto de instruções)
         df = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
+        # Renomeia colunas da planilha do usuário para o padrão do app
+        rename_map = {
+            'NOME COMPLETO DO COLABORADOR': 'NOME COLABORADOR',
+            'QUANT.': 'QTDE DE DIARIAS',
+            'VALOR UNI.': 'VALOR UNITARIO',
+            'TOTAL': 'VALOR TOTAL',
+            'DADOS BANCÁRIOS': 'CHAVE PIX',
+            'MOTIVO DA DIARIA': 'MOTIVO',
+            'situação': 'SITUACAO',
+            'Mês': 'MES',
+            'semana': 'SEMANA',
+            'DATA DA EXECUÇÃO': 'DATA EXECUCAO',
+            'SUBSTITUIÇÃO': 'SUBSTITUICAO',
+            'DATA DE PAGAM.': 'DATA PAGAMENTO'
+        }
+        df = df.rename(columns=rename_map)
     except Exception:
+        # Se falhar, tenta ler normalmente (já no formato do app)
         try:
             df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
         except Exception:
-            df = pd.DataFrame(columns=cols_originais)
+            df = pd.DataFrame(columns=cols_padrao)
 
-    # GARANTE TODAS AS COLUNAS EXISTEM NA ORDEM CORRETA
-    for col in cols_originais:
+    # Garante que todas as colunas padrão existam
+    for col in cols_padrao:
         if col not in df.columns:
             df[col] = ""
-    df = df[cols_originais]
 
-    # LIMPA TEXTOS
-    for col in df.columns:
-        df[col] = df[col].astype(str).str.strip()
+    # Extrai ANO da DATA PAGAMENTO quando estiver vazio
+    for i in df.index:
+        if str(df.at[i, "ANO"]).strip() == "":
+            try:
+                dt = pd.to_datetime(str(df.at[i, "DATA PAGAMENTO"]).strip())
+                df.at[i, "ANO"] = str(dt.year)
+            except Exception:
+                df.at[i, "ANO"] = str(datetime.now().year)
 
+    # Limpa strings
+    for col in ["NOME COLABORADOR", "CPF", "LOJA", "MOTIVO", "SITUACAO", "MES", "SEMANA"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+
+    # Garante ordem correta das colunas
+    df = df[[c for c in cols_padrao if c in df.columns]]
     return df
 
 def salvar_dados(dados):
@@ -133,62 +160,105 @@ def salvar_diarias(df_diarias):
         st.stop()
 
 def exportar_diarias_formatado(df, caminho):
-    """EXPORTA EXATAMENTE COMO A PLANILHA ORIGINAL"""
+    """Exporta DataFrame de diárias para Excel com a mesma formatação da planilha padrão."""
     df_export = df.copy()
     df_export.to_excel(caminho, index=False, engine="openpyxl")
     wb = load_workbook(caminho)
     ws = wb.active
     ws.title = "Diarias"
 
-    # INSTRUÇÕES NO TOPO (IGUAL ORIGINAL)
-    ws.insert_rows(1)
-    ws.merge_cells("A1:N1")
-    ws["A1"] = "- Pagamento da diária será efetuado em até 5 dias úteis.\n- Os pagamentos de diárias só serão efetuados via transferência bancária.\n- Não é permitido pagamento em conta de terceiros."
-    ws["A1"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    ws["A1"].font = Font(size=10)
+    # Cores e estilos exatos da planilha padrão
+    fill_instrucoes = PatternFill(start_color="1B2D4F", end_color="1B2D4F", fill_type="solid")
+    font_instrucoes = Font(name="Calibri", size=11, bold=False, color="FFFFFF")
+    align_instrucoes = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    # ESTILOS
-    cor_cabecalho = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    fonte_cabecalho = Font(color="FFFFFF", bold=True, size=10)
-    alin_cabecalho = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    fill_header = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+    font_header = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    align_header = Alignment(horizontal="center", vertical="center")
+
     borda = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin")
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000")
     )
-    cor_pendente = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-    cor_pago = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 
-    # LARGURAS IGUAIS AO MODELO
-    larguras = {
-        "A":16, "B":32, "C":18, "D":22, "E":10, "F":12, "G":12,
-        "H":28, "I":14, "J":22, "K":16, "L":12, "M":8, "N":12
-    }
-    for l, w in larguras.items():
-        ws.column_dimensions[l].width = w
+    fill_pendente = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    font_pendente = Font(name="Calibri", size=11, bold=False, color="9C0006")
 
-    # FORMATA CABEÇALHO (LINHA 2 AGORA)
-    for cell in ws[2]:
-        cell.fill = cor_cabecalho
-        cell.font = fonte_cabecalho
-        cell.alignment = alin_cabecalho
+    font_data = Font(name="Calibri", size=11, bold=False, color="000000")
+    align_data_center = Alignment(horizontal="center", vertical="center")
+    align_data_left = Alignment(horizontal="left", vertical="center")
+
+    # Mapear colunas do app para posição
+    headers_app = list(df_export.columns)
+    num_cols = len(headers_app)
+
+    # Inserir linha de instruções no topo e mesclar
+    ws.insert_rows(1)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_cols)
+    cell_instr = ws.cell(row=1, column=1)
+    cell_instr.value = (
+        "- Pagamento da diária será efetuado em até 5 dias úteis.\n"
+        "- Os pagamentos de diárias só serão efetuados via transferência bancária.\n"
+        "- Não é permitido pagamento em conta de terceiros."
+    )
+    cell_instr.fill = fill_instrucoes
+    cell_instr.font = font_instrucoes
+    cell_instr.alignment = align_instrucoes
+    cell_instr.border = borda
+    ws.row_dimensions[1].height = 63
+
+    # Aplicar borda nas células mescladas da linha 1
+    for c in range(2, num_cols + 1):
+        ws.cell(row=1, column=c).border = borda
+
+    # Formatar cabeçalho (linha 2 após inserção)
+    for col_idx, header in enumerate(headers_app, 1):
+        cell = ws.cell(row=2, column=col_idx)
+        cell.fill = fill_header
+        cell.font = font_header
+        cell.alignment = align_header
         cell.border = borda
 
-    # FORMATA DADOS
+    # Formatar dados (a partir da linha 3)
     for row in ws.iter_rows(min_row=3, max_row=ws.max_row):
         for cell in row:
             cell.border = borda
-            cell.alignment = Alignment(horizontal="left", vertical="center")
-            # DESTAQUE SITUAÇÃO
-            if ws.cell(row=2, column=cell.column).value == "situação":
-                if cell.value == "PENDENTE":
-                    cell.fill = cor_pendente
-                elif cell.value == "PAGO":
-                    cell.fill = cor_pago
-            # FORMATAR VALORES
-            if ws.cell(row=2, column=cell.column).value in ["VALOR UNI.", "TOTAL"]:
+            cell.font = font_data
+            header = ws.cell(row=2, column=cell.column).value
+            # Nome alinha à esquerda, resto centralizado
+            if header and "NOME" in str(header).upper():
+                cell.alignment = align_data_left
+            else:
+                cell.alignment = align_data_center
+
+            # Destacar PENDENTE na coluna SITUACAO
+            if header == "SITUACAO" and cell.value == "PENDENTE":
+                cell.fill = fill_pendente
+                cell.font = font_pendente
+
+            # Formato de moeda nas colunas de valor
+            if header in ["VALOR UNITARIO", "VALOR TOTAL"]:
                 try:
-                    cell.number_format = 'R$ #,##0.00'
-                except: pass
+                    val = float(str(cell.value).replace(",", "."))
+                    cell.number_format = r'_-"R$"\ * #,##0.00_-;\-"R$"\ * #,##0.00_-;_-"R$"\ * "-"??_-;_-@_-'
+                    cell.value = val
+                except:
+                    pass
+
+    # Larguras de coluna
+    larguras = {
+        "LOJA": 12, "MES": 10, "SEMANA": 12, "ANO": 8,
+        "NOME COLABORADOR": 38, "CPF": 16, "CARGO": 18,
+        "CHAVE PIX": 28, "BANCO": 14, "AGENCIA": 12, "CONTA": 14,
+        "MOTIVO": 28, "QTDE DE DIARIAS": 10, "VALOR UNITARIO": 14,
+        "VALOR TOTAL": 14, "SITUACAO": 12, "DATA CADASTRO": 18,
+        "COMPROVANTE": 35
+    }
+    for col_idx, header in enumerate(headers_app, 1):
+        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = larguras.get(header, 18)
 
     wb.save(caminho)
     wb.close()
@@ -269,17 +339,489 @@ def add_historico_auto(mat, nome, acao, dados_completos):
 st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
 st.title("📋 SISTEMA RH COMPLETO")
 
+# ⚠️ LINHA OBRIGATÓRIA: CRIA TODAS AS ABAS ANTES DE USÁ-LAS
 aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos", "💰 CONTROLE DE DIÁRIAS"
 ])
 
-# ... (TODO O RESTO DAS ABAS 1 A 7 PERMANECE EXATAMENTE IGUAL) ...
+# ================ ABA 1 - CADASTRO ================
+with aba1:
+    dados = carregar_dados()
+    
+    busca = st.text_input("🔍 Buscar por Matrícula ou Nome", placeholder="Digite exatamente como está na planilha")
+    
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        filtro_loja = st.selectbox("Filtrar por Loja", ["Todas"] + lista_lojas())
+    with col_f2:
+        filtro_sit = st.selectbox("Filtrar por Situação", ["Todas"] + SITUACOES)
+    with col_f3:
+        filtro_cargo = st.selectbox("Filtrar por Cargo", ["Todos"] + lista_cargos())
 
-# ================ ABA 8 - CONTROLE DE DIÁRIAS (AJUSTADA 100%) ================
+    lista = dados["Base_Dados"].copy()
+    lista["Matricula"] = lista["Matricula"].fillna("").astype(str).str.strip()
+    lista["Nome"] = lista["Nome"].fillna("").astype(str).str.strip()
+
+    if busca.strip():
+        lista = lista[
+            (lista["Matricula"].str.contains(busca, case=False, na=False)) |
+            (lista["Nome"].str.contains(busca, case=False, na=False))
+        ]
+    if filtro_loja != "Todas":
+        lista = lista[lista["Loja"] == filtro_loja]
+    if filtro_sit != "Todas":
+        lista = lista[lista["Situacao"] == filtro_sit]
+    if filtro_cargo != "Todos":
+        lista = lista[lista["Cargo"] == filtro_cargo]
+
+    st.dataframe(
+        lista[["Matricula","Nome","Loja","Situacao","Cargo"]],
+        use_container_width=True, hide_index=True
+    )
+
+    mat_sel = st.text_input("✏️ Digite a Matrícula EXATA para editar / excluir", placeholder="Igual coluna A da planilha")
+    reg = pd.DataFrame()
+    if mat_sel.strip():
+        mat_busca = str(mat_sel).strip()
+        reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_busca]
+
+    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
+
+    prazos_exp = []
+    if not reg.empty and val_campo("Admissao").strip():
+        try:
+            dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
+            hoje = datetime.now()
+            dias_corridos = (hoje - dt_adm).days
+            for prazo in [30, 45, 60, 90]:
+                rest = prazo - dias_corridos
+                if rest > 0:
+                    status = f"Faltam {rest} dias"
+                elif rest == 0:
+                    status = "HOJE"
+                else:
+                    status = f"Vencido há {abs(rest)} dias"
+                prazos_exp.append([f"{prazo} dias", (dt_adm + timedelta(days=prazo)).strftime("%d/%m/%Y"), status])
+        except:
+            pass
+
+    if not reg.empty:
+        temp = {
+            "dt_aviso": val_campo("DataAvisoPrevio"), "dias_aviso": val_campo("DiasAvisoPrevio"),
+            "dt_lic": val_campo("DataLicenca"), "dias_lic": val_campo("DiasLicenca"),
+            "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
+            "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
+            "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
+            "dt_abandono": val_campo("DataAbandono"), "dt_termino_cont": val_campo("DataTerminoContrato"),
+            "situacao": val_campo("Situacao"), "caminho_foto": val_campo("CaminhoFoto")
+        }
+        temp = calcular_e_atualizar(temp)
+        term_aviso_val, term_lic_val, ret_fer_val, ret_af_val, situacao_val, caminho_foto_atual = temp["termino_aviso"], temp["termino_lic"], temp["retorno_fer"], temp["retorno_af"], temp["situacao"], temp["caminho_foto"]
+    else:
+        term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
+        situacao_val = "Ativo"
+
+    if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
+        st.rerun()
+
+    with st.form("form_cadastro", clear_on_submit=True):
+        st.subheader("Dados Básicos")
+        col_foto, col_dados = st.columns([1,3])
+        
+        with col_foto:
+            st.markdown("**Foto do Funcionário**")
+            if caminho_foto_atual and os.path.exists(caminho_foto_atual):
+                st.image(caminho_foto_atual, width=180, caption="Foto atual")
+            else:
+                st.info("Sem foto")
+            
+            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
+            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
+
+        with col_dados:
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
+                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
+                cpf = st.text_input("CPF", value=val_campo("CPF"))
+                rg = st.text_input("RG", value=val_campo("RG"))
+                pis = st.text_input("PIS", value=val_campo("PIS"))
+            with c2:
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
+                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
+                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
+            with c3:
+                lojas = lista_lojas()
+                idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
+                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
+
+                cargos = lista_cargos()
+                idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
+                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
+
+                salario = st.text_input("Salário", value=val_campo("Salario"))
+
+                idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
+
+        if prazos_exp:
+            st.markdown("---")
+            st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
+            st.dataframe(
+                pd.DataFrame(prazos_exp, columns=["Prazo", "Data Final", "Situação"]),
+                use_container_width=True, hide_index=True
+            )
+        elif not reg.empty:
+            st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos.")
+
+        st.markdown("---")
+        st.subheader("Eventos Trabalhistas")
+        av1,av2,av3 = st.columns(3)
+        with av1:
+            st.markdown("**Aviso Prévio**")
+            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"))
+            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"))
+            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True)
+        with av2:
+            st.markdown("**Licença**")
+            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"))
+            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"))
+            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True)
+        with av3:
+            st.markdown("**Férias**")
+            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"))
+            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"))
+            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True)
+
+        af1,af2 = st.columns(2)
+        with af1:
+            st.markdown("**Afastamento**")
+            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
+            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
+            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
+            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"])
+        with af2:
+            st.markdown("**Desligamento**")
+            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
+            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
+            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
+
+        btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
+        if btn_salvar:
+            matricula_tratada = str(matricula).strip()
+            if not matricula_tratada:
+                st.error("❌ INFORME A MATRÍCULA!")
+                st.stop()
+            if tipo_af != "Nenhum" and dt_af.strip():
+                situacao = tipo_af
+
+            caminho_final_foto = caminho_foto_atual
+            if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
+                os.remove(caminho_final_foto)
+                caminho_final_foto = ""
+            if nova_foto:
+                if caminho_final_foto and os.path.exists(caminho_final_foto):
+                    os.remove(caminho_final_foto)
+                extensao = os.path.splitext(nova_foto.name)[1].lower()
+                nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
+                caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
+                img = Image.open(nova_foto)
+                img.save(caminho_final_foto)
+
+            dados_form = calcular_e_atualizar({
+                "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
+                "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
+                "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
+                "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
+                "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
+                "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
+                "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af,
+                "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
+                "dt_termino_cont": dt_termino_cont
+            })
+            registro_final = {
+                "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
+                "RG": dados_form["rg"], "PIS": dados_form["pis"], "Nascimento": dados_form["nasc"],
+                "Admissao": dados_form["adm"], "Telefone": dados_form["tel"], "Endereco": dados_form["end"],
+                "Loja": dados_form["loja"], "Cargo": dados_form["cargo"], "Salario": dados_form["sal"],
+                "Situacao": dados_form["situacao"], "DataAvisoPrevio": dados_form["dt_aviso"],
+                "DiasAvisoPrevio": dados_form["dias_aviso"], "DataTerminoAviso": dados_form["termino_aviso"],
+                "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
+                "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
+                "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
+                "DataTerminoContrato": dados_form["dt_termino_cont"],
+                "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
+                "DataTerminoLicenca": dados_form["termino_lic"],
+                "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
+                "DataRetornoAfastamento": dados_form["retorno_af"],
+                "CaminhoFoto": caminho_final_foto
+            }
+            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
+            acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
+            if indice: dados["Base_Dados"].iloc[indice[0]] = registro_final
+            else: dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
+            salvar_dados(dados)
+            add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
+            st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
+            st.rerun()
+
+    if mat_sel.strip() and st.button("🗑️ EXCLUIR REGISTRO", use_container_width=True, type="secondary"):
+        if st.checkbox("⚠️ CONFIRMA EXCLUSÃO PERMANENTE?"):
+            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_sel.strip()].tolist()
+            if indice:
+                dados_excluir = dados["Base_Dados"].iloc[indice[0]].to_dict()
+                if dados_excluir.get("CaminhoFoto") and os.path.exists(dados_excluir["CaminhoFoto"]):
+                    os.remove(dados_excluir["CaminhoFoto"])
+                docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_sel.strip()]
+                for _, d in docs_excluir.iterrows():
+                    if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
+                dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_sel.strip()]
+                dados["Base_Dados"].drop(indice[0], inplace=True)
+                salvar_dados(dados)
+                add_historico_auto(mat_sel.strip(), dados_excluir["Nome"], "Exclusão de Cadastro", dados_excluir)
+                st.success("✅ Registro, foto e documentos excluídos!")
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("📎 DOCUMENTOS DO FUNCIONÁRIO")
+    if mat_sel.strip() and not reg.empty:
+        mat_atual = mat_sel.strip()
+        nome_atual = val_campo("Nome")
+        tipo_doc = st.selectbox("Tipo de Documento", [
+            "RG", "CPF", "PIS", "Carteira de Trabalho", "Comprovante Residência",
+            "Exame Admissional", "Exame Demissional", "Contrato", "Atestados",
+            "Férias", "Rescisão", "Outros"
+        ])
+        arquivos_func = st.file_uploader("Anexar documentos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True, key=f"up_{mat_atual}")
+        if arquivos_func and st.button("SALVAR DOCUMENTOS", type="primary"):
+            qtd = 0
+            for arq in arquivos_func:
+                nome_arq = f"{mat_atual}_{tipo_doc}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
+                caminho = os.path.join(PASTA_DOCS_FUNC, nome_arq)
+                with open(caminho, "wb") as f: f.write(arq.read())
+                dados["Docs_Funcionarios"] = pd.concat([dados["Docs_Funcionarios"], pd.DataFrame([{
+                    "Matricula": mat_atual, "Nome": nome_atual, "TipoDoc": tipo_doc,
+                    "NomeArquivo": arq.name, "Caminho": caminho,
+                    "DataAnexado": datetime.now().strftime("%d/%m/%Y %H:%M")
+                }])], ignore_index=True)
+                qtd += 1
+            salvar_dados(dados)
+            st.success(f"✅ {qtd} documento(s) salvo(s)!")
+            st.rerun()
+        st.markdown("---")
+        docs_func = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_atual]
+        if docs_func.empty: st.info("📂 Nenhum documento anexado.")
+        else:
+            st.markdown(f"**Total: {len(docs_func)} documento(s)**")
+            for idx, doc in docs_func.iterrows():
+                with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
+                    col_v, col_b, col_e = st.columns([3,1,1])
+                    with col_b:
+                        with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
+                    with col_e:
+                        if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
+                            if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
+                            dados["Docs_Funcionarios"].drop(idx, inplace=True)
+                            salvar_dados(dados)
+                            st.rerun()
+    else:
+        st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
+
+# ================ ABA 2 - PAINEL ================
+with aba2:
+    st.subheader("📊 RESUMO GERAL")
+    dados_painel = carregar_dados()
+    base = dados_painel["Base_Dados"].copy()
+    base["Situacao"] = base["Situacao"].fillna("").astype(str).str.strip()
+
+    contagem = {
+        "👷 Ativo": len(base[base["Situacao"] == "Ativo"]),
+        "📝 Pré-cadastro": len(base[base["Situacao"] == "Pré-cadastro"]),
+        "🏖️ Férias": len(base[base["Situacao"] == "Férias"]),
+        "🚪 Abandono": len(base[base["Situacao"] == "Abandono"]),
+        "⏹️ Término de Contrato": len(base[base["Situacao"] == "Término de Contrato"]),
+        "📉 Demitido S/JC": len(base[base["Situacao"] == "Demitido S/JC"]),
+        "📉 Demitido C/JC": len(base[base["Situacao"] == "Demitido C/JC"]),
+        "🙋 Pedido de Conta": len(base[base["Situacao"] == "Pedido de Conta"]),
+        "⚖️ Rescisão Indireta": len(base[base["Situacao"] == "Rescisão Indireta"]),
+        "🏥 Doença": len(base[base["Situacao"] == "Doença"]),
+        "🚑 Acidente": len(base[base["Situacao"] == "Acidente"]),
+        "🤰 Maternidade": len(base[base["Situacao"] == "Maternidade"])
+    }
+
+    cols = st.columns(3)
+    for i, (rotulo, qtd) in enumerate(contagem.items()):
+        cols[i % 3].metric(rotulo, qtd)
+
+    if st.button("🔄 Atualizar Resumo"):
+        st.cache_data.clear()
+        st.rerun()
+
+    st.markdown("---")
+    st.subheader("🔍 Conferência Rápida - Apenas Férias")
+    tab_fer = base[base["Situacao"] == "Férias"][["Matricula","Nome","Loja","DataFeriasInicio","DataRetornoFerias"]]
+    if tab_fer.empty:
+        st.warning("⚠️ Nenhum funcionário com situação marcada como 'Férias' no momento.")
+        st.info("💡 Dica: Se a data de férias estiver preenchida mas a situação não for 'Férias', edite o cadastro e confirme se a situação está selecionada corretamente — os dados não são apagados!")
+    else:
+        st.dataframe(tab_fer, use_container_width=True, hide_index=True)
+
+# ================ ABA 3 - PRAZOS E FÉRIAS ================
+with aba3:
+    hoje = datetime.now()
+    st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
+    tabela_exp = []
+    for _, func in dados["Base_Dados"].iterrows():
+        if func["Situacao"] not in ["Ativo","Pré-cadastro"]: continue
+        try:
+            dt_adm = datetime.strptime(str(func["Admissao"]).strip(), "%d/%m/%Y")
+            dias = (hoje - dt_adm).days
+            for p in [30,45,60,90]:
+                if 0 <= p - dias <=10:
+                    tabela_exp.append([func["Matricula"], func["Nome"], func["Loja"], f"{p} dias", f"Faltam {p-dias} dias"])
+                    break
+        except: pass
+    st.dataframe(pd.DataFrame(tabela_exp, columns=["Matrícula","Nome","Loja","Prazo","Dias Restantes"]), use_container_width=True, hide_index=True)
+
+    st.subheader("🗓️ FÉRIAS - POR MÊS DE ADMISSÃO")
+    filtro_loja = st.selectbox("Loja", ["Todas"] + lista_lojas(), key="fl")
+    filtro_mes = st.selectbox("Mês", MESES, key="fm")
+    tabela_fer = []
+    for _, f in dados["Base_Dados"].iterrows():
+        if f["Situacao"] not in ["Ativo","Pré-cadastro"]: continue
+        if filtro_loja != "Todas" and f["Loja"] != filtro_loja: continue
+        try:
+            dt = datetime.strptime(str(f["Admissao"]).strip(), "%d/%m/%Y")
+            if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
+            meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
+            if 23 <= meses < 24:
+                tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m"])
+        except: pass
+    st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo"]), use_container_width=True, hide_index=True)
+
+# ================ ABA 4 - HISTÓRICO ================
+with aba4:
+    st.subheader("📝 HISTÓRICO")
+    st.dataframe(dados["Historico"][["DataEvento","TipoEvento","Matricula","Nome","Situacao","Detalhes"]], use_container_width=True, hide_index=True)
+    with st.form("add_ev"):
+        t,d,det = st.columns([1,1,3])
+        te = t.selectbox("Tipo", ["Reunião","Atestado","Advertência","Elogio","Outros"])
+        de = d.text_input("Data", value=datetime.now().strftime("%d/%m/%Y"))
+        dee = det.text_input("Detalhes")
+        if st.form_submit_button("✅ ADICIONAR") and mat_sel.strip():
+            rf = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_sel.strip()]
+            if not rf.empty:
+                nr = {"DataEvento":de,"TipoEvento":te,"Detalhes":dee}
+                nr.update(rf.iloc[0].to_dict())
+                ih = dados["Historico"].index[dados["Historico"]["Matricula"] == mat_sel.strip()].tolist()
+                if ih: dados["Historico"].iloc[ih[0]] = nr
+                else: dados["Historico"] = pd.concat([dados["Historico"], pd.DataFrame([nr])], ignore_index=True)
+                salvar_dados(dados)
+                st.success("Adicionado!")
+                st.rerun()
+
+# ================ ABA 5 - RELATÓRIOS ================
+with aba5:
+    st.subheader("📄 RELATÓRIOS")
+    rel = st.selectbox("Escolha", ["Prazos Experiência","Ativos","Pré-cadastro","Férias","Afastados","Avisos","Histórico","Individual"])
+    if rel == "Individual":
+        mr = st.text_input("Matrícula")
+        if mr.strip():
+            fd = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mr.strip()]
+            fh = dados["Historico"][dados["Historico"]["Matricula"] == mr.strip()]
+            if fd.empty: st.error("Não encontrado")
+            elif st.button("GERAR"):
+                with pd.ExcelWriter(f"Rel_{mr}_{fd.iloc[0]['Nome'].replace(' ','_')}.xlsx") as arq:
+                    fd.to_excel(arq, index=False, sheet_name="Dados")
+                    fh.to_excel(arq, index=False, sheet_name="Histórico") if not fh.empty else pd.DataFrame([{"Aviso":"Sem histórico"}]).to_excel(arq, index=False, sheet_name="Histórico")
+                with open(f"Rel_{mr}_{fd.iloc[0]['Nome'].replace(' ','_')}.xlsx","rb") as f:
+                    st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{mr}.xlsx")
+    elif st.button("GERAR E BAIXAR"):
+        if rel == "Prazos Experiência": df = pd.DataFrame(tabela_exp, columns=["Matrícula","Nome","Loja","Prazo","Dias Restantes"])
+        elif rel == "Ativos": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Ativo"]
+        elif rel == "Pré-cadastro": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Pré-cadastro"]
+        elif rel == "Férias": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Férias"]
+        elif rel == "Afastados": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"].isin(["Doença","Acidente","Maternidade"])]
+        elif rel == "Avisos": df = dados["Base_Dados"][dados["Base_Dados"]["DataAvisoPrevio"].str.strip()!=""]
+        else: df = dados["Historico"]
+        with pd.ExcelWriter("rel_temp.xlsx") as arq: df.to_excel(arq, index=False, sheet_name=rel)
+        with open("rel_temp.xlsx","rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{rel.replace(' ','_')}.xlsx")
+        os.remove("rel_temp.xlsx")
+
+# ================ ABA 6 - DOCUMENTOS DAS LOJAS ================
+with aba6:
+    st.subheader("📎 DOCUMENTOS DAS LOJAS")
+    ls = lista_lojas()
+    l,m,a = st.columns(3)
+    sl = l.selectbox("Loja", ls)
+    sm = m.selectbox("Mês", MESES)
+    sa = a.selectbox("Ano", ANOS, index=ANOS.index(str(datetime.now().year)))
+    st.markdown("---")
+    arquivos = st.file_uploader("Anexar arquivos", type=["pdf","doc","docx","xls","xlsx","jpg","png"], accept_multiple_files=True)
+    resp = st.text_input("Responsável")
+    if arquivos and st.button("SALVAR TODOS", type="primary"):
+        salvos = 0
+        for arq in arquivos:
+            nome = f"{sl}_{sm}_{sa}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{arq.name}"
+            cam = os.path.join(PASTA_DOCS, nome)
+            with open(cam,"wb") as f: f.write(arq.read())
+            dados["Docs_Lojas"] = pd.concat([dados["Docs_Lojas"], pd.DataFrame([{
+                "Loja":sl,"Mes":sm,"Ano":sa,"NomeArquivo":arq.name,"Caminho":cam,
+                "DataAnexado":datetime.now().strftime("%d/%m/%Y %H:%M"),"Responsavel":resp
+            }])], ignore_index=True)
+            salvos += 1
+        salvar_dados(dados)
+        st.success(f"✅ {salvos} arquivo(s) salvo(s)!")
+        st.rerun()
+    st.markdown("---")
+    filt = dados["Docs_Lojas"].copy()
+    if sl != "Todas": filt = filt[filt["Loja"]==sl]
+    if sm != "Todos": filt = filt[filt["Mes"]==sm]
+    filt = filt[filt["Ano"]==sa]
+    if filt.empty: st.info("Nenhum documento.")
+    else:
+        for i,d in filt.iterrows():
+            with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
+                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                if st.button("🗑️ EXCLUIR", key=f"x{i}"):
+                    os.remove(d["Caminho"])
+                    dados["Docs_Lojas"].drop(i,inplace=True)
+                    salvar_dados(dados)
+                    st.rerun()
+
+# ================ ABA 7 - LOJAS E CARGOS ================
+with aba7:
+    st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
+    dados = carregar_dados()
+    col1, col2 = st.columns(2)
+    with col1:
+        nova_loja = st.text_input("Nova Loja")
+        if st.button("➕ ADICIONAR LOJA", type="primary") and nova_loja.strip():
+            if not dados["Auxiliares"]["Loja"].str.strip().eq(nova_loja.strip()).any():
+                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": nova_loja.strip(), "Cargo": ""}])], ignore_index=True)
+                salvar_dados(dados)
+                st.success("✅ Loja cadastrada!")
+                st.rerun()
+            else: st.warning("⚠️ Já existe!")
+    with col2:
+        novo_cargo = st.text_input("Novo Cargo")
+        if st.button("➕ ADICIONAR CARGO", type="primary") and novo_cargo.strip():
+            if not dados["Auxiliares"]["Cargo"].str.strip().eq(novo_cargo.strip()).any():
+                dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": "", "Cargo": novo_cargo.strip()}])], ignore_index=True)
+                salvar_dados(dados)
+                st.success("✅ Cargo cadastrado!")
+                st.rerun()
+            else: st.warning("⚠️ Já existe!")
+
+
+# ================ ABA 8 - CONTROLE DE DIÁRIAS ================
 with aba8:
     st.subheader("💰 CONTROLE DE DIÁRIAS")
     st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária, não permitido conta de terceiros.")
 
+    # Upload da planilha de diárias
     st.markdown("---")
     arq_diarias = st.file_uploader("📤 Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
     if arq_diarias is not None:
@@ -292,158 +834,223 @@ with aba8:
     if df_diarias.empty:
         st.warning("⚠️ Nenhuma diária cadastrada. Faça upload da planilha acima.")
 
-    # RESUMO
+    # ---------- CARDS DE RESUMO ----------
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("👥 Total de Diárias", len(df_diarias))
+    with c1:
+        st.metric("👥 Total de Diárias", len(df_diarias))
     with c2:
-        try: vtotal = df_diarias["TOTAL"].replace("", "0").astype(float).sum()
-        except: vtotal = 0
+        try:
+            vtotal = df_diarias["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vtotal = 0
         st.metric("💰 Valor Total", f"R$ {vtotal:,.2f}")
     with c3:
-        try: vp = df_diarias[df_diarias["situação"] == "PENDENTE"]["TOTAL"].replace("", "0").astype(float).sum()
-        except: vp = 0
+        try:
+            vp = df_diarias[df_diarias["SITUACAO"] == "PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vp = 0
         st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
     with c4:
-        try: vpg = df_diarias[df_diarias["situação"] == "PAGO"]["TOTAL"].replace("", "0").astype(float).sum()
-        except: vpg = 0
+        try:
+            vpg = df_diarias[df_diarias["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vpg = 0
         st.metric("✅ Pago", f"R$ {vpg:,.2f}")
     st.markdown("---")
 
-    # FILTROS
-    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    # ---------- FILTROS ----------
+    col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
     with col_p1: filtro_loja_d = st.selectbox("Loja", ["Todas"] + lista_lojas(), key="filtro_loja_d")
     with col_p2: filtro_mes_d = st.selectbox("Mês", MESES, key="filtro_mes_d")
     with col_p3: filtro_sem_d = st.selectbox("Semana", SEMANAS, key="filtro_sem_d")
-    with col_p4: filtro_sit_d = st.selectbox("Situação", SITUACOES_DIARIA, key="filtro_sit_d")
-    busca_d = st.text_input("🔍 Pesquisar por Nome ou CPF")
+    with col_p4: filtro_ano_d = st.selectbox("Ano", ANOS, index=ANOS.index(str(datetime.now().year)), key="filtro_ano_d")
+    with col_p5: filtro_sit_d = st.selectbox("Situação", SITUACOES_DIARIA, key="filtro_sit_d")
+    busca_d = st.text_input("🔍 Pesquisar por Nome ou CPF", placeholder="Digite para buscar...")
 
     df_filtrado = df_diarias.copy()
-    if filtro_loja_d != "Todas": df_filtrado = df_filtrado[df_filtrado["LOJA"] == filtro_loja_d]
-    if filtro_mes_d != "Todos": df_filtrado = df_filtrado[df_filtrado["Mês"] == filtro_mes_d]
-    if filtro_sem_d != "Todas": df_filtrado = df_filtrado[df_filtrado["semana"] == filtro_sem_d]
-    if filtro_sit_d != "Todas": df_filtrado = df_filtrado[df_filtrado["situação"] == filtro_sit_d]
+    if filtro_loja_d != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["LOJA"] == filtro_loja_d]
+    if filtro_mes_d != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["MES"] == filtro_mes_d]
+    if filtro_sem_d != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["SEMANA"] == filtro_sem_d]
+    if filtro_ano_d != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["ANO"] == filtro_ano_d]
+    if filtro_sit_d != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["SITUACAO"] == filtro_sit_d]
     if busca_d.strip():
         df_filtrado = df_filtrado[
-            df_filtrado["NOME COMPLETO DO COLABORADOR"].str.contains(busca_d, case=False, na=False) |
-            df_filtrado["CPF"].str.contains(busca_d, na=False)
+            df_filtrado["NOME COLABORADOR"].str.contains(busca_d, case=False, na=False) |
+            df_filtrado["CPF"].str.contains(busca_d, case=False, na=False)
         ]
 
     st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
-    # NOVA DIÁRIA - CAMPOS EXATOS DA PLANILHA
+    # ---------- NOVA DIÁRIA ----------
     st.markdown("---")
     st.subheader("➕ CADASTRAR NOVA DIÁRIA")
     with st.form("nova_diaria", clear_on_submit=True):
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
-            loja_d = st.selectbox("LOJA *", lista_lojas())
-            nome_d = st.text_input("NOME COMPLETO DO COLABORADOR *")
-            cpf_d = st.text_input("CPF *")
-            data_exec = st.text_input("DATA DA EXECUÇÃO * (ex: 06/07, 07/07/2026)")
-            qtde_d = st.number_input("QUANT. *", min_value=1, value=1)
-            valor_uni_d = st.number_input("VALOR UNI. *", min_value=0.0, format="%.2f")
+            loja_d = st.selectbox("Loja *", lista_lojas())
+            mes_d = st.selectbox("Mês *", MESES[1:])
+            semana_d = st.selectbox("Semana *", SEMANAS[1:])
+            ano_d = st.selectbox("Ano *", ANOS, index=ANOS.index(str(datetime.now().year)))
+            cargo_d = st.text_input("Cargo")
         with c2:
-            dados_banc_d = st.text_input("DADOS BANCÁRIOS * (Pix, Ag/Cc, etc)")
-            subst_d = st.selectbox("SUBSTITUIÇÃO", ["Não", "Sim"])
-            motivo_d = st.text_input("MOTIVO DA DIARIA *")
-            data_pag_d = st.text_input("DATA DE PAGAM. (ex: 7/13/26)")
-            situacao_d = st.selectbox("situação", ["PENDENTE", "PAGO"])
-            mes_d = st.selectbox("Mês", MESES[1:])
-            semana_d = st.selectbox("semana", SEMANAS[1:])
-
+            nome_d = st.text_input("Nome do Colaborador *")
+            cpf_d = st.text_input("CPF *")
+            pix_d = st.text_input("Chave PIX")
+            banco_d = st.text_input("Banco")
+            agencia_d = st.text_input("Agência")
+        with c3:
+            conta_d = st.text_input("Conta")
+            motivo_d = st.text_input("Motivo *")
+            qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1)
+            valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f")
+            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO"])
         submitted = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary")
         if submitted:
             erros = []
             if not loja_d.strip(): erros.append("Loja")
-            if not nome_d.strip(): erros.append("Nome")
+            if not mes_d.strip(): erros.append("Mês")
+            if not semana_d.strip(): erros.append("Semana")
+            if not ano_d.strip(): erros.append("Ano")
+            if not nome_d.strip(): erros.append("Nome do Colaborador")
             if not cpf_d.strip(): erros.append("CPF")
-            if not data_exec.strip(): erros.append("Data da Execução")
-            if not dados_banc_d.strip(): erros.append("Dados Bancários")
             if not motivo_d.strip(): erros.append("Motivo")
-            if qtde_d <=0: erros.append("Quantidade > 0")
-            if valor_uni_d <=0: erros.append("Valor Unitário > 0")
-            
+            if qtde_d <= 0: erros.append("Qtde deve ser > 0")
+            if valor_d <= 0: erros.append("Valor deve ser > 0")
             if erros:
                 st.error("❌ Campos obrigatórios: " + ", ".join(erros))
             else:
-                total_d = qtde_d * valor_uni_d
+                valor_total = qtde_d * valor_d
                 nova_linha = {
                     "LOJA": loja_d,
-                    "NOME COMPLETO DO COLABORADOR": nome_d.strip().upper(),
+                    "MES": mes_d,
+                    "SEMANA": semana_d,
+                    "ANO": ano_d,
+                    "NOME COLABORADOR": nome_d.strip().upper(),
                     "CPF": cpf_d.strip(),
-                    "DATA DA EXECUÇÃO": data_exec.strip(),
-                    "QUANT.": str(qtde_d),
-                    "VALOR UNI.": f"{valor_uni_d:.2f}",
-                    "TOTAL": f"{total_d:.2f}",
-                    "DADOS BANCÁRIOS": dados_banc_d.strip(),
-                    "SUBSTITUIÇÃO": subst_d,
-                    "MOTIVO DA DIARIA": motivo_d.strip().upper(),
-                    "DATA DE PAGAM.": data_pag_d.strip(),
-                    "situação": situacao_d,
-                    "Mês": mes_d,
-                    "semana": semana_d
+                    "CARGO": cargo_d.strip().upper(),
+                    "CHAVE PIX": pix_d.strip(),
+                    "BANCO": banco_d.strip().upper(),
+                    "AGENCIA": agencia_d.strip(),
+                    "CONTA": conta_d.strip(),
+                    "MOTIVO": motivo_d.strip().upper(),
+                    "QTDE DE DIARIAS": str(qtde_d),
+                    "VALOR UNITARIO": f"{valor_d:.2f}",
+                    "VALOR TOTAL": f"{valor_total:.2f}",
+                    "SITUACAO": situacao_d,
+                    "DATA CADASTRO": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "COMPROVANTE": ""
                 }
                 df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
                 salvar_diarias(df_diarias)
                 st.success("✅ Diária cadastrada com sucesso!")
                 st.rerun()
 
-    # EDITAR / EXCLUIR
+    # ---------- EDITAR / EXCLUIR / COMPROVANTE ----------
     st.markdown("---")
-    st.subheader("✏️ EDITAR / EXCLUIR")
-    if not df_diarias.empty:
-        idx_edit = st.selectbox("Selecione a diária", df_diarias.index,
-            format_func=lambda i: f"[{i}] {df_diarias.loc[i,'NOME COMPLETO DO COLABORADOR']} | {df_diarias.loc[i,'LOJA']} | R$ {df_diarias.loc[i,'TOTAL']}")
-        
-        with st.form("editar_diaria"):
+    st.subheader("✏️ EDITAR / EXCLUIR / ANEXAR COMPROVANTE")
+    if df_diarias.empty:
+        st.info("Nenhuma diária cadastrada.")
+    else:
+        idx_edit = st.selectbox("Selecione a diária", df_diarias.index, format_func=lambda i: f"[{i}] {df_diarias.loc[i, 'NOME COLABORADOR']} | {df_diarias.loc[i, 'LOJA']} | {df_diarias.loc[i, 'MES']}/{df_diarias.loc[i, 'ANO']} | R$ {df_diarias.loc[i, 'VALOR TOTAL']}")
+        if idx_edit is not None:
             linha = df_diarias.loc[idx_edit]
-            c1, c2 = st.columns(2)
-            with c1:
-                e_loja = st.selectbox("LOJA", lista_lojas(), index=lista_lojas().index(linha["LOJA"]) if linha["LOJA"] in lista_lojas() else 0)
-                e_nome = st.text_input("NOME COMPLETO DO COLABORADOR", linha["NOME COMPLETO DO COLABORADOR"])
-                e_cpf = st.text_input("CPF", linha["CPF"])
-                e_data_exec = st.text_input("DATA DA EXECUÇÃO", linha["DATA DA EXECUÇÃO"])
-                e_qtde = st.number_input("QUANT.", min_value=1, value=int(linha["QUANT."]) if str(linha["QUANT."]).isdigit() else 1)
-                e_valor = st.number_input("VALOR UNI.", min_value=0.0, value=float(str(linha["VALOR UNI."]).replace(",",".")), format="%.2f")
-            with c2:
-                e_dados_banc = st.text_input("DADOS BANCÁRIOS", linha["DADOS BANCÁRIOS"])
-                e_subst = st.selectbox("SUBSTITUIÇÃO", ["Não","Sim"], index=["Não","Sim"].index(linha["SUBSTITUIÇÃO"]) if linha["SUBSTITUIÇÃO"] in ["Não","Sim"] else 0)
-                e_motivo = st.text_input("MOTIVO DA DIARIA", linha["MOTIVO DA DIARIA"])
-                e_data_pag = st.text_input("DATA DE PAGAM.", linha["DATA DE PAGAM."])
-                e_sit = st.selectbox("situação", ["PENDENTE","PAGO"], index=0 if linha["situação"]=="PENDENTE" else 1)
-                e_mes = st.selectbox("Mês", MESES[1:], index=MESES[1:].index(linha["Mês"]) if linha["Mês"] in MESES[1:] else 0)
-                e_sem = st.selectbox("semana", SEMANAS[1:], index=SEMANAS[1:].index(linha["semana"]) if linha["semana"] in SEMANAS[1:] else 0)
+            with st.form("editar_diaria"):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    e_loja = st.selectbox("Loja", lista_lojas(), index=lista_lojas().index(linha["LOJA"]) if linha["LOJA"] in lista_lojas() else 0)
+                    e_mes = st.selectbox("Mês", MESES[1:], index=MESES[1:].index(linha["MES"]) if linha["MES"] in MESES[1:] else 0)
+                    e_sem = st.selectbox("Semana", SEMANAS[1:], index=SEMANAS[1:].index(linha["SEMANA"]) if linha["SEMANA"] in SEMANAS[1:] else 0)
+                    e_ano = st.selectbox("Ano", ANOS, index=ANOS.index(linha["ANO"]) if linha["ANO"] in ANOS else 0)
+                    e_cargo = st.text_input("Cargo", value=linha["CARGO"])
+                with c2:
+                    e_nome = st.text_input("Nome", value=linha["NOME COLABORADOR"])
+                    e_cpf = st.text_input("CPF", value=linha["CPF"])
+                    e_pix = st.text_input("PIX", value=linha["CHAVE PIX"])
+                    e_banco = st.text_input("Banco", value=linha["BANCO"])
+                    e_agencia = st.text_input("Agência", value=linha["AGENCIA"])
+                with c3:
+                    e_conta = st.text_input("Conta", value=linha["CONTA"])
+                    e_motivo = st.text_input("Motivo", value=linha["MOTIVO"])
+                    e_qtde = st.number_input("Qtde", min_value=1, max_value=30, value=int(linha["QTDE DE DIARIAS"]) if str(linha["QTDE DE DIARIAS"]).isdigit() else 1)
+                    e_valor = st.number_input("Valor Unit.", min_value=0.0, value=float(linha["VALOR UNITARIO"].replace(",", ".")) if str(linha["VALOR UNITARIO"]).replace(".", "", 1).replace(",", "", 1).isdigit() else 0.0, format="%.2f")
+                    e_sit = st.selectbox("Situação", ["PENDENTE", "PAGO"], index=0 if linha["SITUACAO"] == "PENDENTE" else 1)
+                col_salvar, col_excluir = st.columns(2)
+                with col_salvar:
+                    salvar_edit = st.form_submit_button("💾 SALVAR ALTERAÇÕES", type="primary")
+                with col_excluir:
+                    excluir_edit = st.form_submit_button("🗑️ EXCLUIR")
+                if salvar_edit:
+                    e_total = e_qtde * e_valor
+                    df_diarias.at[idx_edit, "LOJA"] = e_loja
+                    df_diarias.at[idx_edit, "MES"] = e_mes
+                    df_diarias.at[idx_edit, "SEMANA"] = e_sem
+                    df_diarias.at[idx_edit, "ANO"] = e_ano
+                    df_diarias.at[idx_edit, "NOME COLABORADOR"] = e_nome.strip().upper()
+                    df_diarias.at[idx_edit, "CPF"] = e_cpf.strip()
+                    df_diarias.at[idx_edit, "CARGO"] = e_cargo.strip().upper()
+                    df_diarias.at[idx_edit, "CHAVE PIX"] = e_pix.strip()
+                    df_diarias.at[idx_edit, "BANCO"] = e_banco.strip().upper()
+                    df_diarias.at[idx_edit, "AGENCIA"] = e_agencia.strip()
+                    df_diarias.at[idx_edit, "CONTA"] = e_conta.strip()
+                    df_diarias.at[idx_edit, "MOTIVO"] = e_motivo.strip().upper()
+                    df_diarias.at[idx_edit, "QTDE DE DIARIAS"] = str(e_qtde)
+                    df_diarias.at[idx_edit, "VALOR UNITARIO"] = f"{e_valor:.2f}"
+                    df_diarias.at[idx_edit, "VALOR TOTAL"] = f"{e_total:.2f}"
+                    df_diarias.at[idx_edit, "SITUACAO"] = e_sit
+                    salvar_diarias(df_diarias)
+                    st.success("✅ Alterações salvas!")
+                    st.rerun()
+                if excluir_edit:
+                    comp = str(df_diarias.at[idx_edit, "COMPROVANTE"])
+                    if comp and os.path.exists(comp):
+                        os.remove(comp)
+                    df_diarias.drop(index=idx_edit, inplace=True)
+                    df_diarias.reset_index(drop=True, inplace=True)
+                    salvar_diarias(df_diarias)
+                    st.success("🗑️ Diária excluída!")
+                    st.rerun()
 
-            col_salvar, col_excluir = st.columns(2)
-            if col_salvar.form_submit_button("💾 SALVAR", type="primary"):
-                df_diarias.loc[idx_edit] = {
-                    "LOJA": e_loja, "NOME COMPLETO DO COLABORADOR": e_nome.strip().upper(),
-                    "CPF": e_cpf.strip(), "DATA DA EXECUÇÃO": e_data_exec.strip(),
-                    "QUANT.": str(e_qtde), "VALOR UNI.": f"{e_valor:.2f}",
-                    "TOTAL": f"{e_qtde * e_valor:.2f}", "DADOS BANCÁRIOS": e_dados_banc.strip(),
-                    "SUBSTITUIÇÃO": e_subst, "MOTIVO DA DIARIA": e_motivo.strip().upper(),
-                    "DATA DE PAGAM.": e_data_pag.strip(), "situação": e_sit,
-                    "Mês": e_mes, "semana": e_sem
-                }
+            # Upload comprovante
+            st.markdown("---")
+            st.subheader("📎 COMPROVANTE DE PAGAMENTO")
+            comp_atual = str(df_diarias.at[idx_edit, "COMPROVANTE"])
+            if comp_atual and os.path.exists(comp_atual):
+                st.success(f"✅ Comprovante anexado: {os.path.basename(comp_atual)}")
+                with open(comp_atual, "rb") as fc:
+                    st.download_button("⬇️ Baixar Comprovante", fc, file_name=os.path.basename(comp_atual), key=f"dl_comp_{idx_edit}")
+                if st.button("🗑️ Remover Comprovante", key=f"rm_comp_{idx_edit}"):
+                    os.remove(comp_atual)
+                    df_diarias.at[idx_edit, "COMPROVANTE"] = ""
+                    salvar_diarias(df_diarias)
+                    st.success("Comprovante removido!")
+                    st.rerun()
+            else:
+                st.info("Nenhum comprovante anexado.")
+            arq_comp = st.file_uploader("Anexar novo comprovante (PDF, JPG, PNG)", type=["pdf", "jpg", "png"], key=f"up_comp_{idx_edit}")
+            if arq_comp and st.button("📤 ENVIAR COMPROVANTE", type="primary", key=f"btn_comp_{idx_edit}"):
+                ext = os.path.splitext(arq_comp.name)[1]
+                nome_comp = f"{linha['CPF']}_{linha['MES']}_{linha['ANO']}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+                cam_comp = os.path.join(PASTA_COMPROVANTES, nome_comp)
+                with open(cam_comp, "wb") as f: f.write(arq_comp.read())
+                df_diarias.at[idx_edit, "COMPROVANTE"] = cam_comp
                 salvar_diarias(df_diarias)
-                st.success("✅ Atualizado!")
-                st.rerun()
-            if col_excluir.form_submit_button("🗑️ EXCLUIR"):
-                df_diarias.drop(idx_edit, inplace=True)
-                df_diarias.reset_index(drop=True, inplace=True)
-                salvar_diarias(df_diarias)
-                st.success("🗑️ Excluído!")
+                st.success("✅ Comprovante anexado!")
                 st.rerun()
 
-    # EXPORTAR - ESTRUTURA EXATA
+    # ---------- EXPORTAR ----------
     st.markdown("---")
-    st.subheader("📤 EXPORTAR PLANILHA ORIGINAL")
+    st.subheader("📤 EXPORTAR PARA EXCEL")
     if not df_filtrado.empty:
-        nome_arq = f"Diarias_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx"
+        nome_arq = f"Diarias_{filtro_loja_d}_{filtro_mes_d}_{filtro_ano_d}.xlsx".replace("/", "-").replace(" ", "_")
         exportar_diarias_formatado(df_filtrado, nome_arq)
         with open(nome_arq, "rb") as f:
             st.download_button("⬇️ BAIXAR EXCEL", f, file_name=nome_arq)
         os.remove(nome_arq)
     else:
-        st.info("Filtre os dados primeiro.")
+        st.info("Filtre os dados para exportar.")
