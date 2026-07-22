@@ -139,6 +139,8 @@ def calcular_e_atualizar(form):
         form["situacao"] = "Rescisão Indireta"
     elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
+     elif form.get("dt_termino de Contrato") and form.get("dt_termino de tontrato").strip():
+        form["situacao"] = "Termino de Contrato
 
     return form
 
