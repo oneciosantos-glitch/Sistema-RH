@@ -77,17 +77,58 @@ def carregar_dados():
 
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_diarias():
+    cols_padrao = [
+        "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QTDE DE DIARIAS","VALOR UNITARIO","VALOR TOTAL",
+        "CHAVE PIX","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
+        "CARGO","BANCO","AGENCIA","CONTA","DATA CADASTRO","COMPROVANTE"
+    ]
     try:
-        df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
-    except:
-        df = pd.DataFrame(columns=[
-            "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QUANTIDADE","VALOR UNITARIO","TOTAL",
-            "DADOS BANCARIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
-            "COMPROVANTE","CAMINHO_COMPROVANTE"
-        ])
-    for col in df.columns:
-        if col in ["NOME COLABORADOR", "CPF", "LOJA", "MOTIVO"]:
+        # Tenta ler com header na segunda linha (pula texto de instruções)
+        df = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
+        # Renomeia colunas da planilha do usuário para o padrão do app
+        rename_map = {
+            'NOME COMPLETO DO COLABORADOR': 'NOME COLABORADOR',
+            'QUANT.': 'QTDE DE DIARIAS',
+            'VALOR UNI.': 'VALOR UNITARIO',
+            'TOTAL': 'VALOR TOTAL',
+            'DADOS BANCÁRIOS': 'CHAVE PIX',
+            'MOTIVO DA DIARIA': 'MOTIVO',
+            'situação': 'SITUACAO',
+            'Mês': 'MES',
+            'semana': 'SEMANA',
+            'DATA DA EXECUÇÃO': 'DATA EXECUCAO',
+            'SUBSTITUIÇÃO': 'SUBSTITUICAO',
+            'DATA DE PAGAM.': 'DATA PAGAMENTO'
+        }
+        df = df.rename(columns=rename_map)
+    except Exception:
+        # Se falhar, tenta ler normalmente (já no formato do app)
+        try:
+            df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
+        except Exception:
+            df = pd.DataFrame(columns=cols_padrao)
+
+    # Garante que todas as colunas padrão existam
+    for col in cols_padrao:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Extrai ANO da DATA PAGAMENTO quando estiver vazio
+    for i in df.index:
+        if str(df.at[i, "ANO"]).strip() == "":
+            try:
+                dt = pd.to_datetime(str(df.at[i, "DATA PAGAMENTO"]).strip())
+                df.at[i, "ANO"] = str(dt.year)
+            except Exception:
+                df.at[i, "ANO"] = str(datetime.now().year)
+
+    # Limpa strings
+    for col in ["NOME COLABORADOR", "CPF", "LOJA", "MOTIVO", "SITUACAO", "MES", "SEMANA"]:
+        if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
+
+    # Garante ordem correta das colunas
+    df = df[[c for c in cols_padrao if c in df.columns]]
     return df
 
 def salvar_dados(dados):
@@ -673,7 +714,18 @@ with aba8:
     st.subheader("💰 CONTROLE DE DIÁRIAS")
     st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária, não permitido conta de terceiros.")
 
+    # Upload da planilha de diárias
+    st.markdown("---")
+    arq_diarias = st.file_uploader("📤 Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
+    if arq_diarias is not None:
+        with open(ARQUIVO_DIARIAS, "wb") as f:
+            f.write(arq_diarias.read())
+        st.success("✅ Planilha carregada com sucesso!")
+        st.rerun()
+
     df_diarias = carregar_diarias()
+    if df_diarias.empty:
+        st.warning("⚠️ Nenhuma diária cadastrada. Faça upload da planilha acima.")
 
     # ---------- CARDS DE RESUMO ----------
     st.markdown("---")
