@@ -220,7 +220,7 @@ with aba1:
             dias_corridos = (hoje - dt_adm).days
             for prazo in [30, 45, 60, 90]:
                 rest = prazo - dias_corridos
-                if rest > 0:
+                if rest < 0:
                     status = f"Faltam {rest} dias"
                 elif rest == 0:
                     status = "HOJE"
