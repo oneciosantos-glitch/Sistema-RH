@@ -571,7 +571,7 @@ with aba3:
         try:
             dt_adm = datetime.strptime(str(func["Admissao"]).strip(), "%d/%m/%Y")
             dias = (hoje - dt_adm).days
-            for p in [30,45,60,90]:
+            for p in [29,44,59,89]:
                 if 0 <= p - dias <=10:
                     tabela_exp.append([func["Matricula"], func["Nome"], func["Loja"], f"{p} dias", f"Faltam {p-dias} dias"])
                     break
