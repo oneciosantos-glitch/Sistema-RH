@@ -681,11 +681,22 @@ with aba8:
     
     busca_d = st.text_input("🔍 Pesquisar por Nome ou CPF", placeholder="Digite para buscar...")
 
-    df_diarias = carregar_diarias()
+       df_diarias = carregar_diarias()
     df_filtrado = df_diarias.copy()
 
-    if filtro_loja_d != "Todas": df_filtrado = df_filtrado[df_filtrado["LOJA"] == filtro_loja_d]
-    if filtro_mes_d != "Todos": df_filtrado = df_filtrado[df_filtrado["MES"] == filtro_mes_d]
-    if filtro_sem_d != "Todas": df_filtrado = df_filtrado[df_filtrado["SEMANA"] == filtro_sem_d]
-    if filtro_ano_d != "Todos": df_filtrado = df_filtrado[df_filtrado["ANO"] == filtro_ano_d]
-    if filtro_sit_d != "Todas": df_filtrado = df_filtrado[
+    if filtro_loja_d != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["LOJA"] == filtro_loja_d]
+    if filtro_mes_d != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["MES"] == filtro_mes_d]
+    if filtro_sem_d != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["SEMANA"] == filtro_sem_d]
+    if filtro_ano_d != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["ANO"] == filtro_ano_d]
+    if filtro_sit_d != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["SITUACAO"] == filtro_sit_d]
+    
+    if busca_d.strip():
+        df_filtrado = df_filtrado[
+            df_filtrado["NOME COLABORADOR"].str.contains(busca_d, case=False, na=False) |
+            df_filtrado["CPF"].str.contains(busca_d, case=False, na=False)
+        ]
