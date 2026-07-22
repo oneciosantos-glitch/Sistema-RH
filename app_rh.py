@@ -1013,14 +1013,96 @@ with aba8:
                 st.success("✅ Comprovante anexado!")
                 st.rerun()
 
-    # ---------- EXPORTAR ----------
-    st.markdown("---")
-    st.subheader("📤 EXPORTAR PARA EXCEL")
-    if not df_filtrado.empty:
-        nome_arq = f"Diarias_{filtro_loja_d}_{filtro_mes_d}_{filtro_ano_d}.xlsx".replace("/", "-").replace(" ", "_")
-        exportar_diarias_formatado(df_filtrado, nome_arq)
-        with open(nome_arq, "rb") as f:
-            st.download_button("⬇️ BAIXAR EXCEL", f, file_name=nome_arq)
-        os.remove(nome_arq)
-    else:
-        st.info("Filtre os dados para exportar.")
+   def exportar_diarias_formatado(df, caminho):
+    """Exporta mantendo exatamente a formatação, estrutura e cores da planilha original enviada."""
+    # 1) Restaura nomes e ordem das colunas EXATAMENTE como na sua planilha
+    df_export = df.copy()
+    mapa_retorno = {
+        'NOME COLABORADOR': 'NOME COMPLETO DO COLABORADOR',
+        'QTDE DE DIARIAS': 'QUANT.',
+        'VALOR UNITARIO': 'VALOR UNI.',
+        'VALOR TOTAL': 'TOTAL',
+        'CHAVE PIX': 'DADOS BANCÁRIOS',
+        'MOTIVO': 'MOTIVO DA DIARIA',
+        'SITUACAO': 'situação',
+        'MES': 'Mês',
+        'SEMANA': 'semana',
+        'DATA EXECUCAO': 'DATA DA EXECUÇÃO',
+        'SUBSTITUICAO': 'SUBSTITUIÇÃO',
+        'DATA PAGAMENTO': 'DATA DE PAGAM.'
+    }
+    df_export = df_export.rename(columns=mapa_retorno)
+
+    colunas_originais = [
+        "LOJA", "NOME COMPLETO DO COLABORADOR", "CPF", "DATA DA EXECUÇÃO",
+        "QUANT.", "VALOR UNI.", "TOTAL", "DADOS BANCÁRIOS", "SUBSTITUIÇÃO",
+        "MOTIVO DA DIARIA", "DATA DE PAGAM.", "situação", "Mês", "semana"
+    ]
+    df_export = df_export.reindex(columns=colunas_originais)
+
+    # 2) Salva e abre para formatação
+    df_export.to_excel(caminho, index=False, engine="openpyxl")
+    wb = load_workbook(caminho)
+    ws = wb.active
+    ws.title = "Diárias"
+
+    # 3) Insere o texto de aviso na 1ª linha (IGUAL AO SEU)
+    ws.insert_rows(1)
+    ws.merge_cells("A1:N1")
+    ws["A1"] = "- Pagamento da diária será efetuado em até 5 dias úteis.\n- Os pagamentos de diárias só serão efetuados via transferência bancária.\n- Não é permitido pagamento em conta de terceiros."
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws["A1"].font = Font(size=10)
+
+    # 4) Estilos IGUAIS aos da sua planilha
+    cab_cor = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
+    cab_fonte = Font(bold=True, size=10)
+    cab_alinh = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    borda = Border(*[Side(style="thin") for _ in range(4)])
+    cor_pend = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    fon_pend = Font(color="9C0006")
+    cor_pag = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    fon_pag = Font(color="006100")
+
+    # 5) Largura das colunas IGUAL
+    larguras = {
+        "LOJA": 18, "NOME COMPLETO DO COLABORADOR": 26, "CPF": 17,
+        "DATA DA EXECUÇÃO": 23, "QUANT.": 9, "VALOR UNI.": 11,
+        "TOTAL": 11, "DADOS BANCÁRIOS": 24, "SUBSTITUIÇÃO": 13,
+        "MOTIVO DA DIARIA": 22, "DATA DE PAGAM.": 15, "situação": 13,
+        "Mês": 7, "semana": 13
+    }
+    for col in ws.columns:
+        col_letra = col[0].column_letter
+        ws.column_dimensions[col_letra].width = larguras.get(col[0].value, 16)
+
+    # 6) Formata cabeçalho (linha 2)
+    for cel in ws[2]:
+        cel.fill = cab_cor
+        cel.font = cab_fonte
+        cel.alignment = cab_alinh
+        cel.border = borda
+
+    # 7) Formata dados
+    for linha in ws.iter_rows(min_row=3):
+        for cel in linha:
+            cel.border = borda
+            cel.alignment = Alignment(horizontal="left", vertical="center")
+            # Cor da situação
+            if ws.cell(2, cel.column).value == "situação":
+                if cel.value == "PENDENTE":
+                    cel.fill = cor_pend
+                    cel.font = fon_pend
+                elif cel.value == "PAGO":
+                    cel.fill = cor_pag
+                    cel.font = fon_pag
+            # Formata valores em R$
+            if ws.cell(2, cel.column).value in ["VALOR UNI.", "TOTAL"]:
+                try:
+                    v = float(str(cel.value).replace(",", "."))
+                    cel.number_format = "R$ #,##0.00"
+                    cel.value = v
+                except:
+                    pass
+
+    wb.save(caminho)
+    wb.close()
