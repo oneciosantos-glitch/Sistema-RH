@@ -40,6 +40,7 @@ def carregar_dados():
             "DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
             "DataFeriasInicio","DiasFerias","DataRetornoFerias",
             "DataPedidoConta","DataRescisao","DataAbandono",
+            "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
             "CaminhoFoto"
@@ -50,6 +51,7 @@ def carregar_dados():
             "Salario","Situacao","DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
             "DataFeriasInicio","DiasFerias","DataRetornoFerias",
             "DataPedidoConta","DataRescisao","DataAbandono",
+            "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
         ],
@@ -98,7 +100,7 @@ def lista_cargos():
         [str(c).strip() for c in d["Base_Dados"]["Cargo"] if str(c).strip() != ""] +
         [str(c).strip() for c in d["Auxiliares"]["Cargo"] if str(c).strip() != ""]
     ))
-    return todas if todas else ["Sem Cargo"]
+    return todas se todas else ["Sem Cargo"]
 
 def calcular_e_atualizar(form):
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
@@ -119,7 +121,7 @@ def calcular_e_atualizar(form):
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]))).strftime("%d/%m/%Y")
-            if not any([form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(), form.get("dt_abandono","").strip()]):
+            if not any([form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(), form.get("dt_abandono","").strip(), form.get("dt_termino_cont","").strip()]):
                 form["situacao"] = "Férias"
         except:
             form["retorno_fer"] = ""
@@ -133,13 +135,15 @@ def calcular_e_atualizar(form):
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
-    if form.get("dt_pedido") and form.get("dt_pedido").strip():
+    # Define situação automaticamente quando preenche a data de término de contrato
+    if form.get("dt_termino_cont") and form.get("dt_termino_cont").strip():
+        form["situacao"] = "Término de Contrato"
+    elif form.get("dt_pedido") and form.get("dt_pedido").strip():
         form["situacao"] = "Pedido de Conta"
     elif form.get("dt_rescisao") and form.get("dt_rescisao").strip():
         form["situacao"] = "Rescisão Indireta"
     elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
-     
 
     return form
 
@@ -160,7 +164,7 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO COM FOTO ================
+# ================ ABA 1 - CADASTRO ================
 with aba1:
     dados = carregar_dados()
     
@@ -210,7 +214,7 @@ with aba1:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
             hoje = datetime.now()
             dias_corridos = (hoje - dt_adm).days
-            for prazo in [29, 44, 59, 89]:
+            for prazo in [30, 45, 60, 90]:
                 rest = prazo - dias_corridos
                 if rest > 0:
                     status = f"Faltam {rest} dias"
@@ -229,8 +233,8 @@ with aba1:
             "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
             "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
             "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
-            "dt_abandono": val_campo("DataAbandono"), "situacao": val_campo("Situacao"),
-            "caminho_foto": val_campo("CaminhoFoto")
+            "dt_abandono": val_campo("DataAbandono"), "dt_termino_cont": val_campo("DataTerminoContrato"),
+            "situacao": val_campo("Situacao"), "caminho_foto": val_campo("CaminhoFoto")
         }
         temp = calcular_e_atualizar(temp)
         term_aviso_val, term_lic_val, ret_fer_val, ret_af_val, situacao_val, caminho_foto_atual = temp["termino_aviso"], temp["termino_lic"], temp["retorno_fer"], temp["retorno_af"], temp["situacao"], temp["caminho_foto"]
@@ -242,7 +246,6 @@ with aba1:
         st.subheader("Dados Básicos")
         col_foto, col_dados = st.columns([1,3])
         
-        # 📸 ÁREA DA FOTO - INCLUSO NOVO
         with col_foto:
             st.markdown("**Foto do Funcionário**")
             if caminho_foto_atual and os.path.exists(caminho_foto_atual):
@@ -321,6 +324,8 @@ with aba1:
             dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
             dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
             dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
+            # 📌 NOVO CAMPO ADICIONADO AQUI
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
 
         btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
         if btn_salvar:
@@ -331,7 +336,7 @@ with aba1:
             if tipo_af != "Nenhum" and dt_af.strip():
                 situacao = tipo_af
 
-            # 📸 TRATAMENTO DA FOTO - NOVO
+            # Tratamento da foto
             caminho_final_foto = caminho_foto_atual
             if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
                 os.remove(caminho_final_foto)
@@ -353,7 +358,8 @@ with aba1:
                 "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
                 "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
                 "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af,
-                "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband
+                "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
+                "dt_termino_cont": dt_termino_cont
             })
             registro_final = {
                 "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
@@ -365,6 +371,7 @@ with aba1:
                 "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
                 "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
                 "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
+                "DataTerminoContrato": dados_form["dt_termino_cont"],
                 "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
                 "DataTerminoLicenca": dados_form["termino_lic"],
                 "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
@@ -442,14 +449,13 @@ with aba1:
     else:
         st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ ABA 2 - PAINEL COMPLETO E ATUALIZÁVEL ================
+# ================ ABA 2 - PAINEL ================
 with aba2:
     st.subheader("📊 RESUMO GERAL")
     dados_painel = carregar_dados()
     base = dados_painel["Base_Dados"].copy()
     base["Situacao"] = base["Situacao"].fillna("").astype(str).str.strip()
 
-    # ✅ TODAS AS SITUAÇÕES SOLICITADAS - CONTAGEM AUTOMÁTICA
     contagem = {
         "👷 Ativo": len(base[base["Situacao"] == "Ativo"]),
         "📝 Pré-cadastro": len(base[base["Situacao"] == "Pré-cadastro"]),
@@ -465,7 +471,6 @@ with aba2:
         "🤰 Maternidade": len(base[base["Situacao"] == "Maternidade"])
     }
 
-    # Exibe em 3 colunas organizadas
     cols = st.columns(3)
     for i, (rotulo, qtd) in enumerate(contagem.items()):
         cols[i % 3].metric(rotulo, qtd)
