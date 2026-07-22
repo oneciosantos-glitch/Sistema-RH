@@ -666,7 +666,7 @@ with aba7:
                 st.rerun()
             else: st.warning("⚠️ Já existe!")
 
-# ================ ABA 8 - CONTROLE DE DIÁRIAS ================
+# ================ ABA 8 - CONTROLE DE DIÁRIAS (COMPLETA) ================
 with aba8:
     st.subheader("💰 CONTROLE DE DIÁRIAS")
     st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária, não permitido conta de terceiros.")
@@ -705,6 +705,4 @@ with aba8:
     # Selecionar para editar
     indice_sel = st.text_input("✏️ Digite o ÍNDICE da linha para editar/excluir", placeholder="Número da linha na tabela")
     reg_d = pd.DataFrame()
-    if indice_sel.strip() and indice_sel.isdigit():
-        idx = int(indice_sel)
-        if 0 <= idx < len(df_diarias):
+    if indice_sel.strip() and indice_sel.isdigit
