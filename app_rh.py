@@ -1013,102 +1013,14 @@ with aba8:
                 st.success("✅ Comprovante anexado!")
                 st.rerun()
 
-    def exportar_diarias_formatado(df, caminho):
-    """Exporta mantendo exatamente a formatação, estrutura e cores da planilha original enviada."""
-    # Primeiro restaura os nomes originais das colunas exatamente como na planilha enviada
-    df_export = df.copy()
-    reverse_rename = {
-        'NOME COLABORADOR': 'NOME COMPLETO DO COLABORADOR',
-        'QTDE DE DIARIAS': 'QUANT.',
-        'VALOR UNITARIO': 'VALOR UNI.',
-        'VALOR TOTAL': 'TOTAL',
-        'CHAVE PIX': 'DADOS BANCÁRIOS',
-        'MOTIVO': 'MOTIVO DA DIARIA',
-        'SITUACAO': 'situação',
-        'MES': 'Mês',
-        'SEMANA': 'semana',
-        'DATA EXECUCAO': 'DATA DA EXECUÇÃO',
-        'SUBSTITUICAO': 'SUBSTITUIÇÃO',
-        'DATA PAGAMENTO': 'DATA DE PAGAM.'
-    }
-    df_export = df_export.rename(columns=reverse_rename)
-    
-    # Reordena as colunas na ORDEM EXATA da planilha original
-    colunas_originais = [
-        "LOJA", "NOME COMPLETO DO COLABORADOR", "CPF", "DATA DA EXECUÇÃO",
-        "QUANT.", "VALOR UNI.", "TOTAL", "DADOS BANCÁRIOS", "SUBSTITUIÇÃO",
-        "MOTIVO DA DIARIA", "DATA DE PAGAM.", "situação", "Mês", "semana"
-    ]
-    # Mantém apenas as colunas que existem na original, na ordem certa
-    df_export = df_export[[c for c in colunas_originais if c in df_export.columns]]
-
-    # Salva com formatação IDÊNTICA à original
-    df_export.to_excel(caminho, index=False, engine="openpyxl")
-    wb = load_workbook(caminho)
-    ws = wb.active
-    ws.title = "Diárias"
-
-    # --- TEXTO INICIAL OBRIGATÓRIO (igual ao da sua planilha) ---
-    ws.insert_rows(1)
-    ws.merge_cells("A1:N1")
-    ws["A1"] = "- Pagamento da diária será efetuado em até 5 dias úteis.\n- Os pagamentos de diárias só serão efetuados via transferência bancária.\n- Não é permitido pagamento em conta de terceiros."
-    ws["A1"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    ws["A1"].font = Font(size=10)
-
-    # --- ESTILOS EXATOS DA SUA PLANILHA ---
-    cor_cabecalho = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")  # Azul claro original
-    fonte_cabecalho = Font(bold=True, size=10, color="000000")
-    alin_cabecalho = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    borda_padrao = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin")
-    )
-    cor_pendente = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-    fonte_pendente = Font(color="9C0006")
-    cor_pago = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    fonte_pago = Font(color="006100")
-
-    # --- LARGURAS DAS COLUNAS IGUAIS À ORIGINAL ---
-    larguras_originais = {
-        "LOJA": 18, "NOME COMPLETO DO COLABORADOR": 25, "CPF": 16,
-        "DATA DA EXECUÇÃO": 22, "QUANT.": 8, "VALOR UNI.": 10,
-        "TOTAL": 10, "DADOS BANCÁRIOS": 22, "SUBSTITUIÇÃO": 12,
-        "MOTIVO DA DIARIA": 20, "DATA DE PAGAM.": 14, "situação": 12,
-        "Mês": 6, "semana": 12
-    }
-    for col in ws.columns:
-        col_letra = col[0].column_letter
-        nome_col = col[0].value
-        ws.column_dimensions[col_letra].width = larguras_originais.get(nome_col, 15)
-
-    # --- FORMATA CABEÇALHO (linha 2 agora, pois inserimos o texto na 1) ---
-    for cell in ws[2]:
-        cell.fill = cor_cabecalho
-        cell.font = fonte_cabecalho
-        cell.alignment = alin_cabecalho
-        cell.border = borda_padrao
-
-    # --- FORMATA DADOS ---
-    for row in ws.iter_rows(min_row=3, max_row=ws.max_row):
-        for cell in row:
-            cell.border = borda_padrao
-            cell.alignment = Alignment(horizontal="left", vertical="center")
-            # Destaca situação exatamente como na original
-            if ws.cell(row=2, column=cell.column).value == "situação":
-                if cell.value == "PENDENTE":
-                    cell.fill = cor_pendente
-                    cell.font = fonte_pendente
-                elif cell.value == "PAGO":
-                    cell.fill = cor_pago
-                    cell.font = fonte_pago
-            # Formata valores como moeda
-            if ws.cell(row=2, column=cell.column).value in ["VALOR UNI.", "TOTAL"]:
-                try:
-                    val = float(str(cell.value).replace(",", "."))
-                    cell.number_format = 'R$ #,##0.00'
-                    cell.value = val
-                except:
-                    pass
-
-    wb.save(caminho)
-    wb.close()
+    # ---------- EXPORTAR ----------
+    st.markdown("---")
+    st.subheader("📤 EXPORTAR PARA EXCEL")
+    if not df_filtrado.empty:
+        nome_arq = f"Diarias_{filtro_loja_d}_{filtro_mes_d}_{filtro_ano_d}.xlsx".replace("/", "-").replace(" ", "_")
+        exportar_diarias_formatado(df_filtrado, nome_arq)
+        with open(nome_arq, "rb") as f:
+            st.download_button("⬇️ BAIXAR EXCEL", f, file_name=nome_arq)
+        os.remove(nome_arq)
+    else:
+        st.info("Filtre os dados para exportar.")
