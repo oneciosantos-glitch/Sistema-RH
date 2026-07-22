@@ -927,6 +927,8 @@ with aba8:
             "CPF": st.column_config.TextColumn("CPF", required=True),
             "CARGO": st.column_config.TextColumn("CARGO"),
             "DADOS BANCÁRIOS": st.column_config.TextColumn("DADOS BANCÁRIOS"),
+            "DATA EXECUCAO": st.column_config.TextColumn("DATA EXECUÇÃO"),
+            "DATA PAGAMENTO": st.column_config.TextColumn("DATA PAGAMENTO"),
             "MOTIVO": st.column_config.TextColumn("MOTIVO", required=True),
             "QTDE DE DIARIAS": st.column_config.NumberColumn("QTDE", min_value=1, max_value=30, step=1, required=True),
             "VALOR UNITARIO": st.column_config.NumberColumn("VALOR UNI. (R$)", min_value=0.0, step=0.01, format="%.2f", required=True),
@@ -1009,7 +1011,9 @@ with aba8:
             cpf_d = st.text_input("CPF *", key="nova_cpf_d")
             cargo_d = st.text_input("Cargo", key="nova_cargo_d")
             dados_bancarios_d = st.text_input("Dados Bancários (PIX / Banco / Ag / CC)", key="nova_dados_bancarios_d")
+            data_exec_d = st.text_input("Data da Execução (DD/MM/AAAA)", key="nova_data_exec_d")
         with c3:
+            data_pag_d = st.text_input("Data de Pagamento (DD/MM/AAAA)", key="nova_data_pag_d")
             motivo_d = st.text_input("Motivo *", key="nova_motivo_d")
             qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1, key="nova_qtde_d")
             valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f", key="nova_valor_d")
@@ -1039,6 +1043,8 @@ with aba8:
                     "CPF": cpf_d.strip(),
                     "CARGO": cargo_d.strip().upper(),
                     "DADOS BANCÁRIOS": dados_bancarios_d.strip().upper(),
+                    "DATA EXECUCAO": data_exec_d.strip(),
+                    "DATA PAGAMENTO": data_pag_d.strip(),
                     "MOTIVO": motivo_d.strip().upper(),
                     "QTDE DE DIARIAS": str(qtde_d),
                     "VALOR UNITARIO": f"{valor_d:.2f}",
