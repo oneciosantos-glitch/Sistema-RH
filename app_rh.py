@@ -140,7 +140,7 @@ def calcular_e_atualizar(form):
     elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
      elif form.get("dt_termino de contrato") and form.get("dt_termino de contrato").strip():
-        form["situacao"] = "Término de Contrato"
+        form["situacao"] = "Termino de Contrato"
 
     return form
 
