@@ -218,9 +218,9 @@ with aba1:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
             hoje = datetime.now()
             dias_corridos = (hoje - dt_adm).days
-            for prazo in [30, 45, 60, 90]:
+            for prazo in [29, 44, 59, 89]:
                 rest = prazo - dias_corridos
-                if rest > 1:
+                if rest > 0:
                     status = f"Faltam {rest} dias"
                 elif rest == 0:
                     status = "HOJE"
