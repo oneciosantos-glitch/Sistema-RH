@@ -82,8 +82,8 @@ def carregar_dados():
 def carregar_diarias():
     cols_padrao = [
         "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QTDE DE DIARIAS","VALOR UNITARIO","VALOR TOTAL",
-        "CHAVE PIX","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
-        "CARGO","BANCO","AGENCIA","CONTA","DATA CADASTRO","COMPROVANTE"
+        "DADOS BANCÁRIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
+        "CARGO","DATA CADASTRO","COMPROVANTE"
     ]
     try:
         # Tenta ler com header na segunda linha (pula texto de instruções)
@@ -94,7 +94,7 @@ def carregar_diarias():
             'QUANT.': 'QTDE DE DIARIAS',
             'VALOR UNI.': 'VALOR UNITARIO',
             'TOTAL': 'VALOR TOTAL',
-            'DADOS BANCÁRIOS': 'CHAVE PIX',
+            'DADOS BANCÁRIOS': 'DADOS BANCÁRIOS',
             'MOTIVO DA DIARIA': 'MOTIVO',
             'situação': 'SITUACAO',
             'Mês': 'MES',
@@ -251,13 +251,13 @@ def exportar_diarias_formatado(df, caminho):
     larguras = {
         "LOJA": 12, "MES": 10, "SEMANA": 12, "ANO": 8,
         "NOME COLABORADOR": 38, "CPF": 16, "CARGO": 18,
-        "CHAVE PIX": 28, "BANCO": 14, "AGENCIA": 12, "CONTA": 14,
+        "DADOS BANCÁRIOS": 35,
         "MOTIVO": 28, "QTDE DE DIARIAS": 10, "VALOR UNITARIO": 14,
         "VALOR TOTAL": 14, "SITUACAO": 12, "DATA CADASTRO": 18,
         "COMPROVANTE": 35
     }
     for col_idx, header in enumerate(headers_app, 1):
-        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        col_letter = get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = larguras.get(header, 18)
 
     wb.save(caminho)
@@ -819,7 +819,7 @@ with aba7:
 # ================ ABA 8 - CONTROLE DE DIÁRIAS ================
 with aba8:
     st.subheader("💰 CONTROLE DE DIÁRIAS")
-    st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária, não permitido conta de terceiros.")
+    st.info("ℹ️ Pagamento em até 5 dias úteis, via transferência bancária. Não permitido conta de terceiros.")
 
     # Upload da planilha de diárias
     st.markdown("---")
@@ -885,31 +885,110 @@ with aba8:
             df_filtrado["CPF"].str.contains(busca_d, case=False, na=False)
         ]
 
-    st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
+    # ---------- EDITOR INLINE ----------
+    if not df_filtrado.empty:
+        st.markdown("**📝 Edite os dados diretamente na tabela abaixo e clique em SALVAR ALTERAÇÕES**")
+        # Guarda os índices originais para salvar corretamente no DataFrame principal
+        idx_original = df_filtrado.index.tolist()
+        df_editable = df_filtrado.reset_index(drop=True)
 
-    # ---------- NOVA DIÁRIA ----------
+        # Configurar colunas editáveis
+        col_config = {
+            "LOJA": st.column_config.SelectboxColumn("LOJA", options=lista_lojas(), required=True),
+            "MES": st.column_config.SelectboxColumn("MÊS", options=MESES[1:], required=True),
+            "SEMANA": st.column_config.SelectboxColumn("SEMANA", options=SEMANAS[1:], required=True),
+            "ANO": st.column_config.SelectboxColumn("ANO", options=ANOS, required=True),
+            "NOME COLABORADOR": st.column_config.TextColumn("NOME COLABORADOR", required=True),
+            "CPF": st.column_config.TextColumn("CPF", required=True),
+            "CARGO": st.column_config.TextColumn("CARGO"),
+            "DADOS BANCÁRIOS": st.column_config.TextColumn("DADOS BANCÁRIOS"),
+            "MOTIVO": st.column_config.TextColumn("MOTIVO", required=True),
+            "QTDE DE DIARIAS": st.column_config.NumberColumn("QTDE", min_value=1, max_value=30, step=1, required=True),
+            "VALOR UNITARIO": st.column_config.NumberColumn("VALOR UNI. (R$)", min_value=0.0, step=0.01, format="%.2f", required=True),
+            "SITUACAO": st.column_config.SelectboxColumn("SITUAÇÃO", options=["PENDENTE", "PAGO"], required=True),
+            "COMPROVANTE": st.column_config.TextColumn("COMPROVANTE", disabled=True),
+            "DATA CADASTRO": st.column_config.TextColumn("DATA CADASTRO", disabled=True),
+        }
+
+        edited_df = st.data_editor(
+            df_editable,
+            column_config=col_config,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_diarias"
+        )
+
+        # Calcular VALOR TOTAL automaticamente
+        try:
+            edited_df["VALOR TOTAL"] = (edited_df["QTDE DE DIARIAS"].astype(float) * edited_df["VALOR UNITARIO"].astype(float)).apply(lambda x: f"{x:.2f}")
+        except:
+            pass
+
+        col_salvar, col_excluir = st.columns([1, 1])
+        with col_salvar:
+            if st.button("💾 SALVAR ALTERAÇÕES", type="primary", key="salvar_diarias_editor"):
+                for i, idx_orig in enumerate(idx_original):
+                    if i < len(edited_df):
+                        for col in df_diarias.columns:
+                            if col in edited_df.columns:
+                                df_diarias.at[idx_orig, col] = str(edited_df.iloc[i][col]) if col not in ["QTDE DE DIARIAS", "VALOR UNITARIO", "VALOR TOTAL"] else str(edited_df.iloc[i][col])
+                # Se houver linhas novas (mais que o original)
+                if len(edited_df) > len(idx_original):
+                    for i in range(len(idx_original), len(edited_df)):
+                        nova_linha = {col: "" for col in df_diarias.columns}
+                        for col in edited_df.columns:
+                            nova_linha[col] = str(edited_df.iloc[i][col])
+                        nova_linha["DATA CADASTRO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        if not nova_linha.get("VALOR TOTAL"):
+                            try:
+                                q = float(edited_df.iloc[i]["QTDE DE DIARIAS"])
+                                v = float(edited_df.iloc[i]["VALOR UNITARIO"])
+                                nova_linha["VALOR TOTAL"] = f"{q * v:.2f}"
+                            except:
+                                nova_linha["VALOR TOTAL"] = ""
+                        df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
+                # Se houver linhas removidas
+                if len(edited_df) < len(idx_original):
+                    remover = idx_original[len(edited_df):]
+                    for idx_rm in remover:
+                        comp = str(df_diarias.at[idx_rm, "COMPROVANTE"])
+                        if comp and os.path.exists(comp):
+                            os.remove(comp)
+                    df_diarias.drop(index=remover, inplace=True)
+                    df_diarias.reset_index(drop=True, inplace=True)
+                salvar_diarias(df_diarias)
+                st.success("✅ Alterações salvas com sucesso!")
+                st.rerun()
+
+        with col_excluir:
+            st.markdown("**🗑️ Excluir linhas selecionadas:** marque a caixa na primeira coluna da tabela acima e depois clique abaixo.")
+            if st.button("🗑️ EXCLUIR SELECIONADOS", key="excluir_diarias_editor"):
+                st.info("Para excluir, delete as linhas diretamente na tabela usando a tecla Delete ou botão de lixeira do editor, depois clique em SALVAR ALTERAÇÕES.")
+
+    else:
+        st.info("Nenhuma diária encontrada com os filtros aplicados.")
+
+    # ---------- NOVA DIÁRIA (CADASTRO RÁPIDO) ----------
     st.markdown("---")
     st.subheader("➕ CADASTRAR NOVA DIÁRIA")
     with st.form("nova_diaria", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            loja_d = st.selectbox("Loja *", lista_lojas())
-            mes_d = st.selectbox("Mês *", MESES[1:])
-            semana_d = st.selectbox("Semana *", SEMANAS[1:])
-            ano_d = st.selectbox("Ano *", ANOS, index=ANOS.index(str(datetime.now().year)))
-            cargo_d = st.text_input("Cargo")
+            loja_d = st.selectbox("Loja *", lista_lojas(), key="nova_loja_d")
+            mes_d = st.selectbox("Mês *", MESES[1:], key="nova_mes_d")
+            semana_d = st.selectbox("Semana *", SEMANAS[1:], key="nova_sem_d")
+            ano_d = st.selectbox("Ano *", ANOS, index=ANOS.index(str(datetime.now().year)), key="nova_ano_d")
         with c2:
-            nome_d = st.text_input("Nome do Colaborador *")
-            cpf_d = st.text_input("CPF *")
-            pix_d = st.text_input("Chave PIX")
-            banco_d = st.text_input("Banco")
-            agencia_d = st.text_input("Agência")
+            nome_d = st.text_input("Nome do Colaborador *", key="nova_nome_d")
+            cpf_d = st.text_input("CPF *", key="nova_cpf_d")
+            cargo_d = st.text_input("Cargo", key="nova_cargo_d")
+            dados_bancarios_d = st.text_input("Dados Bancários (PIX / Banco / Ag / CC)", key="nova_dados_bancarios_d")
         with c3:
-            conta_d = st.text_input("Conta")
-            motivo_d = st.text_input("Motivo *")
-            qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1)
-            valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f")
-            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO"])
+            motivo_d = st.text_input("Motivo *", key="nova_motivo_d")
+            qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1, key="nova_qtde_d")
+            valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f", key="nova_valor_d")
+            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO"], key="nova_sit_d")
         submitted = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary")
         if submitted:
             erros = []
@@ -934,10 +1013,7 @@ with aba8:
                     "NOME COLABORADOR": nome_d.strip().upper(),
                     "CPF": cpf_d.strip(),
                     "CARGO": cargo_d.strip().upper(),
-                    "CHAVE PIX": pix_d.strip(),
-                    "BANCO": banco_d.strip().upper(),
-                    "AGENCIA": agencia_d.strip(),
-                    "CONTA": conta_d.strip(),
+                    "DADOS BANCÁRIOS": dados_bancarios_d.strip().upper(),
                     "MOTIVO": motivo_d.strip().upper(),
                     "QTDE DE DIARIAS": str(qtde_d),
                     "VALOR UNITARIO": f"{valor_d:.2f}",
@@ -951,97 +1027,40 @@ with aba8:
                 st.success("✅ Diária cadastrada com sucesso!")
                 st.rerun()
 
-    # ---------- EDITAR / EXCLUIR / COMPROVANTE ----------
+    # ---------- GERENCIAR COMPROVANTES ----------
     st.markdown("---")
-    st.subheader("✏️ EDITAR / EXCLUIR / ANEXAR COMPROVANTE")
-    if df_diarias.empty:
-        st.info("Nenhuma diária cadastrada.")
-    else:
-        idx_edit = st.selectbox("Selecione a diária", df_diarias.index, format_func=lambda i: f"[{i}] {df_diarias.loc[i, 'NOME COLABORADOR']} | {df_diarias.loc[i, 'LOJA']} | {df_diarias.loc[i, 'MES']}/{df_diarias.loc[i, 'ANO']} | R$ {df_diarias.loc[i, 'VALOR TOTAL']}")
-        if idx_edit is not None:
-            linha = df_diarias.loc[idx_edit]
-            with st.form("editar_diaria"):
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    e_loja = st.selectbox("Loja", lista_lojas(), index=lista_lojas().index(linha["LOJA"]) if linha["LOJA"] in lista_lojas() else 0)
-                    e_mes = st.selectbox("Mês", MESES[1:], index=MESES[1:].index(linha["MES"]) if linha["MES"] in MESES[1:] else 0)
-                    e_sem = st.selectbox("Semana", SEMANAS[1:], index=SEMANAS[1:].index(linha["SEMANA"]) if linha["SEMANA"] in SEMANAS[1:] else 0)
-                    e_ano = st.selectbox("Ano", ANOS, index=ANOS.index(linha["ANO"]) if linha["ANO"] in ANOS else 0)
-                    e_cargo = st.text_input("Cargo", value=linha["CARGO"])
-                with c2:
-                    e_nome = st.text_input("Nome", value=linha["NOME COLABORADOR"])
-                    e_cpf = st.text_input("CPF", value=linha["CPF"])
-                    e_pix = st.text_input("PIX", value=linha["CHAVE PIX"])
-                    e_banco = st.text_input("Banco", value=linha["BANCO"])
-                    e_agencia = st.text_input("Agência", value=linha["AGENCIA"])
-                with c3:
-                    e_conta = st.text_input("Conta", value=linha["CONTA"])
-                    e_motivo = st.text_input("Motivo", value=linha["MOTIVO"])
-                    e_qtde = st.number_input("Qtde", min_value=1, max_value=30, value=int(linha["QTDE DE DIARIAS"]) if str(linha["QTDE DE DIARIAS"]).isdigit() else 1)
-                    e_valor = st.number_input("Valor Unit.", min_value=0.0, value=float(linha["VALOR UNITARIO"].replace(",", ".")) if str(linha["VALOR UNITARIO"]).replace(".", "", 1).replace(",", "", 1).isdigit() else 0.0, format="%.2f")
-                    e_sit = st.selectbox("Situação", ["PENDENTE", "PAGO"], index=0 if linha["SITUACAO"] == "PENDENTE" else 1)
-                col_salvar, col_excluir = st.columns(2)
-                with col_salvar:
-                    salvar_edit = st.form_submit_button("💾 SALVAR ALTERAÇÕES", type="primary")
-                with col_excluir:
-                    excluir_edit = st.form_submit_button("🗑️ EXCLUIR")
-                if salvar_edit:
-                    e_total = e_qtde * e_valor
-                    df_diarias.at[idx_edit, "LOJA"] = e_loja
-                    df_diarias.at[idx_edit, "MES"] = e_mes
-                    df_diarias.at[idx_edit, "SEMANA"] = e_sem
-                    df_diarias.at[idx_edit, "ANO"] = e_ano
-                    df_diarias.at[idx_edit, "NOME COLABORADOR"] = e_nome.strip().upper()
-                    df_diarias.at[idx_edit, "CPF"] = e_cpf.strip()
-                    df_diarias.at[idx_edit, "CARGO"] = e_cargo.strip().upper()
-                    df_diarias.at[idx_edit, "CHAVE PIX"] = e_pix.strip()
-                    df_diarias.at[idx_edit, "BANCO"] = e_banco.strip().upper()
-                    df_diarias.at[idx_edit, "AGENCIA"] = e_agencia.strip()
-                    df_diarias.at[idx_edit, "CONTA"] = e_conta.strip()
-                    df_diarias.at[idx_edit, "MOTIVO"] = e_motivo.strip().upper()
-                    df_diarias.at[idx_edit, "QTDE DE DIARIAS"] = str(e_qtde)
-                    df_diarias.at[idx_edit, "VALOR UNITARIO"] = f"{e_valor:.2f}"
-                    df_diarias.at[idx_edit, "VALOR TOTAL"] = f"{e_total:.2f}"
-                    df_diarias.at[idx_edit, "SITUACAO"] = e_sit
-                    salvar_diarias(df_diarias)
-                    st.success("✅ Alterações salvas!")
-                    st.rerun()
-                if excluir_edit:
-                    comp = str(df_diarias.at[idx_edit, "COMPROVANTE"])
-                    if comp and os.path.exists(comp):
-                        os.remove(comp)
-                    df_diarias.drop(index=idx_edit, inplace=True)
-                    df_diarias.reset_index(drop=True, inplace=True)
-                    salvar_diarias(df_diarias)
-                    st.success("🗑️ Diária excluída!")
-                    st.rerun()
-
-            # Upload comprovante
-            st.markdown("---")
-            st.subheader("📎 COMPROVANTE DE PAGAMENTO")
-            comp_atual = str(df_diarias.at[idx_edit, "COMPROVANTE"])
+    st.subheader("📎 GERENCIAR COMPROVANTES DE PAGAMENTO")
+    if not df_diarias.empty:
+        # Dropdown para selecionar diária
+        opcoes_diaria = [f"[{i}] {row['NOME COLABORADOR']} | {row['LOJA']} | {row['MES']}/{row['ANO']} | R$ {row['VALOR TOTAL']}" for i, row in df_diarias.iterrows()]
+        sel_diaria = st.selectbox("Selecione a diária", options=range(len(opcoes_diaria)), format_func=lambda x: opcoes_diaria[x], key="sel_comp_diaria")
+        if sel_diaria is not None:
+            idx_comp = df_diarias.index[sel_diaria]
+            comp_atual = str(df_diarias.at[idx_comp, "COMPROVANTE"])
             if comp_atual and os.path.exists(comp_atual):
                 st.success(f"✅ Comprovante anexado: {os.path.basename(comp_atual)}")
                 with open(comp_atual, "rb") as fc:
-                    st.download_button("⬇️ Baixar Comprovante", fc, file_name=os.path.basename(comp_atual), key=f"dl_comp_{idx_edit}")
-                if st.button("🗑️ Remover Comprovante", key=f"rm_comp_{idx_edit}"):
+                    st.download_button("⬇️ Baixar Comprovante", fc, file_name=os.path.basename(comp_atual), key=f"dl_comp_{idx_comp}")
+                if st.button("🗑️ Remover Comprovante", key=f"rm_comp_{idx_comp}"):
                     os.remove(comp_atual)
-                    df_diarias.at[idx_edit, "COMPROVANTE"] = ""
+                    df_diarias.at[idx_comp, "COMPROVANTE"] = ""
                     salvar_diarias(df_diarias)
                     st.success("Comprovante removido!")
                     st.rerun()
             else:
-                st.info("Nenhum comprovante anexado.")
-            arq_comp = st.file_uploader("Anexar novo comprovante (PDF, JPG, PNG)", type=["pdf", "jpg", "png"], key=f"up_comp_{idx_edit}")
-            if arq_comp and st.button("📤 ENVIAR COMPROVANTE", type="primary", key=f"btn_comp_{idx_edit}"):
+                st.info("Nenhum comprovante anexado para esta diária.")
+            arq_comp = st.file_uploader("Anexar comprovante (PDF, JPG, PNG)", type=["pdf", "jpg", "png"], key=f"up_comp_{idx_comp}")
+            if arq_comp and st.button("📤 ENVIAR COMPROVANTE", type="primary", key=f"btn_comp_{idx_comp}"):
                 ext = os.path.splitext(arq_comp.name)[1]
-                nome_comp = f"{linha['CPF']}_{linha['MES']}_{linha['ANO']}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+                nome_comp = f"{df_diarias.at[idx_comp, 'CPF']}_{df_diarias.at[idx_comp, 'MES']}_{df_diarias.at[idx_comp, 'ANO']}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
                 cam_comp = os.path.join(PASTA_COMPROVANTES, nome_comp)
                 with open(cam_comp, "wb") as f: f.write(arq_comp.read())
-                df_diarias.at[idx_edit, "COMPROVANTE"] = cam_comp
+                df_diarias.at[idx_comp, "COMPROVANTE"] = cam_comp
                 salvar_diarias(df_diarias)
                 st.success("✅ Comprovante anexado!")
                 st.rerun()
+    else:
+        st.info("Nenhuma diária cadastrada.")
 
     # ---------- EXPORTAR ----------
     st.markdown("---")
