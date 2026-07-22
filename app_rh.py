@@ -3,6 +3,8 @@ import pandas as pd
 import os
 from datetime import datetime, timedelta
 from PIL import Image
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
@@ -156,6 +158,81 @@ def salvar_diarias(df_diarias):
         st.error(f"❌ Erro ao salvar diárias: {str(e)}")
         st.stop()
 
+def exportar_diarias_formatado(df, caminho):
+    """Exporta DataFrame de diárias para Excel com formatação profissional."""
+    df_export = df.copy()
+    df_export.to_excel(caminho, index=False, engine="openpyxl")
+    wb = load_workbook(caminho)
+    ws = wb.active
+    ws.title = "Diarias"
+
+    # Estilos
+    cor_cabecalho = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    fonte_cabecalho = Font(color="FFFFFF", bold=True, size=11)
+    alin_cabecalho = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    borda = Border(
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000")
+    )
+    cor_zebra = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    cor_pendente = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    fonte_pendente = Font(color="9C0006")
+    cor_pago = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    fonte_pago = Font(color="006100")
+
+    # Larguras padrão
+    larguras = {
+        "LOJA": 14, "MES": 10, "SEMANA": 12, "ANO": 8,
+        "NOME COLABORADOR": 28, "CPF": 16, "CARGO": 18,
+        "CHAVE PIX": 22, "BANCO": 14, "AGENCIA": 12, "CONTA": 14,
+        "MOTIVO": 20, "QTDE DE DIARIAS": 14, "VALOR UNITARIO": 14,
+        "VALOR TOTAL": 14, "SITUACAO": 12, "DATA CADASTRO": 18,
+        "COMPROVANTE": 35
+    }
+
+    # Aplicar larguras
+    for col in ws.columns:
+        col_letter = col[0].column_letter
+        header = col[0].value
+        ws.column_dimensions[col_letter].width = larguras.get(header, 18)
+
+    # Formatar cabeçalho
+    for cell in ws[1]:
+        cell.fill = cor_cabecalho
+        cell.font = fonte_cabecalho
+        cell.alignment = alin_cabecalho
+        cell.border = borda
+
+    # Formatar dados
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        for cell in row:
+            cell.border = borda
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+            # Zebra
+            if cell.row % 2 == 0:
+                cell.fill = cor_zebra
+            # Destacar situação
+            if ws.cell(row=1, column=cell.column).value == "SITUACAO":
+                if cell.value == "PENDENTE":
+                    cell.fill = cor_pendente
+                    cell.font = fonte_pendente
+                elif cell.value == "PAGO":
+                    cell.fill = cor_pago
+                    cell.font = fonte_pago
+            # Formatar moeda nas colunas de valor
+            if ws.cell(row=1, column=cell.column).value in ["VALOR UNITARIO", "VALOR TOTAL"]:
+                try:
+                    val = float(str(cell.value).replace(",", "."))
+                    cell.number_format = 'R$ #,##0.00'
+                    cell.value = val
+                except:
+                    pass
+
+    wb.save(caminho)
+    wb.close()
+
 def lista_lojas():
     d = carregar_dados()
     todas = sorted(set(
@@ -286,7 +363,7 @@ with aba1:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
             hoje = datetime.now()
             dias_corridos = (hoje - dt_adm).days
-            for prazo in [29, 44, 59, 89]:
+            for prazo in [30, 45, 60, 90]:
                 rest = prazo - dias_corridos
                 if rest > 0:
                     status = f"Faltam {rest} dias"
@@ -571,7 +648,7 @@ with aba3:
         try:
             dt_adm = datetime.strptime(str(func["Admissao"]).strip(), "%d/%m/%Y")
             dias = (hoje - dt_adm).days
-            for p in [29,44,59,89]:
+            for p in [30,45,60,90]:
                 if 0 <= p - dias <=10:
                     tabela_exp.append([func["Matricula"], func["Nome"], func["Loja"], f"{p} dias", f"Faltam {p-dias} dias"])
                     break
@@ -731,25 +808,25 @@ with aba8:
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("Total de Diárias", len(df_diarias))
+        st.metric("👥 Total de Diárias", len(df_diarias))
     with c2:
         try:
             vtotal = df_diarias["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vtotal = 0
-        st.metric("Valor Total", f"R$ {vtotal:,.2f}")
+        st.metric("💰 Valor Total", f"R$ {vtotal:,.2f}")
     with c3:
         try:
             vp = df_diarias[df_diarias["SITUACAO"] == "PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vp = 0
-        st.metric("Pendente", f"R$ {vp:,.2f}")
+        st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
     with c4:
         try:
             vpg = df_diarias[df_diarias["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vpg = 0
-        st.metric("Pago", f"R$ {vpg:,.2f}")
+        st.metric("✅ Pago", f"R$ {vpg:,.2f}")
     st.markdown("---")
 
     # ---------- FILTROS ----------
@@ -941,7 +1018,7 @@ with aba8:
     st.subheader("📤 EXPORTAR PARA EXCEL")
     if not df_filtrado.empty:
         nome_arq = f"Diarias_{filtro_loja_d}_{filtro_mes_d}_{filtro_ano_d}.xlsx".replace("/", "-").replace(" ", "_")
-        df_filtrado.to_excel(nome_arq, index=False, engine="openpyxl")
+        exportar_diarias_formatado(df_filtrado, nome_arq)
         with open(nome_arq, "rb") as f:
             st.download_button("⬇️ BAIXAR EXCEL", f, file_name=nome_arq)
         os.remove(nome_arq)
