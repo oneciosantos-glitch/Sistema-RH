@@ -2,13 +2,16 @@ import streamlit as st
 import pandas as pd
 import os
 from datetime import datetime, timedelta
+from PIL import Image
 
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
 PASTA_DOCS = "Documentos_Lojas"
 PASTA_DOCS_FUNC = "Documentos_Funcionarios"
+PASTA_FOTOS = "Fotos_Funcionarios"
 os.makedirs(PASTA_DOCS, exist_ok=True)
 os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
+os.makedirs(PASTA_FOTOS, exist_ok=True)
 
 MESES = ["Todos", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MAP_MES = {
@@ -23,7 +26,6 @@ SITUACOES = [
 ]
 
 # ====================== BANCO DE DADOS ======================
-# SEM CACHE: LÊ O ARQUIVO SEMPRE DO ZERO
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
     try:
@@ -39,7 +41,8 @@ def carregar_dados():
             "DataFeriasInicio","DiasFerias","DataRetornoFerias",
             "DataPedidoConta","DataRescisao","DataAbandono",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
-            "DataAfastamento","DiasAfastamento","DataRetornoAfastamento"
+            "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
+            "CaminhoFoto"
         ],
         "Historico": [
             "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -64,7 +67,6 @@ def carregar_dados():
                     dados[aba][c] = ""
             if "Matricula" in dados[aba].columns:
                 dados[aba]["Matricula"] = dados[aba]["Matricula"].astype(str).str.strip()
-            # LIMPA ESPAÇOS EXTRAS NA SITUAÇÃO (ERRO MAIS COMUM)
             if "Situacao" in dados[aba].columns:
                 dados[aba]["Situacao"] = dados[aba]["Situacao"].astype(str).str.strip()
     return dados
@@ -74,7 +76,7 @@ def salvar_dados(dados):
         with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
             for aba, df in dados.items():
                 df.to_excel(f, sheet_name=aba, index=False)
-        st.cache_data.clear()  # LIMPA MEMÓRIA DEPOIS DE SALVAR
+        st.cache_data.clear()
     except PermissionError:
         st.error("❌ ERRO: O arquivo dados_funcionarios.xlsx está ABERTO! Feche o Excel e tente novamente.")
         st.stop()
@@ -98,9 +100,7 @@ def lista_cargos():
     ))
     return todas if todas else ["Sem Cargo"]
 
-# ✅ FUNÇÃO CORRIGIDA: NÃO ALTERA SITUAÇÃO DE FÉRIAS AUTOMATICAMENTE
 def calcular_e_atualizar(form):
-    # Aviso Prévio
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_aviso"], "%d/%m/%Y")
@@ -108,7 +108,6 @@ def calcular_e_atualizar(form):
         except: form["termino_aviso"] = ""
     else: form["termino_aviso"] = ""
 
-    # Licença
     if form.get("dt_lic") and form.get("dias_lic") and str(form["dias_lic"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_lic"], "%d/%m/%Y")
@@ -116,7 +115,6 @@ def calcular_e_atualizar(form):
         except: form["termino_lic"] = ""
     else: form["termino_lic"] = ""
 
-    # Férias: calcula retorno, mas NÃO força voltar para Ativo
     if form.get("dt_fer") and form.get("dias_fer") and str(form["dias_fer"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
@@ -128,7 +126,6 @@ def calcular_e_atualizar(form):
     else:
         form["retorno_fer"] = ""
 
-    # Afastamento
     if form.get("dt_af") and form.get("dias_af") and str(form["dias_af"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_af"], "%d/%m/%Y")
@@ -136,7 +133,6 @@ def calcular_e_atualizar(form):
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
-    # Desligamentos
     if form.get("dt_pedido") and form.get("dt_pedido").strip():
         form["situacao"] = "Pedido de Conta"
     elif form.get("dt_rescisao") and form.get("dt_rescisao").strip():
@@ -163,7 +159,7 @@ aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos"
 ])
 
-# ================ ABA 1 - CADASTRO ================
+# ================ ABA 1 - CADASTRO COM FOTO ================
 with aba1:
     dados = carregar_dados()
     
@@ -232,41 +228,56 @@ with aba1:
             "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
             "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
             "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
-            "dt_abandono": val_campo("DataAbandono"), "situacao": val_campo("Situacao")
+            "dt_abandono": val_campo("DataAbandono"), "situacao": val_campo("Situacao"),
+            "caminho_foto": val_campo("CaminhoFoto")
         }
         temp = calcular_e_atualizar(temp)
-        term_aviso_val, term_lic_val, ret_fer_val, ret_af_val, situacao_val = temp["termino_aviso"], temp["termino_lic"], temp["retorno_fer"], temp["retorno_af"], temp["situacao"]
+        term_aviso_val, term_lic_val, ret_fer_val, ret_af_val, situacao_val, caminho_foto_atual = temp["termino_aviso"], temp["termino_lic"], temp["retorno_fer"], temp["retorno_af"], temp["situacao"], temp["caminho_foto"]
     else:
-        term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = ""
+        term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
         situacao_val = "Ativo"
 
     with st.form("form_cadastro", clear_on_submit=False):
         st.subheader("Dados Básicos")
-        c1,c2,c3 = st.columns(3)
-        with c1:
-            matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
-            nome = st.text_input("Nome Completo", value=val_campo("Nome"))
-            cpf = st.text_input("CPF", value=val_campo("CPF"))
-            rg = st.text_input("RG", value=val_campo("RG"))
-            pis = st.text_input("PIS", value=val_campo("PIS"))
-        with c2:
-            nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
-            admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
-            telefone = st.text_input("Telefone", value=val_campo("Telefone"))
-            endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
-        with c3:
-            lojas = lista_lojas()
-            idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
-            loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
+        col_foto, col_dados = st.columns([1,3])
+        
+        # 📸 ÁREA DA FOTO - INCLUSO NOVO
+        with col_foto:
+            st.markdown("**Foto do Funcionário**")
+            if caminho_foto_atual and os.path.exists(caminho_foto_atual):
+                st.image(caminho_foto_atual, width=180, caption="Foto atual")
+            else:
+                st.info("Sem foto")
+            
+            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
+            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
 
-            cargos = lista_cargos()
-            idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
-            cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
+        with col_dados:
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
+                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
+                cpf = st.text_input("CPF", value=val_campo("CPF"))
+                rg = st.text_input("RG", value=val_campo("RG"))
+                pis = st.text_input("PIS", value=val_campo("PIS"))
+            with c2:
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
+                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
+                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
+            with c3:
+                lojas = lista_lojas()
+                idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
+                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
 
-            salario = st.text_input("Salário", value=val_campo("Salario"))
+                cargos = lista_cargos()
+                idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
+                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
 
-            idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
-            situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
+                salario = st.text_input("Salário", value=val_campo("Salario"))
+
+                idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
 
         if prazos_exp:
             st.markdown("---")
@@ -318,6 +329,21 @@ with aba1:
                 st.stop()
             if tipo_af != "Nenhum" and dt_af.strip():
                 situacao = tipo_af
+
+            # 📸 TRATAMENTO DA FOTO - NOVO
+            caminho_final_foto = caminho_foto_atual
+            if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
+                os.remove(caminho_final_foto)
+                caminho_final_foto = ""
+            if nova_foto:
+                if caminho_final_foto and os.path.exists(caminho_final_foto):
+                    os.remove(caminho_final_foto)
+                extensao = os.path.splitext(nova_foto.name)[1].lower()
+                nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
+                caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
+                img = Image.open(nova_foto)
+                img.save(caminho_final_foto)
+
             dados_form = calcular_e_atualizar({
                 "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
                 "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
@@ -341,7 +367,8 @@ with aba1:
                 "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
                 "DataTerminoLicenca": dados_form["termino_lic"],
                 "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
-                "DataRetornoAfastamento": dados_form["retorno_af"]
+                "DataRetornoAfastamento": dados_form["retorno_af"],
+                "CaminhoFoto": caminho_final_foto
             }
             indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
             acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
@@ -357,6 +384,8 @@ with aba1:
             indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_sel.strip()].tolist()
             if indice:
                 dados_excluir = dados["Base_Dados"].iloc[indice[0]].to_dict()
+                if dados_excluir.get("CaminhoFoto") and os.path.exists(dados_excluir["CaminhoFoto"]):
+                    os.remove(dados_excluir["CaminhoFoto"])
                 docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_sel.strip()]
                 for _, d in docs_excluir.iterrows():
                     if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
@@ -364,7 +393,7 @@ with aba1:
                 dados["Base_Dados"].drop(indice[0], inplace=True)
                 salvar_dados(dados)
                 add_historico_auto(mat_sel.strip(), dados_excluir["Nome"], "Exclusão de Cadastro", dados_excluir)
-                st.success("✅ Registro e documentos excluídos!")
+                st.success("✅ Registro, foto e documentos excluídos!")
                 st.rerun()
 
     st.markdown("---")
@@ -412,34 +441,38 @@ with aba1:
     else:
         st.info("ℹ️ Digite a Matrícula exata para ver/anexar documentos.")
 
-# ================ ABA 2 - PAINEL COM CONTAGEM 100% CORRIGIDA ================
+# ================ ABA 2 - PAINEL COMPLETO E ATUALIZÁVEL ================
 with aba2:
     st.subheader("📊 RESUMO GERAL")
-    # FORÇA LEITURA NOVA DO ARQUIVO
     dados_painel = carregar_dados()
     base = dados_painel["Base_Dados"].copy()
     base["Situacao"] = base["Situacao"].fillna("").astype(str).str.strip()
 
-    # CONTAGEM EXATA
-    ativos    = len(base[base["Situacao"] == "Ativo"])
-    pre_cad   = len(base[base["Situacao"] == "Pré-cadastro"])
-    ferias    = len(base[base["Situacao"] == "Férias"])
-    afastados = len(base[base["Situacao"].isin(["Doença","Acidente","Maternidade"])])
-    desligados= len(base[~base["Situacao"].isin(["Ativo","Pré-cadastro","Férias","Doença","Acidente","Maternidade"])])
+    # ✅ TODAS AS SITUAÇÕES SOLICITADAS - CONTAGEM AUTOMÁTICA
+    contagem = {
+        "👷 Ativo": len(base[base["Situacao"] == "Ativo"]),
+        "📝 Pré-cadastro": len(base[base["Situacao"] == "Pré-cadastro"]),
+        "🏖️ Férias": len(base[base["Situacao"] == "Férias"]),
+        "🚪 Abandono": len(base[base["Situacao"] == "Abandono"]),
+        "⏹️ Término de Contrato": len(base[base["Situacao"] == "Término de Contrato"]),
+        "📉 Demitido S/JC": len(base[base["Situacao"] == "Demitido S/JC"]),
+        "📉 Demitido C/JC": len(base[base["Situacao"] == "Demitido C/JC"]),
+        "🙋 Pedido de Conta": len(base[base["Situacao"] == "Pedido de Conta"]),
+        "⚖️ Rescisão Indireta": len(base[base["Situacao"] == "Rescisão Indireta"]),
+        "🏥 Doença": len(base[base["Situacao"] == "Doença"]),
+        "🚑 Acidente": len(base[base["Situacao"] == "Acidente"]),
+        "🤰 Maternidade": len(base[base["Situacao"] == "Maternidade"])
+    }
 
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("👷 Ativos", ativos)
-    c2.metric("📝 Pré-cadastro", pre_cad)
-    c3.metric("🏖️ Férias", ferias)
-    c4.metric("🏥 Afastados", afastados)
-    c5.metric("📤 Desligados", desligados)
+    # Exibe em 3 colunas organizadas
+    cols = st.columns(3)
+    for i, (rotulo, qtd) in enumerate(contagem.items()):
+        cols[i % 3].metric(rotulo, qtd)
 
-    # BOTÃO PARA ATUALIZAR NA MÃO
     if st.button("🔄 Atualizar Resumo"):
         st.cache_data.clear()
         st.rerun()
 
-    # TABELA DE CONFERÊNCIA RÁPIDA
     st.markdown("---")
     st.subheader("🔍 Conferência Rápida - Apenas Férias")
     tab_fer = base[base["Situacao"] == "Férias"][["Matricula","Nome","Loja","DataFeriasInicio","DataRetornoFerias"]]
@@ -448,7 +481,7 @@ with aba2:
     else:
         st.dataframe(tab_fer, use_container_width=True, hide_index=True)
 
-# ================ ABA 3 - PRAZOS E FÉRIAS ================
+# ================ DEMAIS ABAS (SEM ALTERAÇÕES) ================
 with aba3:
     hoje = datetime.now()
     st.subheader("⚠️ PRAZOS DE EXPERIÊNCIA PRÓXIMOS")
@@ -481,7 +514,6 @@ with aba3:
         except: pass
     st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo"]), use_container_width=True, hide_index=True)
 
-# ================ ABA 4 - HISTÓRICO ================
 with aba4:
     st.subheader("📝 HISTÓRICO")
     st.dataframe(dados["Historico"][["DataEvento","TipoEvento","Matricula","Nome","Situacao","Detalhes"]], use_container_width=True, hide_index=True)
@@ -502,7 +534,6 @@ with aba4:
                 st.success("Adicionado!")
                 st.rerun()
 
-# ================ ABA 5 - RELATÓRIOS ================
 with aba5:
     st.subheader("📄 RELATÓRIOS")
     rel = st.selectbox("Escolha", ["Prazos Experiência","Ativos","Pré-cadastro","Férias","Afastados","Avisos","Histórico","Individual"])
@@ -530,7 +561,6 @@ with aba5:
         with open("rel_temp.xlsx","rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{rel.replace(' ','_')}.xlsx")
         os.remove("rel_temp.xlsx")
 
-# ================ ABA 6 - DOCUMENTOS DAS LOJAS ================
 with aba6:
     st.subheader("📎 DOCUMENTOS DAS LOJAS")
     ls = lista_lojas()
@@ -571,7 +601,6 @@ with aba6:
                     salvar_dados(dados)
                     st.rerun()
 
-# ================ ABA 7 - LOJAS E CARGOS ================
 with aba7:
     st.subheader("⚙️ CADASTRO DE LOJAS E CARGOS")
     dados = carregar_dados()
