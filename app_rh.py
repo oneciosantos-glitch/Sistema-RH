@@ -681,7 +681,7 @@ with aba8:
     
     busca_d = st.text_input("🔍 Pesquisar por Nome ou CPF", placeholder="Digite para buscar...")
 
-       df_diarias = carregar_diarias()
+        df_diarias = carregar_diarias()
     df_filtrado = df_diarias.copy()
 
     if filtro_loja_d != "Todas":
