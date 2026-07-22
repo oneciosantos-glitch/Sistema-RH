@@ -1112,36 +1112,3 @@ with aba8:
 
     wb.save(caminho)
     wb.close()
-
-# --- E NO CARREGAMENTO, GARANTE QUE NÃO ALTERA OS DADOS ORIGINAIS ---
-@st.cache_data(ttl=0, show_spinner=False)
-def carregar_diarias():
-    cols_padrao = [
-        "LOJA", "NOME COMPLETO DO COLABORADOR", "CPF", "DATA DA EXECUÇÃO",
-        "QUANT.", "VALOR UNI.", "TOTAL", "DADOS BANCÁRIOS", "SUBSTITUIÇÃO",
-        "MOTIVO DA DIARIA", "DATA DE PAGAM.", "situação", "Mês", "semana",
-        "ANO", "CARGO", "BANCO", "AGENCIA", "CONTA", "DATA CADASTRO", "COMPROVANTE"
-    ]
-    try:
-        # Lê exatamente como veio, mantendo tudo
-        df = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
-        # Apenas ajusta nomes INTERNAMENTE no sistema, mas na exportação volta ao original
-        rename_map = {
-            'NOME COMPLETO DO COLABORADOR': 'NOME COLABORADOR',
-            'QUANT.': 'QTDE DE DIARIAS',
-            'VALOR UNI.': 'VALOR UNITARIO',
-            'TOTAL': 'VALOR TOTAL',
-            'DADOS BANCÁRIOS': 'CHAVE PIX',
-            'MOTIVO DA DIARIA': 'MOTIVO',
-            'situação': 'SITUACAO',
-            'Mês': 'MES',
-            'semana': 'SEMANA',
-            'DATA DA EXECUÇÃO': 'DATA EXECUCAO',
-            'SUBSTITUIÇÃO': 'SUBSTITUICAO',
-            'DATA DE PAGAM.': 'DATA PAGAMENTO'
-        }
-        df = df.rename(columns=rename_map)
-    except Exception:
-        df = pd.DataFrame(columns=cols_padrao)
-
-    # Restante da lógica permanece igual...
