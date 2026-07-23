@@ -479,6 +479,9 @@ with aba1:
     lista = dados["Base_Dados"].copy()
     lista["Matricula"] = lista["Matricula"].fillna("").astype(str).str.strip()
     lista["Nome"] = lista["Nome"].fillna("").astype(str).str.strip()
+    lista["Loja"] = lista["Loja"].fillna("").astype(str).str.strip()
+    lista["Situacao"] = lista["Situacao"].fillna("").astype(str).str.strip()
+    lista["Cargo"] = lista["Cargo"].fillna("").astype(str).str.strip()
 
     if busca.strip():
         lista = lista[
@@ -486,11 +489,11 @@ with aba1:
             (lista["Nome"].str.contains(busca, case=False, na=False))
         ]
     if filtro_loja != "Todas":
-        lista = lista[lista["Loja"] == filtro_loja]
+        lista = lista[lista["Loja"] == filtro_loja.strip()]
     if filtro_sit != "Todas":
         lista = lista[lista["Situacao"] == filtro_sit]
     if filtro_cargo != "Todos":
-        lista = lista[lista["Cargo"] == filtro_cargo]
+        lista = lista[lista["Cargo"] == filtro_cargo.strip()]
 
     st.dataframe(
         lista[["Matricula","Nome","Loja","Situacao","Cargo"]],
@@ -511,7 +514,7 @@ with aba1:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
             hoje = datetime.now()
             dias_corridos = (hoje - dt_adm).days
-            for prazo in [29, 44, 59, 89]:
+            for prazo in [30, 45, 60, 90]:
                 rest = prazo - dias_corridos
                 if rest > 0:
                     status = f"Faltam {rest} dias"
@@ -797,7 +800,7 @@ with aba3:
         try:
             dt_adm = datetime.strptime(str(func["Admissao"]).strip(), "%d/%m/%Y")
             dias = (hoje - dt_adm).days
-            for p in [29,44,59,89]:
+            for p in [30,45,60,90]:
                 if 0 <= p - dias <=10:
                     tabela_exp.append([func["Matricula"], func["Nome"], func["Loja"], f"{p} dias", f"Faltam {p-dias} dias"])
                     break
@@ -810,7 +813,7 @@ with aba3:
     tabela_fer = []
     for _, f in dados["Base_Dados"].iterrows():
         if f["Situacao"] not in ["Ativo","Pré-cadastro"]: continue
-        if filtro_loja != "Todas" and f["Loja"] != filtro_loja: continue
+        if filtro_loja != "Todas" and str(f["Loja"]).strip() != filtro_loja.strip(): continue
         try:
             dt = datetime.strptime(str(f["Admissao"]).strip(), "%d/%m/%Y")
             if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
@@ -899,7 +902,7 @@ with aba6:
         st.rerun()
     st.markdown("---")
     filt = dados["Docs_Lojas"].copy()
-    if sl != "Todas": filt = filt[filt["Loja"]==sl]
+    if sl != "Todas": filt = filt[filt["Loja"].astype(str).str.strip()==sl]
     if sm != "Todos": filt = filt[filt["Mes"]==sm]
     filt = filt[filt["Ano"]==sa]
     if filt.empty: st.info("Nenhum documento.")
