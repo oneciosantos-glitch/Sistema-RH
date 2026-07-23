@@ -291,6 +291,41 @@ def exportar_diarias_formatado(df, caminho):
     wb.save(caminho)
     wb.close()
 
+# ====================== BACKUP / RESTORE ======================
+import zipfile
+import io
+
+def criar_backup_zip():
+    """Cria um arquivo ZIP em memória com todos os dados e anexos."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Arquivos Excel principais
+        for arq in [ARQUIVO, ARQUIVO_DIARIAS]:
+            if os.path.exists(arq):
+                zf.write(arq, arq)
+        # Pastas de documentos, fotos e comprovantes
+        for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
+            if os.path.exists(pasta):
+                for root, dirs, files in os.walk(pasta):
+                    for file in files:
+                        caminho_completo = os.path.join(root, file)
+                        caminho_zip = os.path.relpath(caminho_completo, start=".")
+                        zf.write(caminho_completo, caminho_zip)
+    zip_buffer.seek(0)
+    return zip_buffer
+
+def restaurar_backup_zip(zip_file):
+    """Restaura todos os dados e anexos a partir de um arquivo ZIP."""
+    arquivos_extraidos = []
+    with zipfile.ZipFile(zip_file, "r") as zf:
+        for item in zf.namelist():
+            # Ignora arquivos de sistema do Mac/Windows
+            if item.startswith("__MACOSX") or item.startswith("."):
+                continue
+            zf.extract(item, ".")
+            arquivos_extraidos.append(item)
+    return arquivos_extraidos
+
 def lista_lojas():
     return [
         "Assaí Atacadista Batista Campos",
@@ -458,8 +493,8 @@ st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_side
 st.title("📋 SISTEMA RH COMPLETO")
 
 # ⚠️ LINHA OBRIGATÓRIA: CRIA TODAS AS ABAS ANTES DE USÁ-LAS
-aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8 = st.tabs([
-    "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos", "💰 CONTROLE DE DIÁRIAS"
+aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8, aba9 = st.tabs([
+    "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos", "💰 CONTROLE DE DIÁRIAS", "💾 Backup"
 ])
 
 # ================ ABA 1 - CADASTRO ================
@@ -514,7 +549,7 @@ with aba1:
             dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
             hoje = datetime.now()
             dias_corridos = (hoje - dt_adm).days
-            for prazo in [29, 44, 59, 89]:
+            for prazo in [30, 45, 60, 90]:
                 rest = prazo - dias_corridos
                 if rest > 0:
                     status = f"Faltam {rest} dias"
@@ -800,7 +835,7 @@ with aba3:
         try:
             dt_adm = datetime.strptime(str(func["Admissao"]).strip(), "%d/%m/%Y")
             dias = (hoje - dt_adm).days
-            for p in [29,44,59,89]:
+            for p in [30,45,60,90]:
                 if 0 <= p - dias <=10:
                     tabela_exp.append([func["Matricula"], func["Nome"], func["Loja"], f"{p} dias", f"Faltam {p-dias} dias"])
                     break
@@ -1234,3 +1269,59 @@ with aba8:
         os.remove(nome_arq)
     else:
         st.info("Filtre os dados para exportar.")
+
+# ================ ABA 9 - BACKUP / RESTAURAÇÃO ================
+with aba9:
+    st.subheader("💾 BACKUP E RESTAURAÇÃO")
+    st.warning("⚠️ **IMPORTANTE:** No Streamlit Cloud, os dados são salvos localmente e podem ser perdidos ao atualizar o código. Use esta aba para fazer backup antes de qualquer atualização!")
+
+    st.markdown("---")
+    st.markdown("### 📥 FAZER BACKUP (Exportar tudo)")
+    st.info("Clique no botão abaixo para baixar um arquivo ZIP com todos os dados: planilhas Excel, documentos das lojas, documentos dos funcionários, fotos e comprovantes de diárias.")
+
+    if st.button("💾 GERAR BACKUP COMPLETO", type="primary"):
+        with st.spinner("Compactando todos os dados..."):
+            zip_buffer = criar_backup_zip()
+        st.success("✅ Backup gerado com sucesso!")
+        st.download_button(
+            label="⬇️ BAIXAR ARQUIVO ZIP",
+            data=zip_buffer,
+            file_name=f"Backup_RH_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            mime="application/zip"
+        )
+
+    st.markdown("---")
+    st.markdown("### 📤 RESTAURAR BACKUP (Importar tudo)")
+    st.info("Selecione o arquivo ZIP de backup para restaurar todos os dados. **ATENÇÃO:** Isso irá substituir os dados atuais.")
+
+    arquivo_backup = st.file_uploader("Selecione o arquivo ZIP de backup", type=["zip"], key="upload_backup")
+
+    if arquivo_backup is not None:
+        st.warning("⚠️ Confirme para restaurar os dados do backup. Os dados atuais serão substituídos.")
+        if st.button("🔄 RESTAURAR BACKUP", type="primary"):
+            with st.spinner("Restaurando dados..."):
+                try:
+                    arquivos_restaurados = restaurar_backup_zip(arquivo_backup)
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"❌ Erro ao restaurar backup: {e}")
+                    st.stop()
+            st.success(f"✅ Backup restaurado com sucesso! {len(arquivos_restaurados)} arquivo(s) restaurado(s).")
+            st.info("🔄 A página será atualizada em instantes para carregar os dados restaurados...")
+            time.sleep(2)
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 📂 Arquivos Atuais no Sistema")
+    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+    with col_b1:
+        st.metric("📎 Docs Lojas", len(os.listdir(PASTA_DOCS)) if os.path.exists(PASTA_DOCS) else 0)
+    with col_b2:
+        st.metric("📄 Docs Funcionários", len(os.listdir(PASTA_DOCS_FUNC)) if os.path.exists(PASTA_DOCS_FUNC) else 0)
+    with col_b3:
+        st.metric("🖼️ Fotos", len(os.listdir(PASTA_FOTOS)) if os.path.exists(PASTA_FOTOS) else 0)
+    with col_b4:
+        st.metric("📎 Comprovantes", len(os.listdir(PASTA_COMPROVANTES)) if os.path.exists(PASTA_COMPROVANTES) else 0)
+
+    st.markdown("---")
+    st.caption("Dica: Faça backup periodicamente ou sempre antes de atualizar o código no Streamlit Cloud.")
