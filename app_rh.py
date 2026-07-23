@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 import os
 import shutil
+import time
 from datetime import datetime, timedelta
 from PIL import Image
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -387,6 +388,71 @@ def add_historico_auto(mat, nome, acao, dados_completos):
     else: dados["Historico"] = pd.concat([dados["Historico"], pd.DataFrame([registro])], ignore_index=True)
     salvar_dados(dados)
 
+def gerar_ficha_individual(fd, fh, mr):
+    """Gera arquivo Excel da ficha individual usando openpyxl diretamente para evitar colunas duplicadas."""
+    nome_arq = f"Rel_{mr}_ficha.xlsx"
+    
+    # Garante que usamos apenas colunas padrão na ordem correta
+    colunas_dados = [
+        "Matricula","Nome","CPF","RG","PIS","Nascimento","Admissao",
+        "Telefone","Endereco","Loja","Cargo","Salario","Situacao",
+        "DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
+        "DataFeriasInicio","DiasFerias","DataRetornoFerias",
+        "DataPedidoConta","DataRescisao","DataAbandono",
+        "DataTerminoContrato",
+        "DataLicenca","DiasLicenca","DataTerminoLicenca",
+        "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
+        "CaminhoFoto"
+    ]
+    colunas_historico = [
+        "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
+        "Nascimento","Admissao","Telefone","Endereco","Loja","Cargo",
+        "Salario","Situacao","DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
+        "DataFeriasInicio","DiasFerias","DataRetornoFerias",
+        "DataPedidoConta","DataRescisao","DataAbandono",
+        "DataTerminoContrato",
+        "DataLicenca","DiasLicenca","DataTerminoLicenca",
+        "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
+    ]
+    
+    wb = Workbook()
+    
+    # Aba Dados
+    ws_dados = wb.active
+    ws_dados.title = "Dados"
+    
+    # Filtra apenas colunas que existem no DataFrame
+    cols_dados_existentes = [c for c in colunas_dados if c in fd.columns]
+    fd_limpo = fd[cols_dados_existentes].copy()
+    
+    # Escreve cabeçalho
+    for col_idx, col_name in enumerate(cols_dados_existentes, 1):
+        ws_dados.cell(row=1, column=col_idx, value=col_name)
+    
+    # Escreve dados
+    for row_idx, (_, row) in enumerate(fd_limpo.iterrows(), 2):
+        for col_idx, col_name in enumerate(cols_dados_existentes, 1):
+            ws_dados.cell(row=row_idx, column=col_idx, value=row[col_name])
+    
+    # Aba Histórico
+    ws_hist = wb.create_sheet(title="Histórico")
+    
+    if not fh.empty:
+        cols_hist_existentes = [c for c in colunas_historico if c in fh.columns]
+        fh_limpo = fh[cols_hist_existentes].copy()
+        for col_idx, col_name in enumerate(cols_hist_existentes, 1):
+            ws_hist.cell(row=1, column=col_idx, value=col_name)
+        for row_idx, (_, row) in enumerate(fh_limpo.iterrows(), 2):
+            for col_idx, col_name in enumerate(cols_hist_existentes, 1):
+                ws_hist.cell(row=row_idx, column=col_idx, value=row[col_name])
+    else:
+        ws_hist.cell(row=1, column=1, value="Aviso")
+        ws_hist.cell(row=2, column=1, value="Sem histórico registrado")
+    
+    wb.save(nome_arq)
+    wb.close()
+    return nome_arq
+
 # ====================== INTERFACE PRINCIPAL ======================
 st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
 st.title("📋 SISTEMA RH COMPLETO")
@@ -617,6 +683,7 @@ with aba1:
             salvar_dados(dados)
             add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
             st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
+            time.sleep(0.5)
             st.rerun()
 
     if mat_sel.strip() and st.button("🗑️ EXCLUIR REGISTRO", use_container_width=True, type="secondary"):
@@ -748,9 +815,13 @@ with aba3:
             dt = datetime.strptime(str(f["Admissao"]).strip(), "%d/%m/%Y")
             if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
             meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
-            if 23 <= meses < 24:
+            # Mostra apenas quem está no período 21-23 meses
+            # (prestes a completar 24 meses / 2º período aquisitivo)
+            if 21 <= meses < 24:
                 tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m"])
         except: pass
+    # Ordena do maior tempo para o menor (quem tem mais meses aparece primeiro — são os mais prioritários)
+    tabela_fer.sort(key=lambda x: int(x[5].replace("m","")), reverse=True)
     st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo"]), use_container_width=True, hide_index=True)
 
 # ================ ABA 4 - HISTÓRICO ================
@@ -785,11 +856,10 @@ with aba5:
             fh = dados["Historico"][dados["Historico"]["Matricula"] == mr.strip()]
             if fd.empty: st.error("Não encontrado")
             elif st.button("GERAR"):
-                with pd.ExcelWriter(f"Rel_{mr}_{fd.iloc[0]['Nome'].replace(' ','_')}.xlsx") as arq:
-                    fd.to_excel(arq, index=False, sheet_name="Dados")
-                    fh.to_excel(arq, index=False, sheet_name="Histórico") if not fh.empty else pd.DataFrame([{"Aviso":"Sem histórico"}]).to_excel(arq, index=False, sheet_name="Histórico")
-                with open(f"Rel_{mr}_{fd.iloc[0]['Nome'].replace(' ','_')}.xlsx","rb") as f:
-                    st.download_button("⬇️ BAIXAR", f, file_name=f"Rel_{mr}.xlsx")
+                nome_arq = gerar_ficha_individual(fd, fh, mr.strip())
+                with open(nome_arq, "rb") as f:
+                    st.download_button("⬇️ BAIXAR", f, file_name=nome_arq)
+                os.remove(nome_arq)
     elif st.button("GERAR E BAIXAR"):
         if rel == "Prazos Experiência": df = pd.DataFrame(tabela_exp, columns=["Matrícula","Nome","Loja","Prazo","Dias Restantes"])
         elif rel == "Ativos": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Ativo"]
