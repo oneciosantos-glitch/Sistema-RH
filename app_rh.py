@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import shutil
 from datetime import datetime, timedelta
 from PIL import Image
 from openpyxl import load_workbook
@@ -85,31 +86,57 @@ def carregar_diarias():
         "DADOS BANCÁRIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
         "CARGO","DATA CADASTRO","COMPROVANTE"
     ]
+    
+    if not os.path.exists(ARQUIVO_DIARIAS):
+        return pd.DataFrame(columns=cols_padrao)
+    
+    # Mapeamento de colunas da planilha externa para o padrão do app
+    rename_map = {
+        'NOME COMPLETO DO COLABORADOR': 'NOME COLABORADOR',
+        'QUANT.': 'QTDE DE DIARIAS',
+        'VALOR UNI.': 'VALOR UNITARIO',
+        'TOTAL': 'VALOR TOTAL',
+        'MOTIVO DA DIARIA': 'MOTIVO',
+        'situação': 'SITUACAO',
+        'Mês': 'MES',
+        'semana': 'SEMANA',
+        'DATA DA EXECUÇÃO': 'DATA EXECUCAO',
+        'SUBSTITUIÇÃO': 'SUBSTITUICAO',
+        'DATA DE PAGAM.': 'DATA PAGAMENTO'
+    }
+    
+    df = None
+    
+    # ESTRATÉGIA 1: Tenta header=0 (formato do app - cabeçalho na 1ª linha)
     try:
-        # Tenta ler com header na segunda linha (pula texto de instruções)
-        df = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
-        # Renomeia colunas da planilha do usuário para o padrão do app
-        rename_map = {
-            'NOME COMPLETO DO COLABORADOR': 'NOME COLABORADOR',
-            'QUANT.': 'QTDE DE DIARIAS',
-            'VALOR UNI.': 'VALOR UNITARIO',
-            'TOTAL': 'VALOR TOTAL',
-            'DADOS BANCÁRIOS': 'DADOS BANCÁRIOS',
-            'MOTIVO DA DIARIA': 'MOTIVO',
-            'situação': 'SITUACAO',
-            'Mês': 'MES',
-            'semana': 'SEMANA',
-            'DATA DA EXECUÇÃO': 'DATA EXECUCAO',
-            'SUBSTITUIÇÃO': 'SUBSTITUICAO',
-            'DATA DE PAGAM.': 'DATA PAGAMENTO'
-        }
-        df = df.rename(columns=rename_map)
+        df_test = pd.read_excel(ARQUIVO_DIARIAS, header=0, dtype=str, keep_default_na=False)
+        # Verifica se o formato é do app (tem colunas padrão conhecidas)
+        colunas_encontradas = [c for c in cols_padrao if c in df_test.columns]
+        if len(colunas_encontradas) >= 3:  # Se achou pelo menos 3 colunas padrão, é formato do app
+            df = df_test
     except Exception:
-        # Se falhar, tenta ler normalmente (já no formato do app)
+        pass
+    
+    # ESTRATÉGIA 2: Tenta header=1 (formato da planilha do usuário com instruções na 1ª linha)
+    if df is None:
+        try:
+            df_test = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
+            df_test = df_test.rename(columns=rename_map)
+            colunas_encontradas = [c for c in cols_padrao if c in df_test.columns]
+            if len(colunas_encontradas) >= 3:
+                df = df_test
+        except Exception:
+            pass
+    
+    # ESTRATÉGIA 3: Último recurso - tenta ler de qualquer jeito
+    if df is None:
         try:
             df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
         except Exception:
             df = pd.DataFrame(columns=cols_padrao)
+    
+    if df is None:
+        df = pd.DataFrame(columns=cols_padrao)
 
     # Garante que todas as colunas padrão existam
     for col in cols_padrao:
@@ -848,16 +875,46 @@ with aba8:
 
     # Upload da planilha de diárias
     st.markdown("---")
-    arq_diarias = st.file_uploader("📤 Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
+    with st.expander("📤 Como importar diárias de uma planilha externa?", expanded=False):
+        st.markdown("""
+        **Para que serve esta opção?**
+        > Use esta opção se você já tem uma planilha Excel com diárias preenchidas e deseja importar esses dados para o sistema, sem precisar digitar tudo manualmente.
+        
+        **Formato esperado:**
+        - A planilha pode ter uma **linha de instruções/título** na primeira linha, e o cabeçalho começando na segunda linha.
+        - Ou pode ter o **cabeçalho direto na primeira linha**.
+        - Colunas principais reconhecidas: LOJA, NOME COLABORADOR, CPF, DATA EXECUÇÃO, QTDE DE DIÁRIAS, VALOR UNITÁRIO, etc.
+        - O sistema identifica automaticamente o formato da planilha.
+        
+        ⚠️ **Atenção:** ao carregar uma planilha, os dados anteriores serão substituídos pelos dados do arquivo. Faça backup se necessário.
+        """)
+    
+    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
     if arq_diarias is not None:
-        with open(ARQUIVO_DIARIAS, "wb") as f:
+        # Salva temporariamente para validar
+        temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
+        with open(temp_path, "wb") as f:
             f.write(arq_diarias.read())
-        st.success("✅ Planilha carregada com sucesso!")
-        st.rerun()
+        
+        # Valida se o arquivo tem dados legíveis
+        try:
+            df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
+            if df_test.empty or df_test.shape[0] < 1:
+                st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
+            else:
+                # Move o arquivo temporário para o definitivo
+                shutil.move(temp_path, ARQUIVO_DIARIAS)
+                st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
+                st.info("🔄 A página será atualizada em instantes...")
+                st.rerun()
+        except Exception as e:
+            st.error(f"❌ Erro ao ler a planilha: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     df_diarias = carregar_diarias()
     if df_diarias.empty:
-        st.warning("⚠️ Nenhuma diária cadastrada. Faça upload da planilha acima.")
+        st.warning("⚠️ Nenhuma diária cadastrada. Faça upload da planilha acima ou cadastre uma nova diária no formulário abaixo.")
 
     # ---------- CARDS DE RESUMO ----------
     st.markdown("---")
