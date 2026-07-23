@@ -989,31 +989,6 @@ with aba8:
     if df_diarias.empty:
         st.warning("⚠️ Nenhuma diária cadastrada. Faça upload da planilha acima ou cadastre uma nova diária no formulário abaixo.")
 
-    # ---------- CARDS DE RESUMO ----------
-    st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("👥 Total de Diárias", len(df_diarias))
-    with c2:
-        try:
-            vtotal = df_diarias["VALOR TOTAL"].replace("", "0").astype(float).sum()
-        except:
-            vtotal = 0
-        st.metric("💰 Valor Total", f"R$ {vtotal:,.2f}")
-    with c3:
-        try:
-            vp = df_diarias[df_diarias["SITUACAO"] == "PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
-        except:
-            vp = 0
-        st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
-    with c4:
-        try:
-            vpg = df_diarias[df_diarias["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
-        except:
-            vpg = 0
-        st.metric("✅ Pago", f"R$ {vpg:,.2f}")
-    st.markdown("---")
-
     # ---------- FILTROS ----------
     col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
     with col_p1: filtro_loja_d = st.selectbox("Loja", ["Todas"] + lista_lojas(), key="filtro_loja_d")
@@ -1025,7 +1000,7 @@ with aba8:
 
     df_filtrado = df_diarias.copy()
     if filtro_loja_d != "Todas":
-        df_filtrado = df_filtrado[df_filtrado["LOJA"] == filtro_loja_d]
+        df_filtrado = df_filtrado[df_filtrado["LOJA"].astype(str).str.strip() == filtro_loja_d.strip()]
     if filtro_mes_d != "Todos":
         df_filtrado = df_filtrado[df_filtrado["MES"] == filtro_mes_d]
     if filtro_sem_d != "Todas":
@@ -1039,6 +1014,31 @@ with aba8:
             df_filtrado["NOME COLABORADOR"].str.contains(busca_d, case=False, na=False) |
             df_filtrado["CPF"].str.contains(busca_d, case=False, na=False)
         ]
+
+    # ---------- CARDS DE RESUMO (ATUALIZADOS PELO FILTRO) ----------
+    st.markdown("---")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("👥 Total de Diárias", len(df_filtrado))
+    with c2:
+        try:
+            vtotal = df_filtrado["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vtotal = 0
+        st.metric("💰 Valor Total", f"R$ {vtotal:,.2f}")
+    with c3:
+        try:
+            vp = df_filtrado[df_filtrado["SITUACAO"] == "PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vp = 0
+        st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
+    with c4:
+        try:
+            vpg = df_filtrado[df_filtrado["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vpg = 0
+        st.metric("✅ Pago", f"R$ {vpg:,.2f}")
+    st.markdown("---")
 
     # ---------- EDITOR INLINE ----------
     if not df_filtrado.empty:
