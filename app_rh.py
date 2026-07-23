@@ -817,7 +817,7 @@ with aba3:
             meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
             # Mostra apenas quem está no período 21-23 meses
             # (prestes a completar 24 meses / 2º período aquisitivo)
-            if 20 <= meses < 24:
+            if 21 <= meses < 24:
                 tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m"])
         except: pass
     # Ordena do maior tempo para o menor (quem tem mais meses aparece primeiro — são os mais prioritários)
