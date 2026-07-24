@@ -50,7 +50,7 @@ os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
 
 MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
 SEMANAS = ["Todas", "1º Semana", "2º Semana", "3º Semana", "4º Semana"]
-SITUACOES_DIARIA = ["Todas", "PENDENTE", "PAGO", "PAGO E ENVIADO", "FALTA ENVIAR AO FINANCEIRO"]
+SITUACOES_DIARIA = ["Todas", "FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "PAGO"]
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
@@ -445,8 +445,8 @@ def exportar_diarias_formatado(df, caminho):
             else:
                 cell.alignment = align_data_center
 
-            # Destacar PENDENTE na coluna SITUACAO
-            if header == "SITUACAO" and cell.value == "PENDENTE":
+            # Destacar ENVIADO/PENDENTE na coluna SITUACAO
+            if header == "SITUACAO" and cell.value == "ENVIADO/PENDENTE":
                 cell.fill = fill_pendente
                 cell.font = font_pendente
 
@@ -1242,33 +1242,27 @@ with aba8:
 
     # ---------- CARDS DE RESUMO (ATUALIZADOS PELO FILTRO) ----------
     st.markdown("---")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("👥 Total de Diárias", len(df_filtrado))
     with c2:
-        try:
-            vtotal = df_filtrado["VALOR TOTAL"].replace("", "0").astype(float).sum()
-        except:
-            vtotal = 0
-        st.metric("💰 Valor Total", f"R$ {vtotal:,.2f}")
-    with c3:
-        try:
-            vp = df_filtrado[df_filtrado["SITUACAO"] == "PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
-        except:
-            vp = 0
-        st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
-    with c4:
-        try:
-            vpg = df_filtrado[df_filtrado["SITUACAO"].isin(["PAGO", "PAGO E ENVIADO"])]["VALOR TOTAL"].replace("", "0").astype(float).sum()
-        except:
-            vpg = 0
-        st.metric("✅ Pago", f"R$ {vpg:,.2f}")
-    with c5:
         try:
             vfe = df_filtrado[df_filtrado["SITUACAO"] == "FALTA ENVIAR AO FINANCEIRO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vfe = 0
         st.metric("📤 Falta Enviar", f"R$ {vfe:,.2f}")
+    with c3:
+        try:
+            vp = df_filtrado[df_filtrado["SITUACAO"] == "ENVIADO/PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vp = 0
+        st.metric("⏳ Enviado/Pendente", f"R$ {vp:,.2f}")
+    with c4:
+        try:
+            vpg = df_filtrado[df_filtrado["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vpg = 0
+        st.metric("✅ Pago", f"R$ {vpg:,.2f}")
     st.markdown("---")
 
     # ---------- EDITOR INLINE ----------
@@ -1293,7 +1287,7 @@ with aba8:
             "MOTIVO": st.column_config.TextColumn("MOTIVO", required=True),
             "QTDE DE DIARIAS": st.column_config.NumberColumn("QTDE", min_value=1, max_value=30, step=1, required=True),
             "VALOR UNITARIO": st.column_config.NumberColumn("VALOR UNI. (R$)", min_value=0.0, step=0.01, format="%.2f", required=True),
-            "SITUACAO": st.column_config.SelectboxColumn("SITUAÇÃO", options=["PENDENTE", "PAGO", "PAGO E ENVIADO", "FALTA ENVIAR AO FINANCEIRO"], required=True),
+            "SITUACAO": st.column_config.SelectboxColumn("SITUAÇÃO", options=["FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "PAGO"], required=True),
             "COMPROVANTE": st.column_config.TextColumn("COMPROVANTE", disabled=True),
             "DATA CADASTRO": st.column_config.TextColumn("DATA CADASTRO", disabled=True),
             "OBSERVACAO": st.column_config.TextColumn("OBSERVAÇÃO"),
@@ -1379,7 +1373,7 @@ with aba8:
             motivo_d = st.text_input("Motivo *", key="nova_motivo_d")
             qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1, key="nova_qtde_d")
             valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f", key="nova_valor_d")
-            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO", "PAGO E ENVIADO", "FALTA ENVIAR AO FINANCEIRO"], key="nova_sit_d")
+            situacao_d = st.selectbox("Situação *", ["FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "PAGO"], key="nova_sit_d")
         observacao_d = st.text_area("Observação (erros de pagamento, conta em nome de terceiro, conta incorreta, etc.)", key="nova_obs_d")
         submitted = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary")
         if submitted:
