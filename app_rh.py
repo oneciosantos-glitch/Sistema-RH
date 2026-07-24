@@ -50,7 +50,7 @@ os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
 
 MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
 SEMANAS = ["Todas", "1º Semana", "2º Semana", "3º Semana", "4º Semana"]
-SITUACOES_DIARIA = ["Todas", "Enviar ao Financeiro", "Enviado e Pendente", "Pago"]
+SITUACOES_DIARIA = ["Todas", "PENDENTE", "PAGO"]
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
@@ -445,11 +445,10 @@ def exportar_diarias_formatado(df, caminho):
             else:
                 cell.alignment = align_data_center
 
-            # Destacar situações na coluna SITUACAO
-            if header == "SITUACAO":
-                if cell.value == "Enviado e Pendente":
-                    cell.fill = fill_pendente
-                    cell.font = font_pendente
+            # Destacar PENDENTE na coluna SITUACAO
+            if header == "SITUACAO" and cell.value == "PENDENTE":
+                cell.fill = fill_pendente
+                cell.font = font_pendente
 
             # Formato de moeda nas colunas de valor
             if header in ["VALOR UNITARIO", "VALOR TOTAL"]:
@@ -681,8 +680,8 @@ st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_side
 st.title("📋 SISTEMA RH COMPLETO")
 
 # ⚠️ LINHA OBRIGATÓRIA: CRIA TODAS AS ABAS ANTES DE USÁ-LAS
-aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8, aba9, aba10 = st.tabs([
-    "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos", "💰 CONTROLE DE DIÁRIAS", "💾 Backup", "☁️ Google Sheets"
+aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8, aba9 = st.tabs([
+    "Cadastro", "Painel", "Prazos e Férias", "Histórico", "Relatórios", "📎 Documentos", "⚙️ Lojas e Cargos", "💰 CONTROLE DE DIÁRIAS", "💾 Backup"
 ])
 
 # ================ ABA 1 - CADASTRO ================
@@ -1059,7 +1058,7 @@ with aba4:
     st.dataframe(dados["Historico"][["DataEvento","TipoEvento","Matricula","Nome","Situacao","Detalhes"]], use_container_width=True, hide_index=True)
     with st.form("add_ev"):
         t,d,det = st.columns([1,1,3])
-        te = t.selectbox("Tipo", ["Reunião","Atestado","Advertência","Elogio","Outros"])
+        te = t.selectbox("Tipo", ["Má conduta","Atestado","Advertência","Suspensão","Outros"])
         de = d.text_input("Data", value=datetime.now().strftime("%d/%m/%Y"))
         dee = det.text_input("Detalhes")
         if st.form_submit_button("✅ ADICIONAR") and mat_sel.strip():
@@ -1254,166 +1253,103 @@ with aba8:
         st.metric("💰 Valor Total", f"R$ {vtotal:,.2f}")
     with c3:
         try:
-            vp = df_filtrado[df_filtrado["SITUACAO"] == "Enviado e Pendente"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+            vp = df_filtrado[df_filtrado["SITUACAO"] == "PENDENTE"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vp = 0
-        st.metric("⏳ Enviado e Pendente", f"R$ {vp:,.2f}")
+        st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
     with c4:
         try:
-            vpg = df_filtrado[df_filtrado["SITUACAO"] == "Pago"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+            vpg = df_filtrado[df_filtrado["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vpg = 0
         st.metric("✅ Pago", f"R$ {vpg:,.2f}")
     st.markdown("---")
 
-    # ---------- VISUALIZAÇÃO DA TABELA ----------
+    # ---------- EDITOR INLINE ----------
     if not df_filtrado.empty:
-        st.markdown("**📋 Diárias encontradas**")
-        st.dataframe(
-            df_filtrado[["LOJA","MES","SEMANA","ANO","NOME COLABORADOR","CPF","CARGO","DATA EXECUCAO","QTDE DE DIARIAS","VALOR UNITARIO","VALOR TOTAL","SITUACAO","MOTIVO","DATA PAGAMENTO"]],
-            use_container_width=True, hide_index=True
+        st.markdown("**📝 Edite os dados diretamente na tabela abaixo e clique em SALVAR ALTERAÇÕES**")
+        # Guarda os índices originais para salvar corretamente no DataFrame principal
+        idx_original = df_filtrado.index.tolist()
+        df_editable = df_filtrado.reset_index(drop=True)
+
+        # Configurar colunas editáveis
+        col_config = {
+            "LOJA": st.column_config.SelectboxColumn("LOJA", options=lista_lojas(), required=True),
+            "MES": st.column_config.SelectboxColumn("MÊS", options=MESES[1:], required=True),
+            "SEMANA": st.column_config.SelectboxColumn("SEMANA", options=SEMANAS[1:], required=True),
+            "ANO": st.column_config.SelectboxColumn("ANO", options=ANOS, required=True),
+            "NOME COLABORADOR": st.column_config.TextColumn("NOME COLABORADOR", required=True),
+            "CPF": st.column_config.TextColumn("CPF", required=True),
+            "CARGO": st.column_config.TextColumn("CARGO"),
+            "DADOS BANCÁRIOS": st.column_config.TextColumn("DADOS BANCÁRIOS"),
+            "DATA EXECUCAO": st.column_config.TextColumn("DATA EXECUÇÃO"),
+            "DATA PAGAMENTO": st.column_config.TextColumn("DATA PAGAMENTO"),
+            "MOTIVO": st.column_config.TextColumn("MOTIVO", required=True),
+            "QTDE DE DIARIAS": st.column_config.NumberColumn("QTDE", min_value=1, max_value=30, step=1, required=True),
+            "VALOR UNITARIO": st.column_config.NumberColumn("VALOR UNI. (R$)", min_value=0.0, step=0.01, format="%.2f", required=True),
+            "SITUACAO": st.column_config.SelectboxColumn("SITUAÇÃO", options=["PENDENTE", "PAGO"], required=True),
+            "COMPROVANTE": st.column_config.TextColumn("COMPROVANTE", disabled=True),
+            "DATA CADASTRO": st.column_config.TextColumn("DATA CADASTRO", disabled=True),
+        }
+
+        edited_df = st.data_editor(
+            df_editable,
+            column_config=col_config,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_diarias"
         )
-    else:
-        st.info("Nenhuma diária encontrada com os filtros aplicados.")
 
-    # ---------- EDIÇÃO NO MESMO ESTILO DA ABA CADASTRO ----------
-    st.markdown("---")
-    st.subheader("✏️ EDITAR DIÁRIA")
-    st.caption("Digite o CPF do colaborador para localizar e editar uma diária existente.")
+        # Calcular VALOR TOTAL automaticamente
+        try:
+            edited_df["VALOR TOTAL"] = (edited_df["QTDE DE DIARIAS"].astype(float) * edited_df["VALOR UNITARIO"].astype(float)).apply(lambda x: f"{x:.2f}")
+        except:
+            pass
 
-    cpf_sel = st.text_input("Digite o CPF EXATO para editar / excluir", placeholder="Igual coluna CPF da planilha", key="cpf_editar_diaria")
-    reg_diarias = pd.DataFrame()
-    if cpf_sel.strip():
-        cpf_busca = str(cpf_sel).strip()
-        reg_diarias = df_diarias[df_diarias["CPF"] == cpf_busca]
-
-    val_campo_d = lambda nome: reg_diarias_sel.iloc[0][nome] if not reg_diarias_sel.empty else ""
-
-    reg_diarias_sel = pd.DataFrame()
-    if not reg_diarias.empty:
-        # Se houver mais de uma diária com o mesmo CPF, mostra select para escolher qual editar
-        if len(reg_diarias) > 1:
-            opcoes_edicao = []
-            for idx_r, row_r in reg_diarias.iterrows():
-                opcoes_edicao.append(f"[{idx_r}] {row_r['LOJA']} | {row_r['MES']}/{row_r['ANO']} | Sem {row_r['SEMANA']} | R$ {row_r['VALOR TOTAL']} | {row_r['SITUACAO']}")
-            sel_opcao = st.selectbox("Selecione a diária para editar", options=range(len(opcoes_edicao)), format_func=lambda x: opcoes_edicao[x], key="sel_diaria_editar")
-            idx_sel = reg_diarias.index[sel_opcao]
-            reg_diarias_sel = df_diarias.loc[[idx_sel]]
-        else:
-            reg_diarias_sel = reg_diarias.copy()
-
-    if st.button("🗑️ LIMPAR CAMPOS", use_container_width=True, type="secondary", key="limpar_diaria"):
-        st.rerun()
-
-    with st.form("form_editar_diaria", clear_on_submit=False):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            lojas_d = lista_lojas()
-            idx_loja_d = lojas_d.index(val_campo_d("LOJA")) if val_campo_d("LOJA") in lojas_d else 0
-            loja_ed = st.selectbox("Loja *", lojas_d, index=idx_loja_d, key="ed_loja_d")
-
-            meses_d = MESES[1:]
-            idx_mes_d = meses_d.index(val_campo_d("MES")) if val_campo_d("MES") in meses_d else 0
-            mes_ed = st.selectbox("Mês *", meses_d, index=idx_mes_d, key="ed_mes_d")
-
-            semanas_d = SEMANAS[1:]
-            idx_sem_d = semanas_d.index(val_campo_d("SEMANA")) if val_campo_d("SEMANA") in semanas_d else 0
-            semana_ed = st.selectbox("Semana *", semanas_d, index=idx_sem_d, key="ed_sem_d")
-
-            anos_d = ANOS
-            idx_ano_d = anos_d.index(val_campo_d("ANO")) if val_campo_d("ANO") in anos_d else anos_d.index(str(datetime.now().year)) if str(datetime.now().year) in anos_d else 0
-            ano_ed = st.selectbox("Ano *", anos_d, index=idx_ano_d, key="ed_ano_d")
-        with c2:
-            nome_ed = st.text_input("Nome do Colaborador *", value=val_campo_d("NOME COLABORADOR"), key="ed_nome_d")
-            cpf_ed = st.text_input("CPF *", value=val_campo_d("CPF"), key="ed_cpf_d")
-            cargo_ed = st.text_input("Cargo", value=val_campo_d("CARGO"), key="ed_cargo_d")
-            dados_bancarios_ed = st.text_input("Dados Bancários (PIX / Banco / Ag / CC)", value=val_campo_d("DADOS BANCÁRIOS"), key="ed_dados_bancarios_d")
-            data_exec_ed = st.text_input("Data da Execução (DD/MM/AAAA)", value=val_campo_d("DATA EXECUCAO"), key="ed_data_exec_d")
-        with c3:
-            data_pag_ed = st.text_input("Data de Pagamento (DD/MM/AAAA)", value=val_campo_d("DATA PAGAMENTO"), key="ed_data_pag_d")
-            motivo_ed = st.text_input("Motivo *", value=val_campo_d("MOTIVO"), key="ed_motivo_d")
-            try:
-                qtde_default = int(float(val_campo_d("QTDE DE DIARIAS"))) if val_campo_d("QTDE DE DIARIAS") else 1
-            except:
-                qtde_default = 1
-            qtde_ed = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=qtde_default, key="ed_qtde_d")
-            try:
-                valor_default = float(val_campo_d("VALOR UNITARIO")) if val_campo_d("VALOR UNITARIO") else 0.0
-            except:
-                valor_default = 0.0
-            valor_ed = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f", value=valor_default, key="ed_valor_d")
-
-            situacoes_d = ["Enviar ao Financeiro", "Enviado e Pendente", "Pago"]
-            idx_sit_d = situacoes_d.index(val_campo_d("SITUACAO")) if val_campo_d("SITUACAO") in situacoes_d else 0
-            situacao_ed = st.selectbox("Situação *", situacoes_d, index=idx_sit_d, key="ed_sit_d")
-
-        btn_salvar_d = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary", use_container_width=True)
-        if btn_salvar_d:
-            erros_ed = []
-            if not loja_ed.strip(): erros_ed.append("Loja")
-            if not mes_ed.strip(): erros_ed.append("Mês")
-            if not semana_ed.strip(): erros_ed.append("Semana")
-            if not ano_ed.strip(): erros_ed.append("Ano")
-            if not nome_ed.strip(): erros_ed.append("Nome do Colaborador")
-            if not cpf_ed.strip(): erros_ed.append("CPF")
-            if not motivo_ed.strip(): erros_ed.append("Motivo")
-            if qtde_ed <= 0: erros_ed.append("Qtde deve ser > 0")
-            if valor_ed <= 0: erros_ed.append("Valor deve ser > 0")
-            if erros_ed:
-                st.error("❌ Campos obrigatórios: " + ", ".join(erros_ed))
-            else:
-                valor_total_ed = qtde_ed * valor_ed
-                registro_diaria = {
-                    "LOJA": loja_ed,
-                    "MES": mes_ed,
-                    "SEMANA": semana_ed,
-                    "ANO": ano_ed,
-                    "NOME COLABORADOR": nome_ed.strip().upper(),
-                    "CPF": cpf_ed.strip(),
-                    "CARGO": cargo_ed.strip().upper(),
-                    "DADOS BANCÁRIOS": dados_bancarios_ed.strip().upper(),
-                    "DATA EXECUCAO": data_exec_ed.strip(),
-                    "DATA PAGAMENTO": data_pag_ed.strip(),
-                    "MOTIVO": motivo_ed.strip().upper(),
-                    "QTDE DE DIARIAS": str(qtde_ed),
-                    "VALOR UNITARIO": f"{valor_ed:.2f}",
-                    "VALOR TOTAL": f"{valor_total_ed:.2f}",
-                    "SITUACAO": situacao_ed,
-                    "DATA CADASTRO": val_campo_d("DATA CADASTRO") if val_campo_d("DATA CADASTRO") else datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "COMPROVANTE": val_campo_d("COMPROVANTE")
-                }
-                if not reg_diarias_sel.empty:
-                    # Atualiza registro existente
-                    idx_ed = reg_diarias_sel.index[0]
-                    for col in df_diarias.columns:
-                        if col in registro_diaria:
-                            df_diarias.at[idx_ed, col] = registro_diaria[col]
-                    salvar_diarias(df_diarias)
-                    st.success("✅ Diária atualizada com sucesso!")
-                else:
-                    # Novo cadastro
-                    nova_linha = {col: "" for col in df_diarias.columns}
-                    for col in registro_diaria:
-                        nova_linha[col] = registro_diaria[col]
-                    if not nova_linha.get("DATA CADASTRO"):
+        col_salvar, col_excluir = st.columns([1, 1])
+        with col_salvar:
+            if st.button("💾 SALVAR ALTERAÇÕES", type="primary", key="salvar_diarias_editor"):
+                for i, idx_orig in enumerate(idx_original):
+                    if i < len(edited_df):
+                        for col in df_diarias.columns:
+                            if col in edited_df.columns:
+                                df_diarias.at[idx_orig, col] = str(edited_df.iloc[i][col]) if col not in ["QTDE DE DIARIAS", "VALOR UNITARIO", "VALOR TOTAL"] else str(edited_df.iloc[i][col])
+                # Se houver linhas novas (mais que o original)
+                if len(edited_df) > len(idx_original):
+                    for i in range(len(idx_original), len(edited_df)):
+                        nova_linha = {col: "" for col in df_diarias.columns}
+                        for col in edited_df.columns:
+                            nova_linha[col] = str(edited_df.iloc[i][col])
                         nova_linha["DATA CADASTRO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
-                    salvar_diarias(df_diarias)
-                    st.success("✅ Nova diária cadastrada com sucesso!")
-                time.sleep(0.5)
+                        if not nova_linha.get("VALOR TOTAL"):
+                            try:
+                                q = float(edited_df.iloc[i]["QTDE DE DIARIAS"])
+                                v = float(edited_df.iloc[i]["VALOR UNITARIO"])
+                                nova_linha["VALOR TOTAL"] = f"{q * v:.2f}"
+                            except:
+                                nova_linha["VALOR TOTAL"] = ""
+                        df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
+                # Se houver linhas removidas
+                if len(edited_df) < len(idx_original):
+                    remover = idx_original[len(edited_df):]
+                    for idx_rm in remover:
+                        comp = str(df_diarias.at[idx_rm, "COMPROVANTE"])
+                        if comp and os.path.exists(comp):
+                            os.remove(comp)
+                    df_diarias.drop(index=remover, inplace=True)
+                    df_diarias.reset_index(drop=True, inplace=True)
+                salvar_diarias(df_diarias)
+                st.success("✅ Alterações salvas com sucesso!")
                 st.rerun()
 
-    if cpf_sel.strip() and not reg_diarias.empty and st.button("🗑️ EXCLUIR DIÁRIA", use_container_width=True, type="secondary", key="excluir_diaria_btn"):
-        if st.checkbox("⚠️ CONFIRMA EXCLUSÃO PERMANENTE DESTA DIÁRIA?", key="conf_excluir_diaria"):
-            idx_excluir = reg_diarias_sel.index[0] if not reg_diarias_sel.empty else reg_diarias.index[0]
-            comp_excluir = str(df_diarias.at[idx_excluir, "COMPROVANTE"])
-            if comp_excluir and os.path.exists(comp_excluir):
-                os.remove(comp_excluir)
-            df_diarias.drop(idx_excluir, inplace=True)
-            df_diarias.reset_index(drop=True, inplace=True)
-            salvar_diarias(df_diarias)
-            st.success("✅ Diária excluída com sucesso!")
-            st.rerun()
+        with col_excluir:
+            st.markdown("**🗑️ Excluir linhas selecionadas:** marque a caixa na primeira coluna da tabela acima e depois clique abaixo.")
+            if st.button("🗑️ EXCLUIR SELECIONADOS", key="excluir_diarias_editor"):
+                st.info("Para excluir, delete as linhas diretamente na tabela usando a tecla Delete ou botão de lixeira do editor, depois clique em SALVAR ALTERAÇÕES.")
+
+    else:
+        st.info("Nenhuma diária encontrada com os filtros aplicados.")
 
     # ---------- NOVA DIÁRIA (CADASTRO RÁPIDO) ----------
     st.markdown("---")
@@ -1436,7 +1372,7 @@ with aba8:
             motivo_d = st.text_input("Motivo *", key="nova_motivo_d")
             qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1, key="nova_qtde_d")
             valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f", key="nova_valor_d")
-            situacao_d = st.selectbox("Situação *", ["Enviar ao Financeiro", "Enviado e Pendente", "Pago"], key="nova_sit_d")
+            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO"], key="nova_sit_d")
         submitted = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary")
         if submitted:
             erros = []
@@ -1579,130 +1515,3 @@ with aba9:
 
     st.markdown("---")
     st.caption("Dica: Faça backup periodicamente ou sempre antes de atualizar o código no Streamlit Cloud.")
-
-# ================ ABA 10 - GOOGLE SHEETS CONFIGURAÇÃO ================
-with aba10:
-    st.subheader("☁️ CONFIGURAÇÃO DO GOOGLE SHEETS")
-    st.info("""
-    Esta aba mostra como conectar o sistema ao Google Sheets para que seus dados sejam salvos permanentemente na nuvem.
-    **Com o Google Sheets ativado, seus dados NÃO serão perdidos ao atualizar o código!**
-    """)
-
-    # Status da conexão
-    st.markdown("---")
-    st.markdown("### 📡 Status da Conexão")
-    if GS_ENABLED:
-        st.success("✅ Google Sheets está CONECTADO!")
-        st.write(f"📄 Planilha Funcionários: `{GS_ID_FUNCIONARIOS}`")
-        st.write(f"📄 Planilha Diárias: `{GS_ID_DIARIAS}`")
-        if st.button("🔄 Testar Conexão", type="primary"):
-            with st.spinner("Testando conexão..."):
-                try:
-                    spreadsheet_test = gc.open_by_key(GS_ID_FUNCIONARIOS)
-                    abas_test = [ws.title for ws in spreadsheet_test.worksheets()]
-                    st.success(f"✅ Conexão OK! Abas encontradas: {', '.join(abas_test)}")
-                except Exception as e:
-                    st.error(f"❌ Erro na conexão: {e}")
-    else:
-        st.error("❌ Google Sheets NÃO está conectado.")
-        st.warning("As credenciais não foram configuradas no Streamlit Cloud.")
-
-    # Instruções passo a passo
-    st.markdown("---")
-    st.markdown("### 📋 PASSO A PASSO PARA CONFIGURAR")
-
-    with st.expander("📖 CLIQUE AQUI PARA VER O PASSO A PASSO COMPLETO", expanded=True):
-        st.markdown("""
-        #### **PASSO 1: Criar projeto no Google Cloud Console**
-        1. Acesse: https://console.cloud.google.com/
-        2. Faça login com sua conta Google
-        3. Clique no seletor de projetos (canto superior esquerdo) → **"Novo Projeto"**
-        4. Digite o nome do projeto (ex: "Sistema RH") e clique em **Criar**
-
-        #### **PASSO 2: Ativar a Google Sheets API**
-        1. No menu lateral, vá em **"APIs e Serviços" → "Biblioteca"**
-        2. Pesquise por **"Google Sheets API"**
-        3. Clique nela e depois em **"Ativar"**
-        4. Faça o mesmo para **"Google Drive API"** (pesquise e ative)
-
-        #### **PASSO 3: Criar Conta de Serviço**
-        1. No menu lateral, vá em **"APIs e Serviços" → "Credenciais"**
-        2. Clique em **"+ Criar Credenciais" → "Conta de serviço"**
-        3. Preencha:
-           - **Nome da conta de serviço**: `sistema-rh`
-           - **ID da conta**: deixe o padrão
-           - Clique em **"Criar e continuar"**
-        4. Em "Conceder acesso", selecione o papel **"Editor"**
-        5. Clique em **"Concluir"**
-
-        #### **PASSO 4: Baixar a chave JSON**
-        1. Na lista de contas de serviço, clique na conta que você criou
-        2. Vá na aba **"Chaves"**
-        3. Clique em **"Adicionar chave" → "Criar nova chave"**
-        4. Selecione formato **JSON** e clique em **"Criar"**
-        5. O arquivo JSON será baixado automaticamente (ex: `sistema-rh-123456.json`)
-
-        #### **PASSO 5: Criar as planilhas no Google Sheets**
-        1. Acesse: https://sheets.google.com
-        2. Crie uma planilha chamada **"RH Funcionarios"**
-        3. Copie o ID da planilha da URL (ex: `1ABC...XYZ`)
-        4. Crie outra planilha chamada **"RH Diarias"**
-        5. Copie o ID desta também
-
-        #### **PASSO 6: Compartilhar as planilhas**
-        1. Abra a planilha "RH Funcionarios"
-        2. Clique no botão **"Compartilhar"** (canto superior direito)
-        3. Adicione o email da conta de serviço (está no arquivo JSON, algo como `sistema-rh@projeto.iam.gserviceaccount.com`)
-        4. Dê permissão de **"Editor"**
-        5. Faça o mesmo para a planilha "RH Diarias"
-
-        #### **PASSO 7: Configurar no Streamlit Cloud**
-        1. Acesse: https://share.streamlit.io
-        2. Vá nas configurações do seu app
-        3. Clique em **"Secrets"**
-        4. Cole o seguinte código, substituindo pelos seus dados:
-        """
-        )
-        st.code("""
-[gspread]
-type = "service_account"
-project_id = "SEU_PROJECT_ID"
-private_key_id = "SEU_PRIVATE_KEY_ID"
-private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
-client_email = "sistema-rh@SEU_PROJETO.iam.gserviceaccount.com"
-client_id = "SEU_CLIENT_ID"
-auth_uri = "https://accounts.google.com/o/oauth2/auth"
-token_uri = "https://oauth2.googleapis.com/token"
-auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/sistema-rh%40SEU_PROJETO.iam.gserviceaccount.com"
-
-[gsheets]
-id_funcionarios = "ID_DA_PLANILHA_FUNCIONARIOS"
-id_diarias = "ID_DA_PLANILHA_DIARIAS"
-        """, language="toml")
-
-        st.markdown("""
-        5. Clique em **"Save"**
-        6. Reinicie o app no Streamlit Cloud
-
-        ---
-        ✅ **Pronto!** Seus dados agora serão salvos automaticamente no Google Sheets e NUNCA mais serão perdidos ao atualizar o código!
-        """)
-
-    st.markdown("---")
-    st.markdown("### 📂 Arquivos no Sistema Local (atual)")
-    st.caption("Enquanto o Google Sheets não estiver configurado, os dados ficam apenas nestes arquivos locais que são perdidos a cada atualização:")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write(f"📊 `{ARQUIVO}`")
-        if os.path.exists(ARQUIVO):
-            st.success(f"Existe ({os.path.getsize(ARQUIVO)} bytes)")
-        else:
-            st.error("Não existe")
-    with col2:
-        st.write(f"📊 `{ARQUIVO_DIARIAS}`")
-        if os.path.exists(ARQUIVO_DIARIAS):
-            st.success(f"Existe ({os.path.getsize(ARQUIVO_DIARIAS)} bytes)")
-        else:
-            st.error("Não existe")
