@@ -50,7 +50,7 @@ os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
 
 MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
 SEMANAS = ["Todas", "1º Semana", "2º Semana", "3º Semana", "4º Semana"]
-SITUACOES_DIARIA = ["Todas", "PENDENTE", "PAGO"]
+SITUACOES_DIARIA = ["Todas", "PENDENTE", "PAGO", "PAGO E ENVIADO", "FALTA ENVIAR AO FINANCEIRO"]
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
@@ -236,7 +236,7 @@ def carregar_diarias():
     cols_padrao = [
         "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QTDE DE DIARIAS","VALOR UNITARIO","VALOR TOTAL",
         "DADOS BANCÁRIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO","MES","SEMANA","ANO",
-        "CARGO","DATA CADASTRO","COMPROVANTE"
+        "CARGO","DATA CADASTRO","COMPROVANTE","OBSERVACAO"
     ]
     
     # Tenta carregar do Google Sheets primeiro
@@ -465,8 +465,8 @@ def exportar_diarias_formatado(df, caminho):
         "NOME COLABORADOR": 38, "CPF": 16, "CARGO": 18,
         "DADOS BANCÁRIOS": 35,
         "MOTIVO": 28, "QTDE DE DIARIAS": 10, "VALOR UNITARIO": 14,
-        "VALOR TOTAL": 14, "SITUACAO": 12, "DATA CADASTRO": 18,
-        "COMPROVANTE": 35
+        "VALOR TOTAL": 14, "SITUACAO": 18, "DATA CADASTRO": 18,
+        "COMPROVANTE": 35, "OBSERVACAO": 40
     }
     for col_idx, header in enumerate(headers_app, 1):
         col_letter = get_column_letter(col_idx)
@@ -1242,7 +1242,7 @@ with aba8:
 
     # ---------- CARDS DE RESUMO (ATUALIZADOS PELO FILTRO) ----------
     st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.metric("👥 Total de Diárias", len(df_filtrado))
     with c2:
@@ -1259,10 +1259,16 @@ with aba8:
         st.metric("⏳ Pendente", f"R$ {vp:,.2f}")
     with c4:
         try:
-            vpg = df_filtrado[df_filtrado["SITUACAO"] == "PAGO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+            vpg = df_filtrado[df_filtrado["SITUACAO"].isin(["PAGO", "PAGO E ENVIADO"])]["VALOR TOTAL"].replace("", "0").astype(float).sum()
         except:
             vpg = 0
         st.metric("✅ Pago", f"R$ {vpg:,.2f}")
+    with c5:
+        try:
+            vfe = df_filtrado[df_filtrado["SITUACAO"] == "FALTA ENVIAR AO FINANCEIRO"]["VALOR TOTAL"].replace("", "0").astype(float).sum()
+        except:
+            vfe = 0
+        st.metric("📤 Falta Enviar", f"R$ {vfe:,.2f}")
     st.markdown("---")
 
     # ---------- EDITOR INLINE ----------
@@ -1287,9 +1293,10 @@ with aba8:
             "MOTIVO": st.column_config.TextColumn("MOTIVO", required=True),
             "QTDE DE DIARIAS": st.column_config.NumberColumn("QTDE", min_value=1, max_value=30, step=1, required=True),
             "VALOR UNITARIO": st.column_config.NumberColumn("VALOR UNI. (R$)", min_value=0.0, step=0.01, format="%.2f", required=True),
-            "SITUACAO": st.column_config.SelectboxColumn("SITUAÇÃO", options=["PENDENTE", "PAGO"], required=True),
+            "SITUACAO": st.column_config.SelectboxColumn("SITUAÇÃO", options=["PENDENTE", "PAGO", "PAGO E ENVIADO", "FALTA ENVIAR AO FINANCEIRO"], required=True),
             "COMPROVANTE": st.column_config.TextColumn("COMPROVANTE", disabled=True),
             "DATA CADASTRO": st.column_config.TextColumn("DATA CADASTRO", disabled=True),
+            "OBSERVACAO": st.column_config.TextColumn("OBSERVAÇÃO"),
         }
 
         edited_df = st.data_editor(
@@ -1372,7 +1379,8 @@ with aba8:
             motivo_d = st.text_input("Motivo *", key="nova_motivo_d")
             qtde_d = st.number_input("Qtde de Diárias *", min_value=1, max_value=30, value=1, key="nova_qtde_d")
             valor_d = st.number_input("Valor Unitário (R$) *", min_value=0.0, format="%.2f", key="nova_valor_d")
-            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO"], key="nova_sit_d")
+            situacao_d = st.selectbox("Situação *", ["PENDENTE", "PAGO", "PAGO E ENVIADO", "FALTA ENVIAR AO FINANCEIRO"], key="nova_sit_d")
+        observacao_d = st.text_area("Observação (erros de pagamento, conta em nome de terceiro, conta incorreta, etc.)", key="nova_obs_d")
         submitted = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary")
         if submitted:
             erros = []
@@ -1406,7 +1414,8 @@ with aba8:
                     "VALOR TOTAL": f"{valor_total:.2f}",
                     "SITUACAO": situacao_d,
                     "DATA CADASTRO": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "COMPROVANTE": ""
+                    "COMPROVANTE": "",
+                    "OBSERVACAO": observacao_d.strip().upper()
                 }
                 df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
                 salvar_diarias(df_diarias)
