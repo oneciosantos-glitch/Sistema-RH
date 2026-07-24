@@ -3,11 +3,38 @@ import pandas as pd
 import os
 import shutil
 import time
+import io
+import json
 from datetime import datetime, timedelta
 from PIL import Image
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+# ====================== GOOGLE SHEETS INTEGRAÇÃO ======================
+# Verifica se as credenciais do Google Sheets estão configuradas
+GS_ENABLED = False
+gc = None
+GS_ID_FUNCIONARIOS = None
+GS_ID_DIARIAS = None
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    
+    if "gspread" in st.secrets:
+        creds_dict = dict(st.secrets["gspread"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ])
+        gc = gspread.authorize(creds)
+        GS_ID_FUNCIONARIOS = st.secrets.get("gsheets", {}).get("id_funcionarios", "")
+        GS_ID_DIARIAS = st.secrets.get("gsheets", {}).get("id_diarias", "")
+        if GS_ID_FUNCIONARIOS and GS_ID_DIARIAS:
+            GS_ENABLED = True
+except Exception:
+    pass
 
 # ====================== CONFIGURAÇÕES GERAIS ======================
 ARQUIVO = "dados_funcionarios.xlsx"
@@ -27,18 +54,142 @@ SITUACOES_DIARIA = ["Todas", "PENDENTE", "PAGO"]
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
-    "Ativo", "Pré-cadastro", "Abandono", "Término de Contrato",
+    "Ativo", "Pré-cadastro", "Abandono", "Desistente", "Término de Contrato",
     "Demitido S/JC", "Demitido C/JC", "Pedido de Conta",
     "Rescisão Indireta", "Férias", "Doença", "Acidente", "Maternidade"
 ]
 
+# ====================== GOOGLE SHEETS HELPERS ======================
+def _gsheet_to_df(worksheet):
+    """Converte uma worksheet do gspread para DataFrame."""
+    try:
+        records = worksheet.get_all_records()
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        df = df.astype(str)
+        df = df.replace("nan", "")
+        df = df.replace("None", "")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def _df_to_gsheet(df, worksheet):
+    """Sobrescreve uma worksheet do gspread com os dados de um DataFrame."""
+    worksheet.clear()
+    if df.empty:
+        worksheet.update([df.columns.tolist()])
+        return
+    data = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
+    # Garante que não ultrapasse limites do Google Sheets
+    if len(data) > 1000:
+        data = data[:1000]
+    worksheet.update(data)
+
+def _garantir_abas_gs(spreadsheet, abas_necessarias, padrao_cols):
+    """Garante que todas as abas existam na planilha do Google Sheets."""
+    abas_existentes = {ws.title: ws for ws in spreadsheet.worksheets()}
+    for aba_nome, cols in abas_necessarias.items():
+        if aba_nome not in abas_existentes:
+            spreadsheet.add_worksheet(title=aba_nome, rows=1000, cols=len(cols))
+            ws = spreadsheet.worksheet(aba_nome)
+            ws.update([cols])
+
+def _carregar_dados_gs():
+    """Carrega dados do Google Sheets."""
+    spreadsheet = gc.open_by_key(GS_ID_FUNCIONARIOS)
+    abas = {ws.title: ws for ws in spreadsheet.worksheets()}
+    dados = {}
+    for aba_nome, ws in abas.items():
+        dados[aba_nome] = _gsheet_to_df(ws)
+    return dados
+
+def _salvar_dados_gs(dados):
+    """Salva dados no Google Sheets."""
+    spreadsheet = gc.open_by_key(GS_ID_FUNCIONARIOS)
+    for aba_nome, df in dados.items():
+        try:
+            ws = spreadsheet.worksheet(aba_nome)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(title=aba_nome, rows=1000, cols=len(df.columns) if not df.empty else 10)
+        _df_to_gsheet(df, ws)
+
+def _carregar_diarias_gs():
+    """Carrega diárias do Google Sheets."""
+    spreadsheet = gc.open_by_key(GS_ID_DIARIAS)
+    ws = spreadsheet.sheet1
+    return _gsheet_to_df(ws)
+
+def _salvar_diarias_gs(df):
+    """Salva diárias no Google Sheets."""
+    spreadsheet = gc.open_by_key(GS_ID_DIARIAS)
+    ws = spreadsheet.sheet1
+    _df_to_gsheet(df, ws)
+
+# Inicialização Google Sheets: garante que abas existam
+if GS_ENABLED:
+    try:
+        # Garante abas na planilha de funcionários
+        padrao_func = {
+            "Base_Dados": [
+                "Matricula","Nome","CPF","RG","PIS","Nascimento","Admissao",
+                "Telefone","Endereco","Loja","Cargo","Salario","Situacao",
+                "DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
+                "DataFeriasInicio","DiasFerias","DataRetornoFerias",
+                "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
+                "DataTerminoContrato",
+                "DataLicenca","DiasLicenca","DataTerminoLicenca",
+                "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
+                "CaminhoFoto"
+            ],
+            "Historico": [
+                "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
+                "Nascimento","Admissao","Telefone","Endereco","Loja","Cargo",
+                "Salario","Situacao","DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
+                "DataFeriasInicio","DiasFerias","DataRetornoFerias",
+                "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
+                "DataTerminoContrato",
+                "DataLicenca","DiasLicenca","DataTerminoLicenca",
+                "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
+            ],
+            "Auxiliares": ["Loja", "Cargo"],
+            "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
+            "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
+        }
+        spreadsheet = gc.open_by_key(GS_ID_FUNCIONARIOS)
+        abas_existentes = {ws.title for ws in spreadsheet.worksheets()}
+        for aba_nome, cols in padrao_func.items():
+            if aba_nome not in abas_existentes:
+                ws = spreadsheet.add_worksheet(title=aba_nome, rows=1000, cols=len(cols))
+                ws.update([cols])
+    except Exception:
+        pass
+
 # ====================== BANCO DE DADOS ======================
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
-    try:
-        dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-    except:
-        dados = {}
+    # Tenta carregar do Google Sheets primeiro
+    if GS_ENABLED:
+        try:
+            dados = _carregar_dados_gs()
+            # Também salva localmente como cache/fallback
+            try:
+                with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
+                    for aba, df in dados.items():
+                        df.to_excel(f, sheet_name=aba, index=False)
+            except Exception:
+                pass
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao carregar do Google Sheets: {e}. Usando arquivo local.")
+            try:
+                dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
+            except:
+                dados = {}
+    else:
+        try:
+            dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
+        except:
+            dados = {}
     
     padrao = {
         "Base_Dados": [
@@ -46,7 +197,7 @@ def carregar_dados():
             "Telefone","Endereco","Loja","Cargo","Salario","Situacao",
             "DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
             "DataFeriasInicio","DiasFerias","DataRetornoFerias",
-            "DataPedidoConta","DataRescisao","DataAbandono",
+            "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
@@ -57,7 +208,7 @@ def carregar_dados():
             "Nascimento","Admissao","Telefone","Endereco","Loja","Cargo",
             "Salario","Situacao","DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
             "DataFeriasInicio","DiasFerias","DataRetornoFerias",
-            "DataPedidoConta","DataRescisao","DataAbandono",
+            "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
@@ -88,8 +239,22 @@ def carregar_diarias():
         "CARGO","DATA CADASTRO","COMPROVANTE"
     ]
     
-    if not os.path.exists(ARQUIVO_DIARIAS):
-        return pd.DataFrame(columns=cols_padrao)
+    # Tenta carregar do Google Sheets primeiro
+    df = None
+    if GS_ENABLED:
+        try:
+            df = _carregar_diarias_gs()
+            # Salva local como fallback
+            try:
+                df.to_excel(ARQUIVO_DIARIAS, index=False, engine="openpyxl")
+            except Exception:
+                pass
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao carregar diárias do Google Sheets: {e}. Usando arquivo local.")
+    
+    if df is None:
+        if not os.path.exists(ARQUIVO_DIARIAS):
+            return pd.DataFrame(columns=cols_padrao)
     
     # Mapeamento de colunas da planilha externa para o padrão do app
     rename_map = {
@@ -106,28 +271,37 @@ def carregar_diarias():
         'DATA DE PAGAM.': 'DATA PAGAMENTO'
     }
     
-    df = None
+    # Se já carregou do Google Sheets, verifica se está no formato do app
+    if df is not None:
+        colunas_encontradas = [c for c in cols_padrao if c in df.columns]
+        if len(colunas_encontradas) >= 3:
+            # Já está no formato do app, retorna
+            for c in cols_padrao:
+                if c not in df.columns:
+                    df[c] = ""
+            return df
+        # Caso contrário, processa como planilha externa
     
-    # ESTRATÉGIA 1: Tenta header=0 (formato do app - cabeçalho na 1ª linha)
-    try:
-        df_test = pd.read_excel(ARQUIVO_DIARIAS, header=0, dtype=str, keep_default_na=False)
-        # Verifica se o formato é do app (tem colunas padrão conhecidas)
-        colunas_encontradas = [c for c in cols_padrao if c in df_test.columns]
-        if len(colunas_encontradas) >= 3:  # Se achou pelo menos 3 colunas padrão, é formato do app
-            df = df_test
-    except Exception:
-        pass
-    
-    # ESTRATÉGIA 2: Tenta header=1 (formato da planilha do usuário com instruções na 1ª linha)
     if df is None:
+        # ESTRATÉGIA 1: Tenta header=0 (formato do app - cabeçalho na 1ª linha)
         try:
-            df_test = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
-            df_test = df_test.rename(columns=rename_map)
+            df_test = pd.read_excel(ARQUIVO_DIARIAS, header=0, dtype=str, keep_default_na=False)
             colunas_encontradas = [c for c in cols_padrao if c in df_test.columns]
             if len(colunas_encontradas) >= 3:
                 df = df_test
         except Exception:
             pass
+        
+        # ESTRATÉGIA 2: Tenta header=1 (formato da planilha do usuário com instruções na 1ª linha)
+        if df is None:
+            try:
+                df_test = pd.read_excel(ARQUIVO_DIARIAS, header=1, dtype=str, keep_default_na=False)
+                df_test = df_test.rename(columns=rename_map)
+                colunas_encontradas = [c for c in cols_padrao if c in df_test.columns]
+                if len(colunas_encontradas) >= 3:
+                    df = df_test
+            except Exception:
+                pass
     
     # ESTRATÉGIA 3: Último recurso - tenta ler de qualquer jeito
     if df is None:
@@ -163,29 +337,39 @@ def carregar_diarias():
     return df
 
 def salvar_dados(dados):
+    # Sempre salva localmente como fallback
     try:
         with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
             for aba, df in dados.items():
                 df.to_excel(f, sheet_name=aba, index=False)
-        st.cache_data.clear()
-    except PermissionError:
-        st.error("❌ ERRO: Arquivo dados_funcionarios.xlsx está ABERTO! Feche o Excel e tente novamente.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Erro ao salvar: {str(e)}")
-        st.stop()
+    except Exception:
+        pass
+    
+    # Se Google Sheets ativo, salva na nuvem também
+    if GS_ENABLED:
+        try:
+            _salvar_dados_gs(dados)
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao salvar no Google Sheets: {e}")
+    
+    st.cache_data.clear()
 
 def salvar_diarias(df_diarias):
+    # Sempre salva localmente como fallback
     try:
         with pd.ExcelWriter(ARQUIVO_DIARIAS, engine="openpyxl", mode="w") as f:
             df_diarias.to_excel(f, sheet_name="Diarias", index=False)
-        st.cache_data.clear()
-    except PermissionError:
-        st.error("❌ ERRO: O arquivo controle_diarias.xlsx está ABERTO! Feche o Excel e tente novamente.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Erro ao salvar diárias: {str(e)}")
-        st.stop()
+    except Exception:
+        pass
+    
+    # Se Google Sheets ativo, salva na nuvem também
+    if GS_ENABLED:
+        try:
+            _salvar_diarias_gs(df_diarias)
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao salvar diárias no Google Sheets: {e}")
+    
+    st.cache_data.clear()
 
 def exportar_diarias_formatado(df, caminho):
     """Exporta DataFrame de diárias para Excel com a mesma formatação da planilha padrão."""
@@ -388,7 +572,8 @@ def calcular_e_atualizar(form):
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]))).strftime("%d/%m/%Y")
             if not any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_termino_cont","").strip()
+                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
+                form.get("dt_termino_cont","").strip()
             ]):
                 form["situacao"] = "Férias"
         except:
@@ -411,6 +596,8 @@ def calcular_e_atualizar(form):
         form["situacao"] = "Rescisão Indireta"
     elif form.get("dt_abandono") and form.get("dt_abandono").strip():
         form["situacao"] = "Abandono"
+    elif form.get("dt_desistencia") and form.get("dt_desistencia").strip():
+        form["situacao"] = "Desistente"
 
     return form
 
@@ -433,7 +620,7 @@ def gerar_ficha_individual(fd, fh, mr):
         "Telefone","Endereco","Loja","Cargo","Salario","Situacao",
         "DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
         "DataFeriasInicio","DiasFerias","DataRetornoFerias",
-        "DataPedidoConta","DataRescisao","DataAbandono",
+        "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
         "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
@@ -444,7 +631,7 @@ def gerar_ficha_individual(fd, fh, mr):
         "Nascimento","Admissao","Telefone","Endereco","Loja","Cargo",
         "Salario","Situacao","DataAvisoPrevio","DiasAvisoPrevio","DataTerminoAviso",
         "DataFeriasInicio","DiasFerias","DataRetornoFerias",
-        "DataPedidoConta","DataRescisao","DataAbandono",
+        "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
         "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
@@ -662,6 +849,7 @@ with aba1:
             dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
             dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
             dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
+            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"))
             dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
 
         btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
@@ -695,7 +883,7 @@ with aba1:
                 "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
                 "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af,
                 "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
-                "dt_termino_cont": dt_termino_cont
+                "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
             })
             registro_final = {
                 "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
@@ -707,6 +895,7 @@ with aba1:
                 "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
                 "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
                 "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
+                "DataDesistencia": dados_form["dt_desistencia"],
                 "DataTerminoContrato": dados_form["dt_termino_cont"],
                 "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
                 "DataTerminoLicenca": dados_form["termino_lic"],
@@ -803,6 +992,7 @@ with aba2:
         "📉 Demitido C/JC": len(base[base["Situacao"] == "Demitido C/JC"]),
         "🙋 Pedido de Conta": len(base[base["Situacao"] == "Pedido de Conta"]),
         "⚖️ Rescisão Indireta": len(base[base["Situacao"] == "Rescisão Indireta"]),
+        "🏃 Desistente": len(base[base["Situacao"] == "Desistente"]),
         "🏥 Doença": len(base[base["Situacao"] == "Doença"]),
         "🚑 Acidente": len(base[base["Situacao"] == "Acidente"]),
         "🤰 Maternidade": len(base[base["Situacao"] == "Maternidade"])
