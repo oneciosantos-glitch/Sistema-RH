@@ -1058,7 +1058,7 @@ with aba4:
     st.dataframe(dados["Historico"][["DataEvento","TipoEvento","Matricula","Nome","Situacao","Detalhes"]], use_container_width=True, hide_index=True)
     with st.form("add_ev"):
         t,d,det = st.columns([1,1,3])
-        te = t.selectbox("Tipo", ["Reunião","Atestado","Advertência","Elogio","Outros"])
+        te = t.selectbox("Tipo", ["Má conduta","Atestado","Advertência","Suspensão","Outros"])
         de = d.text_input("Data", value=datetime.now().strftime("%d/%m/%Y"))
         dee = det.text_input("Detalhes")
         if st.form_submit_button("✅ ADICIONAR") and mat_sel.strip():
