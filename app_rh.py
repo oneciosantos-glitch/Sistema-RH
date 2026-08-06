@@ -466,36 +466,50 @@ def page_dashboard():
 def _salvar_compras_local(solicitacoes, entregas):
     """Salva dados de compras em arquivo JSON local."""
     try:
+        caminho = os.path.abspath(ARQUIVO_COMPRAS)
         with open(ARQUIVO_COMPRAS, "w", encoding="utf-8") as f:
             json.dump({"solicitacoes": solicitacoes, "entregas": entregas}, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        st.toast(f"💾 Compras salvas localmente ({len(solicitacoes)} solicitações, {len(entregas)} entregas) — arquivo: {caminho}")
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar compras localmente: {e}")
 
 
 def _carregar_compras_local():
     """Carrega dados de compras do arquivo JSON local."""
+    caminho = os.path.abspath(ARQUIVO_COMPRAS)
     if not os.path.exists(ARQUIVO_COMPRAS):
+        st.toast(f"📂 Nenhum arquivo de compras encontrado em: {caminho}")
         return [], []
     try:
         with open(ARQUIVO_COMPRAS, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        return dados.get("solicitacoes", []), dados.get("entregas", [])
-    except Exception:
+            conteudo = f.read()
+        if not conteudo.strip():
+            st.warning(f"⚠️ Arquivo de compras vazio: {caminho}")
+            return [], []
+        dados = json.loads(conteudo)
+        sols = dados.get("solicitacoes", [])
+        ents = dados.get("entregas", [])
+        st.toast(f"📂 Compras carregadas do arquivo ({len(sols)} solicitações, {len(ents)} entregas)")
+        return sols, ents
+    except Exception as e:
+        st.error(f"❌ Erro ao carregar compras do arquivo {caminho}: {e}")
         return [], []
 
 
 def _salvar_compras_automatico():
     """Salva automaticamente o estado atual do módulo de compras no Google Sheets e localmente."""
+    import sys
     sols = st.session_state.get("compras_solicitacoes", [])
     ents = st.session_state.get("compras_entregas", [])
+    print(f"[DEBUG] _salvar_compras_automatico chamado com {len(sols)} solicitações, {len(ents)} entregas", file=sys.stderr)
     # Sempre salva localmente para garantir persistência
     _salvar_compras_local(sols, ents)
     if not GS_ENABLED or not GS_ID_COMPRAS:
         return
     try:
         _salvar_compras_gs(sols, ents)
-    except Exception:
-        pass  # silencia falhas de salvamento automático
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar no GS: {e}", file=sys.stderr)
 
 
 # Inicialização Google Sheets: garante que abas existam
@@ -618,51 +632,47 @@ def page_nova_solicitacao():
     with col_sel3:
         tipo = st.selectbox("Tipo *", TIPOS_SOLICITACAO, index=TIPOS_SOLICITACAO.index(edit_sol["tipo"]) if edit_sol and edit_sol.get("tipo") in TIPOS_SOLICITACAO else 0, key="nova_tipo")
 
-    with st.form("form_nova_solicitacao"):
-        c4, c5, c6 = st.columns(3)
-        with c4:
-            solicitante = st.text_input("Solicitante *", value=edit_sol.get("solicitante","") if edit_sol else "")
-        with c5:
-            data_sol_str = ""
-            if edit_sol and edit_sol.get("data"):
-                data_sol_str = _iso_para_br(edit_sol["data"])
-            if not data_sol_str:
-                data_sol_str = datetime.now().strftime("%d/%m/%Y")
-            data_sol_txt = st.text_input("Data (DD/MM/AAAA)", value=data_sol_str)
-            data_sol = _parse_data_br(data_sol_txt)
-        with c6:
-            prioridade = st.selectbox("Prioridade", PRIORIDADES, index=PRIORIDADES.index(edit_sol["prioridade"]) if edit_sol and edit_sol.get("prioridade") in PRIORIDADES else 0)
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        solicitante = st.text_input("Solicitante *", value=edit_sol.get("solicitante","") if edit_sol else "")
+    with c5:
+        data_sol_str = ""
+        if edit_sol and edit_sol.get("data"):
+            data_sol_str = _iso_para_br(edit_sol["data"])
+        if not data_sol_str:
+            data_sol_str = datetime.now().strftime("%d/%m/%Y")
+        data_sol_txt = st.text_input("Data (DD/MM/AAAA)", value=data_sol_str)
+        data_sol = _parse_data_br(data_sol_txt)
+    with c6:
+        prioridade = st.selectbox("Prioridade", PRIORIDADES, index=PRIORIDADES.index(edit_sol["prioridade"]) if edit_sol and edit_sol.get("prioridade") in PRIORIDADES else 0)
 
-        previsao_str = ""
-        if edit_sol and edit_sol.get("previsao"):
-            previsao_str = _iso_para_br(edit_sol["previsao"])
-        if not previsao_str:
-            previsao_str = (datetime.now() + timedelta(days=7)).strftime("%d/%m/%Y")
-        previsao_txt = st.text_input("Previsão de Entrega (DD/MM/AAAA)", value=previsao_str)
-        previsao = _parse_data_br(previsao_txt)
-        observacoes = st.text_area("Observações", value=edit_sol.get("observacoes","") if edit_sol else "")
+    previsao_str = ""
+    if edit_sol and edit_sol.get("previsao"):
+        previsao_str = _iso_para_br(edit_sol["previsao"])
+    if not previsao_str:
+        previsao_str = (datetime.now() + timedelta(days=7)).strftime("%d/%m/%Y")
+    previsao_txt = st.text_input("Previsão de Entrega (DD/MM/AAAA)", value=previsao_str)
+    previsao = _parse_data_br(previsao_txt)
+    observacoes = st.text_area("Observações", value=edit_sol.get("observacoes","") if edit_sol else "")
 
-        # Campos específicos EPI
-        if tipo == "EPI":
-            st.markdown("---")
-            st.markdown("#### 👷 Informações EPI")
-            c7, c8, c9 = st.columns(3)
-            with c7:
-                nome_func = st.text_input("Nome do Funcionário", value=edit_sol.get("nomeFuncionario","") if edit_sol else "")
-            with c8:
-                encarregado = st.text_input("Encarregado", value=edit_sol.get("encarregado","") if edit_sol else "")
-            with c9:
-                supervisor = st.text_input("Supervisor", value=edit_sol.get("supervisor","") if edit_sol else "")
-            data_bota_str = ""
-            if edit_sol and edit_sol.get("dataUltimaBota"):
-                data_bota_str = _iso_para_br(edit_sol["dataUltimaBota"])
-            data_bota_txt = st.text_input("Data Última Bota (DD/MM/AAAA)", value=data_bota_str)
-            data_bota = _parse_data_br(data_bota_txt) if data_bota_str else None
-
+    # Campos específicos EPI
+    if tipo == "EPI":
         st.markdown("---")
-        submitted = st.form_submit_button("💾 Salvar Solicitação", type="primary")
+        st.markdown("#### 👷 Informações EPI")
+        c7, c8, c9 = st.columns(3)
+        with c7:
+            nome_func = st.text_input("Nome do Funcionário", value=edit_sol.get("nomeFuncionario","") if edit_sol else "")
+        with c8:
+            encarregado = st.text_input("Encarregado", value=edit_sol.get("encarregado","") if edit_sol else "")
+        with c9:
+            supervisor = st.text_input("Supervisor", value=edit_sol.get("supervisor","") if edit_sol else "")
+        data_bota_str = ""
+        if edit_sol and edit_sol.get("dataUltimaBota"):
+            data_bota_str = _iso_para_br(edit_sol["dataUltimaBota"])
+        data_bota_txt = st.text_input("Data Última Bota (DD/MM/AAAA)", value=data_bota_str)
+        data_bota = _parse_data_br(data_bota_txt) if data_bota_str else None
 
-    # Itens (fora do form para permitir adicionar dinamicamente)
+    st.markdown("---")
     st.markdown("#### 📦 Itens")
 
     if tipo == "Material":
@@ -677,29 +687,42 @@ def page_nova_solicitacao():
             ]
             st.session_state["compras_edit_loaded"] = True
 
-        itens_mat = st.session_state.get("compras_nova_itens_material", [])
+        itens_mat_default = st.session_state.get("compras_nova_itens_material", [])
+        if not itens_mat_default:
+            itens_mat_default = [{"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0.0}]
 
-        for idx, item in enumerate(itens_mat):
-            cols = st.columns([3, 1, 1, 1])
-            with cols[0]:
-                item["material"] = st.selectbox(f"Material {idx+1}", materiais, index=materiais.index(item["material"]) if item.get("material") in materiais else 0, key=f"mat_sel_{idx}")
-            with cols[1]:
-                item["qtd"] = st.number_input(f"Qtd {idx+1}", min_value=1, value=int(item.get("qtd", 1)), key=f"mat_qtd_{idx}")
-            with cols[2]:
-                v = item.get("valorUnit", 0)
-                item["valorUnit"] = st.number_input(f"Valor {idx+1}", min_value=0.0, value=float(v), step=0.01, format="%.2f", key=f"mat_val_{idx}")
-            with cols[3]:
-                st.write("")
-                st.write("")
-                if st.button("🗑️", key=f"mat_rem_{idx}"):
-                    itens_mat.pop(idx)
-                    st.session_state["compras_nova_itens_material"] = itens_mat
-                    st.rerun()
+        df_mat = pd.DataFrame(itens_mat_default)
 
-        if st.button("➕ Adicionar Material"):
-            itens_mat.append({"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0})
-            st.session_state["compras_nova_itens_material"] = itens_mat
-            st.rerun()
+        edited_mat = st.data_editor(
+            df_mat,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="editor_mat",
+            column_config={
+                "material": st.column_config.SelectboxColumn(
+                    "Material",
+                    options=materiais,
+                    required=True,
+                ),
+                "qtd": st.column_config.NumberColumn(
+                    "Qtd",
+                    min_value=1,
+                    default=1,
+                    step=1,
+                ),
+                "valorUnit": st.column_config.NumberColumn(
+                    "Valor Unit.",
+                    min_value=0.0,
+                    format="%.2f",
+                    step=0.01,
+                    default=0.0,
+                ),
+            },
+            hide_index=True,
+        )
+
+        if edited_mat is not None:
+            st.session_state["compras_nova_itens_material"] = edited_mat.to_dict("records")
 
     elif tipo == "EPI":
         st.markdown("**EPIs**")
@@ -712,31 +735,44 @@ def page_nova_solicitacao():
             ]
             st.session_state["compras_edit_loaded"] = True
 
-        itens_epi = st.session_state.get("compras_nova_itens_epi", [])
+        itens_epi_default = st.session_state.get("compras_nova_itens_epi", [])
+        if not itens_epi_default:
+            itens_epi_default = [{"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""}]
 
-        for idx, item in enumerate(itens_epi):
-            cols = st.columns([2, 1, 1, 1, 1])
-            with cols[0]:
-                item["epi"] = st.selectbox(f"EPI {idx+1}", epis, index=epis.index(item["epi"]) if item.get("epi") in epis else 0, key=f"epi_sel_{idx}")
-            with cols[1]:
-                item["colaborador"] = st.text_input(f"Colab {idx+1}", value=item.get("colaborador",""), key=f"epi_col_{idx}")
-            with cols[2]:
-                item["qtd"] = st.number_input(f"Qtd {idx+1}", min_value=1, value=int(item.get("qtd", 1)), key=f"epi_qtd_{idx}")
-            with cols[3]:
-                tams = TAMANHOS_EPI
-                item["tamanho"] = st.selectbox(f"Tam {idx+1}", tams, index=tams.index(item["tamanho"]) if item.get("tamanho") in tams else 0, key=f"epi_tam_{idx}")
-            with cols[4]:
-                st.write("")
-                st.write("")
-                if st.button("🗑️", key=f"epi_rem_{idx}"):
-                    itens_epi.pop(idx)
-                    st.session_state["compras_nova_itens_epi"] = itens_epi
-                    st.rerun()
+        df_epi = pd.DataFrame(itens_epi_default)
 
-        if st.button("➕ Adicionar EPI"):
-            itens_epi.append({"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""})
-            st.session_state["compras_nova_itens_epi"] = itens_epi
-            st.rerun()
+        edited_epi = st.data_editor(
+            df_epi,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="editor_epi",
+            column_config={
+                "epi": st.column_config.SelectboxColumn(
+                    "EPI",
+                    options=epis,
+                    required=True,
+                ),
+                "colaborador": st.column_config.TextColumn(
+                    "Colaborador",
+                ),
+                "qtd": st.column_config.NumberColumn(
+                    "Qtd",
+                    min_value=1,
+                    default=1,
+                    step=1,
+                ),
+                "tamanho": st.column_config.SelectboxColumn(
+                    "Tamanho",
+                    options=TAMANHOS_EPI,
+                ),
+            },
+            hide_index=True,
+        )
+
+        if edited_epi is not None:
+            st.session_state["compras_nova_itens_epi"] = edited_epi.to_dict("records")
+
+    submitted = st.button("💾 Salvar Solicitação", type="primary")
 
     # Ao salvar
     if submitted:
@@ -1121,6 +1157,10 @@ def render_compras():
 # ====================== CONFIGURAÇÕES GERAIS ======================
 # Diretório base fixo onde o script está (garante persistência entre reinícios)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Log de diagnóstico no stderr para debug de persistência
+import sys
+print(f"[DEBUG] BASE_DIR={BASE_DIR}", file=sys.stderr)
+print(f"[DEBUG] ARQUIVO_COMPRAS={os.path.join(BASE_DIR, 'dados_compras.json')}", file=sys.stderr)
 
 ARQUIVO = os.path.join(BASE_DIR, "dados_funcionarios.xlsx")
 ARQUIVO_DIARIAS = os.path.join(BASE_DIR, "controle_diarias.xlsx")
