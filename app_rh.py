@@ -621,134 +621,101 @@ def page_nova_solicitacao():
                 edit_sol = s
                 break
 
-    # Detectar mudança de contexto (nova solicitação ou edição diferente) e limpar estado do cabeçalho
+    # Detectar mudança de contexto (nova solicitação ou edição diferente) e limpar estado
     last_edit_id = st.session_state.get("compras_last_edit_id")
     if last_edit_id != edit_id:
-        for k in ["nova_cliente_val", "nova_loja_val", "nova_tipo_val", "nova_solicitante_val",
-                  "nova_data_val", "nova_prioridade_val", "nova_previsao_val", "nova_obs_val",
-                  "nova_nome_func_val", "nova_encarregado_val", "nova_supervisor_val", "nova_data_bota_val"]:
+        for k in ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
+                  "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
+                  "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
+                  "compras_nova_itens_material", "compras_nova_itens_epi", "compras_edit_loaded"]:
             if k in st.session_state:
                 del st.session_state[k]
         st.session_state["compras_last_edit_id"] = edit_id
 
-    # Inicializar valores do cabeçalho no session_state
-    if "nova_cliente_val" not in st.session_state:
-        st.session_state["nova_cliente_val"] = edit_sol["cliente"] if edit_sol and edit_sol.get("cliente") in CLIENTES else CLIENTES[0]
-    if "nova_loja_val" not in st.session_state:
-        st.session_state["nova_loja_val"] = edit_sol["loja"] if edit_sol and edit_sol.get("loja") else ""
-    if "nova_tipo_val" not in st.session_state:
-        st.session_state["nova_tipo_val"] = edit_sol["tipo"] if edit_sol and edit_sol.get("tipo") in TIPOS_SOLICITACAO else TIPOS_SOLICITACAO[0]
-    if "nova_solicitante_val" not in st.session_state:
-        st.session_state["nova_solicitante_val"] = edit_sol.get("solicitante", "") if edit_sol else ""
-    if "nova_data_val" not in st.session_state:
+    # ── INICIALIZA VALORES PADRÃO NO SESSION_STATE ──
+    if "nova_cliente" not in st.session_state:
+        st.session_state["nova_cliente"] = edit_sol["cliente"] if edit_sol and edit_sol.get("cliente") in CLIENTES else CLIENTES[0]
+    if "nova_loja" not in st.session_state:
+        st.session_state["nova_loja"] = edit_sol["loja"] if edit_sol and edit_sol.get("loja") else ""
+    if "nova_tipo" not in st.session_state:
+        st.session_state["nova_tipo"] = edit_sol["tipo"] if edit_sol and edit_sol.get("tipo") in TIPOS_SOLICITACAO else TIPOS_SOLICITACAO[0]
+    if "nova_solicitante" not in st.session_state:
+        st.session_state["nova_solicitante"] = edit_sol.get("solicitante", "") if edit_sol else ""
+    if "nova_data" not in st.session_state:
         if edit_sol and edit_sol.get("data"):
-            st.session_state["nova_data_val"] = _iso_para_br(edit_sol["data"])
+            st.session_state["nova_data"] = _iso_para_br(edit_sol["data"])
         else:
-            st.session_state["nova_data_val"] = datetime.now().strftime("%d/%m/%Y")
-    if "nova_prioridade_val" not in st.session_state:
-        st.session_state["nova_prioridade_val"] = edit_sol["prioridade"] if edit_sol and edit_sol.get("prioridade") in PRIORIDADES else PRIORIDADES[0]
-    if "nova_previsao_val" not in st.session_state:
+            st.session_state["nova_data"] = datetime.now().strftime("%d/%m/%Y")
+    if "nova_prioridade" not in st.session_state:
+        st.session_state["nova_prioridade"] = edit_sol["prioridade"] if edit_sol and edit_sol.get("prioridade") in PRIORIDADES else PRIORIDADES[0]
+    if "nova_previsao" not in st.session_state:
         if edit_sol and edit_sol.get("previsao"):
-            st.session_state["nova_previsao_val"] = _iso_para_br(edit_sol["previsao"])
+            st.session_state["nova_previsao"] = _iso_para_br(edit_sol["previsao"])
         else:
-            st.session_state["nova_previsao_val"] = (datetime.now() + timedelta(days=7)).strftime("%d/%m/%Y")
-    if "nova_obs_val" not in st.session_state:
-        st.session_state["nova_obs_val"] = edit_sol.get("observacoes", "") if edit_sol else ""
-    if "nova_nome_func_val" not in st.session_state:
-        st.session_state["nova_nome_func_val"] = edit_sol.get("nomeFuncionario", "") if edit_sol else ""
-    if "nova_encarregado_val" not in st.session_state:
-        st.session_state["nova_encarregado_val"] = edit_sol.get("encarregado", "") if edit_sol else ""
-    if "nova_supervisor_val" not in st.session_state:
-        st.session_state["nova_supervisor_val"] = edit_sol.get("supervisor", "") if edit_sol else ""
-    if "nova_data_bota_val" not in st.session_state:
+            st.session_state["nova_previsao"] = (datetime.now() + timedelta(days=7)).strftime("%d/%m/%Y")
+    if "nova_obs" not in st.session_state:
+        st.session_state["nova_obs"] = edit_sol.get("observacoes", "") if edit_sol else ""
+    if "nova_nome_func" not in st.session_state:
+        st.session_state["nova_nome_func"] = edit_sol.get("nomeFuncionario", "") if edit_sol else ""
+    if "nova_encarregado" not in st.session_state:
+        st.session_state["nova_encarregado"] = edit_sol.get("encarregado", "") if edit_sol else ""
+    if "nova_supervisor" not in st.session_state:
+        st.session_state["nova_supervisor"] = edit_sol.get("supervisor", "") if edit_sol else ""
+    if "nova_data_bota" not in st.session_state:
         if edit_sol and edit_sol.get("dataUltimaBota"):
-            st.session_state["nova_data_bota_val"] = _iso_para_br(edit_sol["dataUltimaBota"])
+            st.session_state["nova_data_bota"] = _iso_para_br(edit_sol["dataUltimaBota"])
         else:
-            st.session_state["nova_data_bota_val"] = ""
+            st.session_state["nova_data_bota"] = ""
 
-    # ── CABEÇALHO DENTRO DO FORM (evita rerun a cada interação) ──
-    with st.form("form_cabecalho", clear_on_submit=False):
-        col_sel1, col_sel2, col_sel3 = st.columns(3)
-        with col_sel1:
-            cliente_sel = st.selectbox(
-                "Cliente *",
-                CLIENTES,
-                index=CLIENTES.index(st.session_state["nova_cliente_val"]) if st.session_state["nova_cliente_val"] in CLIENTES else 0,
-                key="form_cliente"
-            )
-        with col_sel2:
-            lojas = LOJAS_POR_CLIENTE.get(cliente_sel, [])
-            loja_idx = 0
-            if st.session_state["nova_loja_val"] in lojas:
-                loja_idx = lojas.index(st.session_state["nova_loja_val"])
-            loja_sel = st.selectbox("Loja *", lojas, index=loja_idx, key="form_loja")
-        with col_sel3:
-            tipo_sel = st.selectbox(
-                "Tipo *",
-                TIPOS_SOLICITACAO,
-                index=TIPOS_SOLICITACAO.index(st.session_state["nova_tipo_val"]) if st.session_state["nova_tipo_val"] in TIPOS_SOLICITACAO else 0,
-                key="form_tipo"
-            )
+    # ── WIDGETS COM KEY (sem st.form) ──
+    col_sel1, col_sel2, col_sel3 = st.columns(3)
+    with col_sel1:
+        st.selectbox("Cliente *", CLIENTES, key="nova_cliente")
+    with col_sel2:
+        lojas = LOJAS_POR_CLIENTE.get(st.session_state["nova_cliente"], [])
+        # Se loja atual não está na lista do novo cliente, reseta para primeira ou vazio
+        if st.session_state["nova_loja"] not in lojas:
+            st.session_state["nova_loja"] = lojas[0] if lojas else ""
+        st.selectbox("Loja *", lojas, key="nova_loja")
+    with col_sel3:
+        st.selectbox("Tipo *", TIPOS_SOLICITACAO, key="nova_tipo")
 
-        c4, c5, c6 = st.columns(3)
-        with c4:
-            solicitante_sel = st.text_input("Solicitante *", value=st.session_state["nova_solicitante_val"], key="form_solicitante")
-        with c5:
-            data_sol_txt = st.text_input("Data (DD/MM/AAAA)", value=st.session_state["nova_data_val"], key="form_data")
-        with c6:
-            prioridade_sel = st.selectbox(
-                "Prioridade",
-                PRIORIDADES,
-                index=PRIORIDADES.index(st.session_state["nova_prioridade_val"]) if st.session_state["nova_prioridade_val"] in PRIORIDADES else 0,
-                key="form_prioridade"
-            )
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        st.text_input("Solicitante *", key="nova_solicitante")
+    with c5:
+        st.text_input("Data (DD/MM/AAAA)", key="nova_data")
+    with c6:
+        st.selectbox("Prioridade", PRIORIDADES, key="nova_prioridade")
 
-        previsao_txt = st.text_input("Previsão de Entrega (DD/MM/AAAA)", value=st.session_state["nova_previsao_val"], key="form_previsao")
-        observacoes_sel = st.text_area("Observações", value=st.session_state["nova_obs_val"], key="form_obs")
+    st.text_input("Previsão de Entrega (DD/MM/AAAA)", key="nova_previsao")
+    st.text_area("Observações", key="nova_obs")
 
-        if tipo_sel == "EPI":
-            st.markdown("---")
-            st.markdown("#### 👷 Informações EPI")
-            c7, c8, c9 = st.columns(3)
-            with c7:
-                nome_func_sel = st.text_input("Nome do Funcionário", value=st.session_state["nova_nome_func_val"], key="form_nome_func")
-            with c8:
-                encarregado_sel = st.text_input("Encarregado", value=st.session_state["nova_encarregado_val"], key="form_encarregado")
-            with c9:
-                supervisor_sel = st.text_input("Supervisor", value=st.session_state["nova_supervisor_val"], key="form_supervisor")
-            data_bota_txt = st.text_input("Data Última Bota (DD/MM/AAAA)", value=st.session_state["nova_data_bota_val"], key="form_data_bota")
-
-        aplicar = st.form_submit_button("📋 Aplicar Cabeçalho", type="secondary")
-
-    if aplicar:
-        st.session_state["nova_cliente_val"] = cliente_sel
-        st.session_state["nova_loja_val"] = loja_sel
-        st.session_state["nova_tipo_val"] = tipo_sel
-        st.session_state["nova_solicitante_val"] = solicitante_sel
-        st.session_state["nova_data_val"] = data_sol_txt
-        st.session_state["nova_prioridade_val"] = prioridade_sel
-        st.session_state["nova_previsao_val"] = previsao_txt
-        st.session_state["nova_obs_val"] = observacoes_sel
-        if tipo_sel == "EPI":
-            st.session_state["nova_nome_func_val"] = nome_func_sel
-            st.session_state["nova_encarregado_val"] = encarregado_sel
-            st.session_state["nova_supervisor_val"] = supervisor_sel
-            st.session_state["nova_data_bota_val"] = data_bota_txt
-        st.rerun()
+    if st.session_state["nova_tipo"] == "EPI":
+        st.markdown("---")
+        st.markdown("#### 👷 Informações EPI")
+        c7, c8, c9 = st.columns(3)
+        with c7:
+            st.text_input("Nome do Funcionário", key="nova_nome_func")
+        with c8:
+            st.text_input("Encarregado", key="nova_encarregado")
+        with c9:
+            st.text_input("Supervisor", key="nova_supervisor")
+        st.text_input("Data Última Bota (DD/MM/AAAA)", key="nova_data_bota")
 
     # ── VALORES FINAIS DO CABEÇALHO ──
-    cliente = st.session_state.get("nova_cliente_val", CLIENTES[0])
-    loja = st.session_state.get("nova_loja_val", "")
-    tipo = st.session_state.get("nova_tipo_val", TIPOS_SOLICITACAO[0])
-    solicitante = st.session_state.get("nova_solicitante_val", "")
-    data_sol = _parse_data_br(st.session_state.get("nova_data_val", ""))
-    prioridade = st.session_state.get("nova_prioridade_val", PRIORIDADES[0])
-    previsao = _parse_data_br(st.session_state.get("nova_previsao_val", ""))
-    observacoes = st.session_state.get("nova_obs_val", "")
-    nome_func = st.session_state.get("nova_nome_func_val", "")
-    encarregado = st.session_state.get("nova_encarregado_val", "")
-    supervisor = st.session_state.get("nova_supervisor_val", "")
-    data_bota = _parse_data_br(st.session_state.get("nova_data_bota_val", "")) if st.session_state.get("nova_data_bota_val") else None
+    cliente = st.session_state.get("nova_cliente", CLIENTES[0])
+    loja = st.session_state.get("nova_loja", "")
+    tipo = st.session_state.get("nova_tipo", TIPOS_SOLICITACAO[0])
+    solicitante = st.session_state.get("nova_solicitante", "")
+    data_sol = _parse_data_br(st.session_state.get("nova_data", ""))
+    prioridade = st.session_state.get("nova_prioridade", PRIORIDADES[0])
+    previsao = _parse_data_br(st.session_state.get("nova_previsao", ""))
+    observacoes = st.session_state.get("nova_obs", "")
+    nome_func = st.session_state.get("nova_nome_func", "")
+    encarregado = st.session_state.get("nova_encarregado", "")
+    supervisor = st.session_state.get("nova_supervisor", "")
+    data_bota = _parse_data_br(st.session_state.get("nova_data_bota", "")) if st.session_state.get("nova_data_bota") else None
 
     st.markdown("---")
     st.markdown("#### 📦 Itens")
@@ -764,41 +731,27 @@ def page_nova_solicitacao():
             ]
             st.session_state["compras_edit_loaded"] = True
 
-        itens_mat_default = st.session_state.get("compras_nova_itens_material", [])
-        if not itens_mat_default:
-            itens_mat_default = [{"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0.0}]
+        itens_mat = st.session_state.get("compras_nova_itens_material", [])
+        if not itens_mat:
+            itens_mat = [{"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0.0}]
+            st.session_state["compras_nova_itens_material"] = itens_mat
 
-        df_mat = pd.DataFrame(itens_mat_default)
-
+        df_mat = pd.DataFrame(itens_mat)
         edited_mat = st.data_editor(
             df_mat,
             num_rows="dynamic",
             use_container_width=True,
             key="editor_mat",
             column_config={
-                "material": st.column_config.SelectboxColumn(
-                    "Material",
-                    options=materiais,
-                    required=True,
-                ),
-                "qtd": st.column_config.NumberColumn(
-                    "Qtd",
-                    min_value=1,
-                    default=1,
-                    step=1,
-                ),
-                "valorUnit": st.column_config.NumberColumn(
-                    "Valor Unit.",
-                    min_value=0.0,
-                    format="%.2f",
-                    step=0.01,
-                    default=0.0,
-                ),
+                "material": st.column_config.SelectboxColumn("Material", options=materiais, required=True),
+                "qtd": st.column_config.NumberColumn("Qtd", min_value=1, default=1, step=1),
+                "valorUnit": st.column_config.NumberColumn("Valor Unit.", min_value=0.0, format="%.2f", step=0.01, default=0.0),
             },
             hide_index=True,
         )
-
-        st.session_state["compras_nova_itens_material"] = edited_mat.to_dict("records")
+        # Guardar no session_state apenas se o editor retornou dados válidos
+        if edited_mat is not None and not edited_mat.empty:
+            st.session_state["compras_nova_itens_material"] = edited_mat.to_dict("records")
 
     elif tipo == "EPI":
         st.markdown("**EPIs**")
@@ -811,41 +764,27 @@ def page_nova_solicitacao():
             ]
             st.session_state["compras_edit_loaded"] = True
 
-        itens_epi_default = st.session_state.get("compras_nova_itens_epi", [])
-        if not itens_epi_default:
-            itens_epi_default = [{"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""}]
+        itens_epi = st.session_state.get("compras_nova_itens_epi", [])
+        if not itens_epi:
+            itens_epi = [{"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""}]
+            st.session_state["compras_nova_itens_epi"] = itens_epi
 
-        df_epi = pd.DataFrame(itens_epi_default)
-
+        df_epi = pd.DataFrame(itens_epi)
         edited_epi = st.data_editor(
             df_epi,
             num_rows="dynamic",
             use_container_width=True,
             key="editor_epi",
             column_config={
-                "epi": st.column_config.SelectboxColumn(
-                    "EPI",
-                    options=epis,
-                    required=True,
-                ),
-                "colaborador": st.column_config.TextColumn(
-                    "Colaborador",
-                ),
-                "qtd": st.column_config.NumberColumn(
-                    "Qtd",
-                    min_value=1,
-                    default=1,
-                    step=1,
-                ),
-                "tamanho": st.column_config.SelectboxColumn(
-                    "Tamanho",
-                    options=TAMANHOS_EPI,
-                ),
+                "epi": st.column_config.SelectboxColumn("EPI", options=epis, required=True),
+                "colaborador": st.column_config.TextColumn("Colaborador"),
+                "qtd": st.column_config.NumberColumn("Qtd", min_value=1, default=1, step=1),
+                "tamanho": st.column_config.SelectboxColumn("Tamanho", options=TAMANHOS_EPI),
             },
             hide_index=True,
         )
-
-        st.session_state["compras_nova_itens_epi"] = edited_epi.to_dict("records")
+        if edited_epi is not None and not edited_epi.empty:
+            st.session_state["compras_nova_itens_epi"] = edited_epi.to_dict("records")
 
     submitted = st.button("💾 Salvar Solicitação", type="primary")
 
@@ -922,13 +861,10 @@ def page_nova_solicitacao():
             })
 
         # Limpa estado
-        st.session_state["compras_nova_itens_material"] = []
-        st.session_state["compras_nova_itens_epi"] = []
-        st.session_state["compras_edit_id"] = None
-        st.session_state["compras_edit_loaded"] = False
-        for k in ["nova_cliente_val", "nova_loja_val", "nova_tipo_val", "nova_solicitante_val",
-                  "nova_data_val", "nova_prioridade_val", "nova_previsao_val", "nova_obs_val",
-                  "nova_nome_func_val", "nova_encarregado_val", "nova_supervisor_val", "nova_data_bota_val"]:
+        for k in ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
+                  "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
+                  "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
+                  "compras_nova_itens_material", "compras_nova_itens_epi", "compras_edit_loaded"]:
             if k in st.session_state:
                 del st.session_state[k]
         _salvar_compras_automatico()
