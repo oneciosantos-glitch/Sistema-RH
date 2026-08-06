@@ -1,0 +1,122 @@
+{
+  "solicitacoes": [
+    {
+      "id": "SOL-165CBC4E",
+      "data": "2026-08-05",
+      "cliente": "Self Fit",
+      "loja": "Self Fit Hiper DB Ponta Negra",
+      "tipo": "EPI",
+      "solicitante": "ONECIO COUTINHO",
+      "nomeFuncionario": "",
+      "encarregado": "",
+      "supervisor": "OSEIAS",
+      "dataUltimaBota": "",
+      "prioridade": "Urgente",
+      "previsao": "2026-08-12",
+      "observacoes": "",
+      "itens": [
+        {
+          "epi": "Luva látex",
+          "colaborador": "",
+          "qtd": 20,
+          "tamanho": "P"
+        },
+        {
+          "epi": "Luva de Vinil",
+          "colaborador": "",
+          "qtd": 1,
+          "tamanho": "P"
+        },
+        {
+          "epi": "Máscara de Proteção",
+          "colaborador": "",
+          "qtd": 9,
+          "tamanho": ""
+        }
+      ],
+      "valorTotal": 0,
+      "anexos": [
+        {
+          "nome": "Solicitacao_de_EPI_SOL-165CBC4E_Self Fit_Self Fit Hiper DB Ponta Negra.doc",
+          "conteudo": "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>\n<head><meta charset='utf-8'><title>Solicitacao de EPI - Self Fit - Self Fit Hiper DB Ponta Negra</title>\n<style>@page Section1 { size: 841.95pt 595.35pt; margin: 36pt 36pt 36pt 36pt; mso-page-orientation: landscape; }\ndiv.Section1 { page: Section1; }</style></head>\n<body style=\"font-family:Arial,sans-serif;font-size:10pt;margin:0;padding:0\">\n<div class=\"Section1\" style=\"mso-page-orientation: landscape;\">\n<table style=\"width:100%;border-collapse:collapse\">\n<tr><td colspan=\"6\" style=\"border:1px solid #000;padding:3px 5px;font-size:9px;text-align:center\">ALAGOAS ( &nbsp;) &nbsp;&nbsp;BAHIA ( &nbsp;) &nbsp;&nbsp;CEARÁ ( &nbsp;) &nbsp;&nbsp;MARANHÃO ( &nbsp;) &nbsp;&nbsp;PARAIBA ( &nbsp;) &nbsp;&nbsp;PARÁ ( &nbsp;) &nbsp;&nbsp;PERNAMBUCO ( &nbsp;) &nbsp;&nbsp;PIAUÍ ( &nbsp;) &nbsp;&nbsp;RIO GRANDE DO NORTE ( &nbsp;) &nbsp;&nbsp;SERGIPE ( &nbsp;) &nbsp;&nbsp;AMAPÁ ( &nbsp;) &nbsp;&nbsp;RORAIMA ( &nbsp;) &nbsp;&nbsp;AMAZONAS ( &nbsp;) &nbsp;&nbsp;RONDÔNIA ( &nbsp;)</td></tr>\n<tr><td colspan=\"6\" style=\"border:1px solid #000;padding:3px 5px;font-size:11px;font-weight:bold;background:#DEEBF6;text-align:center\">BOTAS</td></tr>\n<tr>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Nome</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Loja</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Encarregado</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Supervisor</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Itens da Solicitação de EPI</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Situação ( * )</th>\n</tr>\n<tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\"></td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Self Fit Hiper DB Ponta Negra</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\"></td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">OSEIAS</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Luva látex x20</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\"></td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Self Fit Hiper DB Ponta Negra</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\"></td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">OSEIAS</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Luva de Vinil x1</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\"></td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Self Fit Hiper DB Ponta Negra</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\"></td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">OSEIAS</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Máscara de Proteção x9</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td></tr>\n<tr><td colspan=\"6\" style=\"border:1px solid #000;padding:3px 5px;font-size:11px;font-weight:bold;background:#DEEBF6;text-align:center\">EPIS</td></tr>\n<tr>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Equipamento de Proteção</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Quantidade</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Equipamento de Proteção</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Quantidade</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Equipamento de Proteção</th>\n<th style=\"border:1px solid #000;padding:3px 5px;font-size:10px;font-weight:bold;background:#DEEBF6\">Quantidade</th>\n</tr>\n<tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Luva látex</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">20</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Luva para jardineiro</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Japona Térmica</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Óculos de proteção</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Avental de raspa</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Calça Térmica</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Máscara de Proteção</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">9</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Viseira</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Luvas térmicas</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Protetor auricular plug ( ) ou concha ( )</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Perneira</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">Cap</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td></tr><tr><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px\">&nbsp;</td><td style=\"border:1px solid #000;padding:3px 5px;font-size:10px;text-align:center\">&nbsp;</td></tr>\n<tr><td colspan=\"6\" style=\"border:1px solid #000;padding:3px 5px;font-size:9px\">Observação: A coluna Situação ( * ), é para o setor SST preencher.</td></tr>\n</table>\n<p style=\"font-size:8pt;color:#666;text-align:center;margin-top:6px\">Data de geração: 05/08/2026</p>\n</div></body></html>",
+          "tipo": "doc"
+        }
+      ],
+      "status": "Pendente",
+      "dataCriacao": "2026-08-05T21:18:25.963344"
+    },
+    {
+      "id": "SOL-DCA552EE",
+      "data": "2026-08-05",
+      "cliente": "Smart Fit",
+      "loja": "Smart Fit Shopping Manoa",
+      "tipo": "Material",
+      "solicitante": "Onecio Coutinho",
+      "nomeFuncionario": "",
+      "encarregado": "",
+      "supervisor": "",
+      "dataUltimaBota": "",
+      "prioridade": "Baixa",
+      "previsao": "2026-08-12",
+      "observacoes": "",
+      "itens": [
+        {
+          "material": "ÁGUA SANITÁRIA",
+          "qtd": 1,
+          "valorUnit": 0.0
+        },
+        {
+          "material": "BALDE 15L",
+          "qtd": 6,
+          "valorUnit": 0.0
+        },
+        {
+          "material": "BALDE 6L",
+          "qtd": 3,
+          "valorUnit": 0.0
+        },
+        {
+          "material": "CABO DE ALUMINIO SEM ROSCA",
+          "qtd": 1,
+          "valorUnit": 0.0
+        }
+      ],
+      "valorTotal": 0.0,
+      "anexos": [
+        {
+          "nome": "Pedido_Material_SmartFit_SOL-DCA552EE.xls",
+          "conteudo": "<html xmlns:x=\"urn:schemas-microsoft-com:office:excel\"><head><meta charset=\"utf-8\"><style>table{border-collapse:collapse;width:100%}th,td{border:1px solid #000}</style></head><body><table>\n<tr><th colspan=\"3\" style=\"border:1px solid #000;padding:6px;font-size:13px;font-weight:bold;background:#DEEBF6;text-align:center\">SMART FIT</th></tr>\n<tr><th style=\"border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap\">SMART FIT</th><th style=\"border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap\">QTD</th><th style=\"border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap\">REF.</th></tr>\n<tr><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap\">ÁGUA SANITÁRIA</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">1</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">UN.</td></tr><tr><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap\">BALDE 15L</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">6</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">UN.</td></tr><tr><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap\">BALDE 6L</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">3</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">UN.</td></tr><tr><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap\">CABO DE ALUMINIO SEM ROSCA</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">1</td><td style=\"border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap\">UN.</td></tr>\n<tr><td colspan=\"3\" style=\"border:1px solid #000;padding:4px 6px;font-size:10px\">Solicitação: SOL-DCA552EE | Loja: Smart Fit Shopping Manoa | Data: 05/08/2026</td></tr>\n</table></body></html>",
+          "tipo": "xls"
+        }
+      ],
+      "status": "Pendente",
+      "dataCriacao": "2026-08-05T23:15:59.520693"
+    }
+  ],
+  "entregas": [
+    {
+      "idSolicitacao": "SOL-165CBC4E",
+      "loja": "Self Fit Hiper DB Ponta Negra",
+      "tipo": "EPI",
+      "dataEnvio": "",
+      "dataPrevista": "2026-08-12",
+      "dataEntrega": "",
+      "transportadora": "",
+      "rastreio": "",
+      "status": "Pendente",
+      "observacoes": ""
+    },
+    {
+      "idSolicitacao": "SOL-DCA552EE",
+      "loja": "Smart Fit Shopping Manoa",
+      "tipo": "Material",
+      "dataEnvio": "",
+      "dataPrevista": "2026-08-12",
+      "dataEntrega": "",
+      "transportadora": "",
+      "rastreio": "",
+      "status": "Pendente",
+      "observacoes": ""
+    }
+  ]
+}
