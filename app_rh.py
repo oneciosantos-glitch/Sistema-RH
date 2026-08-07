@@ -11,6 +11,7 @@ import shutil
 import time
 import io
 import json
+import hashlib
 import requests
 from datetime import datetime, timedelta
 from PIL import Image
@@ -495,12 +496,18 @@ def page_dashboard():
 
 
 def _salvar_compras_local(solicitacoes, entregas):
-    """Salva dados de compras em arquivo JSON local."""
+    """Salva dados de compras em arquivo JSON local (apenas se houver mudanças)."""
     try:
-        caminho = os.path.abspath(ARQUIVO_COMPRAS)
+        dados = {"solicitacoes": solicitacoes, "entregas": entregas}
+        dados_json = json.dumps(dados, ensure_ascii=False, sort_keys=True)
+        hash_novo = hashlib.md5(dados_json.encode("utf-8")).hexdigest()
+        chave_cache = "_compras_hash"
+        hash_antigo = st.session_state.get(chave_cache, "")
+        if hash_novo == hash_antigo:
+            return  # sem mudanças, ignora
+        st.session_state[chave_cache] = hash_novo
         with open(ARQUIVO_COMPRAS, "w", encoding="utf-8") as f:
-            json.dump({"solicitacoes": solicitacoes, "entregas": entregas}, f, ensure_ascii=False, indent=2)
-        st.toast(f"💾 Compras salvas localmente ({len(solicitacoes)} solicitações, {len(entregas)} entregas) — arquivo: {caminho}")
+            json.dump(dados, f, ensure_ascii=False, indent=2)
     except Exception as e:
         st.error(f"❌ Erro ao salvar compras localmente: {e}")
 
@@ -532,8 +539,7 @@ def _salvar_compras_automatico():
     import sys
     sols = st.session_state.get("compras_solicitacoes", [])
     ents = st.session_state.get("compras_entregas", [])
-    print(f"[DEBUG] _salvar_compras_automatico chamado com {len(sols)} solicitações, {len(ents)} entregas", file=sys.stderr)
-    # Sempre salva localmente para garantir persistência
+    # Sempre salva localmente para garantir persistência (com cache de hash)
     _salvar_compras_local(sols, ents)
     if not GS_ENABLED or not GS_ID_COMPRAS:
         return
@@ -1002,12 +1008,15 @@ def page_entregas():
 
     ents = st.session_state["compras_entregas"]
 
-    c1, c2 = st.columns(2)
-    with c1:
-        busca = st.text_input("Buscar", placeholder="ID, loja...", key="ent_busca")
-    with c2:
-        fstatus = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, key="ent_fstatus")
+    # ── Filtros compactos ──
+    with st.expander("🔍 Filtros", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            busca = st.text_input("Buscar", placeholder="ID, loja...", key="ent_busca")
+        with c2:
+            fstatus = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, key="ent_fstatus")
 
+    # ── Filtragem em memória ──
     filtradas = []
     for e in ents:
         txt = f"{e.get('idSolicitacao','')} {e.get('loja','')}".lower()
@@ -1017,45 +1026,80 @@ def page_entregas():
             continue
         filtradas.append(e)
 
-    if filtradas:
-        for e in filtradas:
-            with st.container(border=True):
-                col1, col2 = st.columns([3, 2])
-                with col1:
-                    st.write(f"**{e.get('idSolicitacao','')}** | {e.get('loja','')} | Tipo: {e.get('tipo','')}")
-                    st.caption(f"Transportadora: {e.get('transportadora','-')} | Rastreio: {e.get('rastreio','-')}")
-                with col2:
-                    st.write(f"{get_badge_color(e.get('status'))} **{e.get('status','')}**")
-                    st.caption(f"Prevista: {formatar_data_br(e.get('dataPrevista'))} | Entrega: {formatar_data_br(e.get('dataEntrega'))}")
-                with st.expander("✏️ Editar"):
-                    with st.form(f"form_entrega_{e['idSolicitacao']}"):
-                        ne_status = st.selectbox("Status", STATUS_OPCOES, index=STATUS_OPCOES.index(e.get("status","Pendente")) if e.get("status") in STATUS_OPCOES else 0)
-                        ne_transportadora = st.text_input("Transportadora", value=e.get("transportadora",""))
-                        ne_rastreio = st.text_input("Rastreio", value=e.get("rastreio",""))
-                        ne_data_envio_str = _iso_para_br(e.get("dataEnvio",""))
-                        ne_data_envio_txt = st.text_input("Data Envio (DD/MM/AAAA)", value=ne_data_envio_str)
-                        ne_data_envio = _parse_data_br(ne_data_envio_txt) if ne_data_envio_txt.strip() else None
-                        ne_data_entrega_str = _iso_para_br(e.get("dataEntrega",""))
-                        ne_data_entrega_txt = st.text_input("Data Entrega (DD/MM/AAAA)", value=ne_data_entrega_str)
-                        ne_data_entrega = _parse_data_br(ne_data_entrega_txt) if ne_data_entrega_txt.strip() else None
-                        ne_obs = st.text_area("Observações", value=e.get("observacoes",""))
-                        if st.form_submit_button("💾 Salvar"):
-                            e["status"] = ne_status
-                            e["transportadora"] = ne_transportadora
-                            e["rastreio"] = ne_rastreio
-                            e["dataEnvio"] = str(ne_data_envio) if ne_data_envio else ""
-                            e["dataEntrega"] = str(ne_data_entrega) if ne_data_entrega else ""
-                            e["observacoes"] = ne_obs
-                            # Sincroniza status da solicitação
-                            for s in st.session_state["compras_solicitacoes"]:
-                                if s["id"] == e["idSolicitacao"]:
-                                    s["status"] = ne_status
-                                    break
-                            _salvar_compras_automatico()
-                            st.success("Entrega atualizada!")
-                            st.rerun()
-    else:
+    if not filtradas:
         st.info("Nenhuma entrega encontrada.")
+        return
+
+    # ── Tabela única (st.dataframe) — ZERO widgets por linha ──
+    df = pd.DataFrame([
+        {
+            "ID Solicitação": e.get("idSolicitacao", ""),
+            "Loja": e.get("loja", ""),
+            "Tipo": e.get("tipo", ""),
+            "Transportadora": e.get("transportadora", "-"),
+            "Rastreio": e.get("rastreio", "-"),
+            "Status": f"{get_badge_color(e.get('status'))} {e.get('status', '')}",
+            "Data Envio": formatar_data_br(e.get("dataEnvio")),
+            "Data Prevista": formatar_data_br(e.get("dataPrevista")),
+            "Data Entrega": formatar_data_br(e.get("dataEntrega")),
+            "Observações": e.get("observacoes", "-"),
+        }
+        for e in filtradas
+    ])
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ── Edição rápida (3 widgets fixos, independente da quantidade) ──
+    st.markdown("---")
+    st.markdown("#### ✏️ Editar Entrega")
+    ids_disp = [e.get("idSolicitacao", "") for e in filtradas]
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        sel_id = st.selectbox("Selecionar entrega", ids_disp, key="ent_sel_id")
+    with c2:
+        if st.button("📝 Editar", use_container_width=True, key="ent_btn_edit"):
+            st.session_state["compras_entrega_edit_id"] = sel_id
+            st.rerun()
+
+    # ── Formulário de edição inline (apenas 1 form, aberto sob demanda) ──
+    edit_id = st.session_state.get("compras_entrega_edit_id")
+    if edit_id and edit_id in ids_disp:
+        e = next((x for x in filtradas if x.get("idSolicitacao") == edit_id), None)
+        if e:
+            st.markdown("---")
+            with st.form("form_edit_entrega"):
+                ne_status = st.selectbox("Status", STATUS_OPCOES, index=STATUS_OPCOES.index(e.get("status", "Pendente")) if e.get("status") in STATUS_OPCOES else 0)
+                ne_transportadora = st.text_input("Transportadora", value=e.get("transportadora", ""))
+                ne_rastreio = st.text_input("Rastreio", value=e.get("rastreio", ""))
+                ne_data_envio_str = _iso_para_br(e.get("dataEnvio", ""))
+                ne_data_envio_txt = st.text_input("Data Envio (DD/MM/AAAA)", value=ne_data_envio_str)
+                ne_data_envio = _parse_data_br(ne_data_envio_txt) if ne_data_envio_txt.strip() else None
+                ne_data_entrega_str = _iso_para_br(e.get("dataEntrega", ""))
+                ne_data_entrega_txt = st.text_input("Data Entrega (DD/MM/AAAA)", value=ne_data_entrega_str)
+                ne_data_entrega = _parse_data_br(ne_data_entrega_txt) if ne_data_entrega_txt.strip() else None
+                ne_obs = st.text_area("Observações", value=e.get("observacoes", ""))
+                c_btn1, c_btn2 = st.columns([1, 1])
+                with c_btn1:
+                    submitted = st.form_submit_button("💾 Salvar", use_container_width=True)
+                with c_btn2:
+                    if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                        st.session_state["compras_entrega_edit_id"] = None
+                        st.rerun()
+                if submitted:
+                    e["status"] = ne_status
+                    e["transportadora"] = ne_transportadora
+                    e["rastreio"] = ne_rastreio
+                    e["dataEnvio"] = str(ne_data_envio) if ne_data_envio else ""
+                    e["dataEntrega"] = str(ne_data_entrega) if ne_data_entrega else ""
+                    e["observacoes"] = ne_obs
+                    # Sincroniza status da solicitação
+                    for s in st.session_state["compras_solicitacoes"]:
+                        if s["id"] == e["idSolicitacao"]:
+                            s["status"] = ne_status
+                            break
+                    _salvar_compras_automatico()
+                    st.session_state["compras_entrega_edit_id"] = None
+                    st.success("Entrega atualizada!")
+                    st.rerun()
 
 
 def page_materiais():
@@ -1143,16 +1187,42 @@ def page_relatorios():
     # Listar solicitações com anexos
     sols_com_anexo = [s for s in st.session_state["compras_solicitacoes"] if s.get("anexos")]
     if sols_com_anexo:
+        # ── Tabela única em vez de N containers + download buttons ──
+        dados_anexos = []
         for s in sols_com_anexo:
-            with st.container(border=True):
-                st.write(f"**{s['id']}** - {s.get('loja','')} ({s.get('cliente','')})")
-                for a in s["anexos"]:
+            for a in s["anexos"]:
+                dados_anexos.append({
+                    "Solicitação": s["id"],
+                    "Loja": s.get("loja", ""),
+                    "Cliente": s.get("cliente", ""),
+                    "Tipo": s.get("tipo", ""),
+                    "Documento": a["nome"],
+                    "Tipo Arq": a.get("tipo", "-"),
+                })
+        df_anexos = pd.DataFrame(dados_anexos)
+        st.dataframe(df_anexos, use_container_width=True, hide_index=True)
+
+        # ── Download único por seleção (3 widgets fixos) ──
+        st.markdown("---")
+        st.markdown("#### 📥 Baixar Documento")
+        ids_disp = list(dict.fromkeys([s["id"] for s in sols_com_anexo]))
+        c1, c2, c3 = st.columns([2, 3, 1])
+        with c1:
+            sel_id = st.selectbox("Solicitação", ids_disp, key="rel_sel_id")
+        with c2:
+            sol_sel = next((s for s in sols_com_anexo if s["id"] == sel_id), None)
+            nomes_anexos = [a["nome"] for a in sol_sel["anexos"]] if sol_sel else []
+            sel_doc = st.selectbox("Documento", nomes_anexos, key="rel_sel_doc") if nomes_anexos else None
+        with c3:
+            if sel_doc and st.button("📥 Baixar", use_container_width=True, key="rel_btn_down"):
+                a = next((a for a in sol_sel["anexos"] if a["nome"] == sel_doc), None)
+                if a:
                     st.download_button(
-                        label=f"📥 {a['nome']}",
+                        label=f"Confirmar download: {a['nome']}",
                         data=a["conteudo"].encode("utf-8"),
                         file_name=a["nome"],
                         mime="application/octet-stream",
-                        key=f"rel_anexo_{s['id']}_{a['nome']}"
+                        key="rel_confirm_down"
                     )
     else:
         st.info("Nenhum documento gerado ainda. Crie uma solicitação para gerar documentos.")
@@ -1503,6 +1573,7 @@ def _row_to_entrega(row):
             e[campo_data] = _normalizar_data_iso(e.get(campo_data, ""))
     return e
 
+@st.cache_data(ttl=30, show_spinner=False)
 def _carregar_compras_gs():
     """Carrega dados de compras do Google Sheets."""
     spreadsheet = gc.open_by_key(GS_ID_COMPRAS)
