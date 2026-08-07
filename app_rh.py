@@ -18,6 +18,24 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# ============================================================
+# CACHE DE DADOS — evita recarregar arquivo JSON a cada rerun
+# ============================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_carregar_compras_local(path: str):
+    """Carrega dados do JSON com cache de 5 min."""
+    if not os.path.exists(path):
+        return [], []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            conteudo = f.read()
+        if not conteudo.strip():
+            return [], []
+        dados = json.loads(conteudo)
+        return dados.get("solicitacoes", []), dados.get("entregas", [])
+    except Exception:
+        return [], []
+
 # ====================== GOOGLE SHEETS INTEGRAÇÃO ======================
 # Verifica se as credenciais do Google Sheets estão configuradas
 GS_ENABLED = False
@@ -229,9 +247,9 @@ def init_session_state():
                 sols, ents = _carregar_compras_gs()
             except Exception:
                 sols, ents = [], []
-        # Se não conseguiu do GS, tenta carregar do arquivo local
+        # Se não conseguiu do GS, carrega do arquivo local (com cache)
         if not sols and not ents:
-            sols, ents = _carregar_compras_local()
+            sols, ents = _cached_carregar_compras_local(ARQUIVO_COMPRAS)
         st.session_state["compras_solicitacoes"] = sols
         st.session_state["compras_entregas"] = ents
     if "compras_entregas" not in st.session_state:
@@ -532,7 +550,7 @@ def page_solicitacoes():
 
     sols = st.session_state["compras_solicitacoes"]
 
-    # Filtros
+    # ── Filtros (compactos, 1 linha) ──
     with st.expander("🔍 Filtros", expanded=True):
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
@@ -550,6 +568,7 @@ def page_solicitacoes():
             fdf_txt = st.text_input("Data Fim (DD/MM/AAAA)", value="", key="sol_fdf")
             fdf = _parse_data_br(fdf_txt) if fdf_txt.strip() else None
 
+    # ── Filtragem (lista em memória, rápida) ──
     filtradas = []
     for s in sols:
         txt = f"{s.get('id','')} {s.get('loja','')} {s.get('solicitante','')}".lower()
@@ -575,50 +594,64 @@ def page_solicitacoes():
                 pass
         filtradas.append(s)
 
-    if filtradas:
-        for s in filtradas:
-            with st.container(border=True):
-                col1, col2, col3 = st.columns([4, 2, 2])
-                with col1:
-                    st.write(f"**{s['id']}** | {formatar_data_br(s.get('data'))} | {s.get('loja','')} | {s.get('cliente','')}")
-                    st.caption(f"Tipo: `{s.get('tipo','')}` | Solicitante: {s.get('solicitante','')} | Itens: {len(s.get('itens',[]))} | Valor: {formatar_moeda(s.get('valorTotal',0))}")
-                with col2:
-                    st.write(f"{get_badge_color(s.get('status'))} **{s.get('status','')}**")
-                with col3:
-                    c_a, c_b, c_c = st.columns(3)
-                    with c_a:
-                        if st.button("👁️", key=f"ver_{s['id']}"):
-                            st.session_state["compras_ver_id"] = s["id"]
-                            st.session_state["compras_page"] = "Detalhes"
-                            st.rerun()  # interrompe execução atual → navegação instantânea
-                    with c_b:
-                        if st.button("✏️", key=f"edit_{s['id']}"):
-                            st.session_state["compras_edit_id"] = s["id"]
-                            st.session_state["compras_page"] = "Nova Solicitação"
-                            st.rerun()  # interrompe execução atual → navegação instantânea
-                    with c_c:
-                        if st.button("🗑️", key=f"del_{s['id']}"):
-                            st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != s["id"]]
-                            st.session_state["compras_entregas"] = [e for e in st.session_state["compras_entregas"] if e.get("idSolicitacao") != s["id"]]
-                            _salvar_compras_automatico()
-                            st.success("Excluído!")
-                            st.rerun()
-
-        # Exportar CSV
-        if filtradas:
-            csv_data = []
-            for s in filtradas:
-                csv_data.append([
-                    s["id"], s.get("data",""), s.get("loja",""), s.get("cliente",""),
-                    s.get("tipo",""), s.get("solicitante",""), len(s.get("itens",[])),
-                    s.get("valorTotal",0), s.get("status","")
-                ])
-            df_csv = pd.DataFrame(csv_data, columns=["ID","Data","Loja","Cliente","Tipo","Solicitante","Qtd Itens","Valor Total","Status"])
-            csv_buffer = io.StringIO()
-            df_csv.to_csv(csv_buffer, index=False, sep=";", encoding="utf-8")
-            st.download_button("📥 Exportar CSV", data=csv_buffer.getvalue().encode("utf-8"), file_name="solicitacoes.csv", mime="text/csv")
-    else:
+    if not filtradas:
         st.info("Nenhuma solicitação encontrada.")
+        return
+
+    # ── Tabela única (st.dataframe) em vez de 1 container + 3 colunas + 3 botões POR ITEM ──
+    df = pd.DataFrame([
+        {
+            "ID": s["id"],
+            "Data": formatar_data_br(s.get("data")),
+            "Loja": s.get("loja", ""),
+            "Cliente": s.get("cliente", ""),
+            "Tipo": s.get("tipo", ""),
+            "Solicitante": s.get("solicitante", ""),
+            "Itens": len(s.get("itens", [])),
+            "Valor": formatar_moeda(s.get("valorTotal", 0)),
+            "Status": f"{get_badge_color(s.get('status'))} {s.get('status', '')}",
+        }
+        for s in filtradas
+    ])
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ── Ações em lote (3 widgets fixos, independente da quantidade de solicitações) ──
+    st.markdown("---")
+    st.markdown("#### ⚡ Ação Rápida")
+    ids_disponiveis = [s["id"] for s in filtradas]
+    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+    with c1:
+        sel_id = st.selectbox("Selecionar solicitação", ids_disponiveis, key="sol_sel_id")
+    with c2:
+        if st.button("👁️ Ver", use_container_width=True, key="btn_ver_sel"):
+            st.session_state["compras_ver_id"] = sel_id
+            st.session_state["compras_page"] = "Detalhes"
+            st.rerun()
+    with c3:
+        if st.button("✏️ Editar", use_container_width=True, key="btn_edit_sel"):
+            st.session_state["compras_edit_id"] = sel_id
+            st.session_state["compras_page"] = "Nova Solicitação"
+            st.rerun()
+    with c4:
+        if st.button("🗑️ Excluir", use_container_width=True, key="btn_del_sel"):
+            st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != sel_id]
+            st.session_state["compras_entregas"] = [e for e in st.session_state["compras_entregas"] if e.get("idSolicitacao") != sel_id]
+            _salvar_compras_automatico()
+            st.success("Excluído!")
+            st.rerun()
+
+    # ── Exportar CSV ──
+    csv_data = []
+    for s in filtradas:
+        csv_data.append([
+            s["id"], s.get("data",""), s.get("loja",""), s.get("cliente",""),
+            s.get("tipo",""), s.get("solicitante",""), len(s.get("itens",[])),
+            s.get("valorTotal",0), s.get("status","")
+        ])
+    df_csv = pd.DataFrame(csv_data, columns=["ID","Data","Loja","Cliente","Tipo","Solicitante","Qtd Itens","Valor Total","Status"])
+    csv_buffer = io.StringIO()
+    df_csv.to_csv(csv_buffer, index=False, sep=";", encoding="utf-8")
+    st.download_button("📥 Exportar CSV", data=csv_buffer.getvalue().encode("utf-8"), file_name="solicitacoes.csv", mime="text/csv")
 
 
 @fragment
