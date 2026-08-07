@@ -1155,11 +1155,14 @@ def render_compras():
     col_menu, col_conteudo = st.columns([1, 4])
     with col_menu:
         st.markdown("#### Navegação Compras")
+        # Opções do menu lateral — inclui Detalhes para que o radio não force
+        # redirecionamento para Dashboard quando o usuário clica no 👁️ visualizar
+        MENU_OPCOES = ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads", "Detalhes"]
         menu = st.radio(
             "",
-            ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"],
-            index=["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"].index(st.session_state["compras_page"])
-            if st.session_state["compras_page"] in ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"]
+            MENU_OPCOES,
+            index=MENU_OPCOES.index(st.session_state["compras_page"])
+            if st.session_state["compras_page"] in MENU_OPCOES
             else 0,
             # key removido para evitar conflito de session_state com botões
         )
