@@ -590,14 +590,13 @@ def page_solicitacoes():
                         if st.button("👁️", key=f"ver_{s['id']}"):
                             st.session_state["compras_ver_id"] = s["id"]
                             st.session_state["compras_page"] = "Detalhes"
-
-                            st.rerun()
+                            # Sem st.rerun(): o Streamlit já reexecuta automaticamente
+                            # ao clicar no botão, tornando a navegação instantânea.
                     with c_b:
                         if st.button("✏️", key=f"edit_{s['id']}"):
                             st.session_state["compras_edit_id"] = s["id"]
                             st.session_state["compras_page"] = "Nova Solicitação"
-
-                            st.rerun()
+                            # Sem st.rerun(): navegação instantânea, sem execução dupla.
                     with c_c:
                         if st.button("🗑️", key=f"del_{s['id']}"):
                             st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != s["id"]]
@@ -962,8 +961,7 @@ def page_detalhes():
 
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
-        # Navegação para Solicitações via compras_page
-        st.rerun()
+        # Navegação instantânea — sem st.rerun(), o Streamlit já reexecuta automaticamente.
 
 
 def page_entregas():
