@@ -590,13 +590,12 @@ def page_solicitacoes():
                         if st.button("👁️", key=f"ver_{s['id']}"):
                             st.session_state["compras_ver_id"] = s["id"]
                             st.session_state["compras_page"] = "Detalhes"
-                            # Sem st.rerun(): o Streamlit já reexecuta automaticamente
-                            # ao clicar no botão, tornando a navegação instantânea.
+                            st.rerun()  # interrompe execução atual → navegação instantânea
                     with c_b:
                         if st.button("✏️", key=f"edit_{s['id']}"):
                             st.session_state["compras_edit_id"] = s["id"]
                             st.session_state["compras_page"] = "Nova Solicitação"
-                            # Sem st.rerun(): navegação instantânea, sem execução dupla.
+                            st.rerun()  # interrompe execução atual → navegação instantânea
                     with c_c:
                         if st.button("🗑️", key=f"del_{s['id']}"):
                             st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != s["id"]]
@@ -961,7 +960,8 @@ def page_detalhes():
 
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
-        # Navegação instantânea — sem st.rerun(), o Streamlit já reexecuta automaticamente.
+        st.session_state["compras_ver_id"] = None
+        st.rerun()  # interrompe execução atual → volta instantâneo
 
 
 def page_entregas():
@@ -1153,24 +1153,27 @@ def render_compras():
     col_menu, col_conteudo = st.columns([1, 4])
     with col_menu:
         st.markdown("#### Navegação Compras")
-        # Opções do menu lateral — inclui Detalhes para que o radio não force
-        # redirecionamento para Dashboard quando o usuário clica no 👁️ visualizar
-        MENU_OPCOES = ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads", "Detalhes"]
-        menu = st.radio(
-            "",
-            MENU_OPCOES,
-            index=MENU_OPCOES.index(st.session_state["compras_page"])
-            if st.session_state["compras_page"] in MENU_OPCOES
-            else 0,
-            # key removido para evitar conflito de session_state com botões
-        )
-        if menu != st.session_state["compras_page"]:
-            st.session_state["compras_page"] = menu
-            st.session_state["compras_edit_id"] = None
-            st.session_state["compras_edit_loaded"] = False
-            # st.rerun() removido: o Streamlit já reexecuta automaticamente ao
-            # interagir com o radio. O conteúdo da nova página será renderizado
-            # logo abaixo na mesma execução, eliminando uma rodada dupla.
+        # "Detalhes" é uma tela secundária (acessada via 👁️) — NÃO aparece no menu.
+        # Quando o usuário está em Detalhes, mostramos um botão Voltar em vez do radio.
+        MENU_OPCOES = ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"]
+        if st.session_state["compras_page"] == "Detalhes":
+            st.info("👁️ Visualizando detalhes")
+            if st.button("🔙 Voltar para Solicitações", use_container_width=True):
+                st.session_state["compras_page"] = "Solicitações"
+                st.session_state["compras_ver_id"] = None
+                st.rerun()
+        else:
+            menu = st.radio(
+                "",
+                MENU_OPCOES,
+                index=MENU_OPCOES.index(st.session_state["compras_page"])
+                if st.session_state["compras_page"] in MENU_OPCOES
+                else 0,
+            )
+            if menu != st.session_state["compras_page"]:
+                st.session_state["compras_page"] = menu
+                st.session_state["compras_edit_id"] = None
+                st.session_state["compras_edit_loaded"] = False
 
     with col_conteudo:
         page = st.session_state["compras_page"]
