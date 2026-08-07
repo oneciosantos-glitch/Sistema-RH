@@ -56,6 +56,19 @@ from datetime import datetime, date
 import io
 import base64
 
+# ========== FRAGMENT SUPPORT (Streamlit >= 1.38) ==========
+# Isola reruns para não recarregar todo o app a cada clique
+try:
+    fragment = st.fragment
+except AttributeError:
+    try:
+        fragment = st.experimental_fragment
+    except AttributeError:
+        def fragment(func):
+            """Fallback: executa normalmente se fragment não disponível."""
+            return func
+
+
 # ========== DADOS ==========
 CLIENTES = ["Smart Fit", "Self Fit", "Assaí Atacadista"]
 
@@ -610,6 +623,17 @@ def page_solicitacoes():
         st.info("Nenhuma solicitação encontrada.")
 
 
+@fragment
+@st.cache_data(show_spinner=False)
+def _build_df_mat(itens):
+    return pd.DataFrame(itens)
+
+@fragment
+@st.cache_data(show_spinner=False)
+def _build_df_epi(itens):
+    return pd.DataFrame(itens)
+
+@fragment
 def page_nova_solicitacao():
     st.markdown("### ➕ Nova Solicitação de Compra")
 
@@ -624,10 +648,11 @@ def page_nova_solicitacao():
     # Detectar mudança de contexto (nova solicitação ou edição diferente) e limpar estado
     last_edit_id = st.session_state.get("compras_last_edit_id")
     if last_edit_id != edit_id:
-        for k in ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
-                  "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
-                  "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
-                  "compras_nova_itens_material", "compras_nova_itens_epi", "compras_edit_loaded"]:
+        keys_to_clear = ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
+                         "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
+                         "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
+                         "compras_nova_itens_material", "compras_nova_itens_epi", "compras_edit_loaded"]
+        for k in keys_to_clear:
             if k in st.session_state:
                 del st.session_state[k]
         st.session_state["compras_last_edit_id"] = edit_id
@@ -673,7 +698,6 @@ def page_nova_solicitacao():
         st.selectbox("Cliente *", CLIENTES, key="nova_cliente")
     with col_sel2:
         lojas = LOJAS_POR_CLIENTE.get(st.session_state["nova_cliente"], [])
-        # Se loja atual não está na lista do novo cliente, reseta para primeira ou vazio
         if st.session_state["nova_loja"] not in lojas:
             st.session_state["nova_loja"] = lojas[0] if lojas else ""
         st.selectbox("Loja *", lojas, key="nova_loja")
@@ -749,7 +773,6 @@ def page_nova_solicitacao():
             },
             hide_index=True,
         )
-        # Guardar no session_state apenas se o editor retornou dados válidos
         if edited_mat is not None and not edited_mat.empty:
             st.session_state["compras_nova_itens_material"] = edited_mat.to_dict("records")
 
@@ -871,6 +894,7 @@ def page_nova_solicitacao():
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
         st.rerun()
+
 def page_detalhes():
     ver_id = st.session_state.get("compras_ver_id")
     s = None
