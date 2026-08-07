@@ -269,10 +269,16 @@ def init_session_state():
         st.session_state["compras_gs_loaded"] = True
 
 
+def _rerun_fragment():
+    try:
+        st.rerun(scope="fragment")
+    except TypeError:
+        st.rerun()
+
 def switch_page(page):
     st.session_state["compras_page"] = page
     st.session_state["compras_edit_id"] = None
-    st.rerun()
+    _rerun_fragment()
 
 
 def get_badge_color(status):
@@ -452,6 +458,45 @@ def gerar_xls_material(sol):
 
 
 # ========== PÁGINAS ==========
+@st.fragment
+# ========== CACHE DE DATAFRAMES ==========
+@st.cache_data(show_spinner=False)
+def _cached_df_solicitacoes(solicitacoes_json):
+    sols = json.loads(solicitacoes_json)
+    if not sols:
+        return pd.DataFrame()
+    return pd.DataFrame([
+        {
+            "ID": s["id"],
+            "Data": formatar_data_br(s.get("data")),
+            "Loja": s.get("loja", ""),
+            "Cliente": s.get("cliente", ""),
+            "Tipo": s.get("tipo", ""),
+            "Solicitante": s.get("solicitante", ""),
+            "Itens": len(s.get("itens", [])),
+            "Valor": formatar_moeda(s.get("valorTotal", 0)),
+            "Status": f"{get_badge_color(s.get('status'))} {s.get('status', '')}",
+        }
+        for s in sols
+    ])
+
+@st.cache_data(show_spinner=False)
+def _cached_df_entregas(entregas_json):
+    ents = json.loads(entregas_json)
+    if not ents:
+        return pd.DataFrame()
+    return pd.DataFrame([
+        {
+            "ID": e.get("id", ""),
+            "Solicitação": e.get("idSolicitacao", ""),
+            "Data": formatar_data_br(e.get("data")),
+            "Transportadora": e.get("transportadora", ""),
+            "Rastreio": e.get("rastreio", ""),
+            "Status": e.get("status", ""),
+        }
+        for e in ents
+    ])
+
 def page_dashboard():
     st.markdown("### 📊 Dashboard")
     sols = st.session_state["compras_solicitacoes"]
@@ -472,20 +517,7 @@ def page_dashboard():
     st.markdown("#### 📋 Últimas Solicitações")
     if sols:
         recentes = sorted(sols, key=lambda x: x.get("dataCriacao", ""), reverse=True)[:10]
-        df = pd.DataFrame([
-            {
-                "ID": s["id"],
-                "Data": formatar_data_br(s.get("data")),
-                "Loja": s.get("loja", ""),
-                "Cliente": s.get("cliente", ""),
-                "Tipo": s.get("tipo", ""),
-                "Solicitante": s.get("solicitante", ""),
-                "Itens": len(s.get("itens", [])),
-                "Valor": formatar_moeda(s.get("valorTotal", 0)),
-                "Status": f"{get_badge_color(s.get('status'))} {s.get('status', '')}"
-            }
-            for s in recentes
-        ])
+        df = _cached_df_solicitacoes(json.dumps(recentes, ensure_ascii=False, default=str))
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhuma solicitação cadastrada.")
@@ -536,21 +568,26 @@ def _carregar_compras_local():
 
 def _salvar_compras_automatico():
     """Salva automaticamente o estado atual do módulo de compras no Google Sheets e localmente."""
-    import sys
+    import sys, threading
     sols = st.session_state.get("compras_solicitacoes", [])
     ents = st.session_state.get("compras_entregas", [])
     # Sempre salva localmente para garantir persistência (com cache de hash)
     _salvar_compras_local(sols, ents)
     if not GS_ENABLED or not GS_ID_COMPRAS:
         return
-    try:
-        _salvar_compras_gs(sols, ents)
-    except Exception as e:
-        print(f"[DEBUG] Falha ao salvar no GS: {e}", file=sys.stderr)
+
+    def _bg_save():
+        try:
+            _salvar_compras_gs(sols, ents)
+        except Exception as e:
+            print(f"[DEBUG] Falha ao salvar no GS: {e}", file=sys.stderr)
+
+    threading.Thread(target=_bg_save, daemon=True).start()
 
 
 # Inicialização Google Sheets: garante que abas existam
 
+@st.fragment
 def page_solicitacoes():
     st.markdown("### 📋 Todas as Solicitações")
 
@@ -605,20 +642,7 @@ def page_solicitacoes():
         return
 
     # ── Tabela única (st.dataframe) em vez de 1 container + 3 colunas + 3 botões POR ITEM ──
-    df = pd.DataFrame([
-        {
-            "ID": s["id"],
-            "Data": formatar_data_br(s.get("data")),
-            "Loja": s.get("loja", ""),
-            "Cliente": s.get("cliente", ""),
-            "Tipo": s.get("tipo", ""),
-            "Solicitante": s.get("solicitante", ""),
-            "Itens": len(s.get("itens", [])),
-            "Valor": formatar_moeda(s.get("valorTotal", 0)),
-            "Status": f"{get_badge_color(s.get('status'))} {s.get('status', '')}",
-        }
-        for s in filtradas
-    ])
+    df = _cached_df_solicitacoes(json.dumps(filtradas, ensure_ascii=False, default=str))
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # ── Ações em lote (3 widgets fixos, independente da quantidade de solicitações) ──
@@ -632,19 +656,19 @@ def page_solicitacoes():
         if st.button("👁️ Ver", use_container_width=True, key="btn_ver_sel"):
             st.session_state["compras_ver_id"] = sel_id
             st.session_state["compras_page"] = "Detalhes"
-            st.rerun()
+            _rerun_fragment()
     with c3:
         if st.button("✏️ Editar", use_container_width=True, key="btn_edit_sel"):
             st.session_state["compras_edit_id"] = sel_id
             st.session_state["compras_page"] = "Nova Solicitação"
-            st.rerun()
+            _rerun_fragment()
     with c4:
         if st.button("🗑️ Excluir", use_container_width=True, key="btn_del_sel"):
             st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != sel_id]
             st.session_state["compras_entregas"] = [e for e in st.session_state["compras_entregas"] if e.get("idSolicitacao") != sel_id]
             _salvar_compras_automatico()
             st.success("Excluído!")
-            st.rerun()
+            _rerun_fragment()
 
     # ── Exportar CSV ──
     csv_data = []
@@ -660,17 +684,13 @@ def page_solicitacoes():
     st.download_button("📥 Exportar CSV", data=csv_buffer.getvalue().encode("utf-8"), file_name="solicitacoes.csv", mime="text/csv")
 
 
-@fragment
-@st.cache_data(show_spinner=False)
 def _build_df_mat(itens):
     return pd.DataFrame(itens)
 
-@fragment
-@st.cache_data(show_spinner=False)
 def _build_df_epi(itens):
     return pd.DataFrame(itens)
 
-@fragment
+@st.fragment
 def page_nova_solicitacao():
     st.markdown("### ➕ Nova Solicitação de Compra")
 
@@ -782,75 +802,94 @@ def page_nova_solicitacao():
     st.markdown("---")
     st.markdown("#### 📦 Itens")
 
-    # =====================================================================
-    # CORRECAO DATA_EDITOR: DataFrame estavel no session_state.
-    # Inicializa APENAS quando contexto muda. Nao recria a cada rerun.
-    # =====================================================================
-    context_key = f"{edit_id or 'new'}_{tipo}_{cliente}"
-    ctx_mudou = st.session_state.get("compras_items_ctx") != context_key
+    # Inicializa listas de itens no session_state (única vez por contexto)
+    ctx_key = f"items_{edit_id or 'new'}_{tipo}"
+    if st.session_state.get("compras_items_ctx_key") != ctx_key:
+        if tipo == "Material" and edit_sol:
+            st.session_state["compras_nova_itens_material"] = [
+                {"material": i.get("material", ""), "qtd": i.get("qtd", 1), "valorUnit": i.get("valorUnit", 0)}
+                for i in edit_sol.get("itens", [])
+            ]
+        elif tipo == "Material":
+            st.session_state["compras_nova_itens_material"] = []
+        elif tipo == "EPI" and edit_sol:
+            st.session_state["compras_nova_itens_epi"] = [
+                {"epi": i.get("epi", ""), "colaborador": i.get("colaborador", ""), "qtd": i.get("qtd", 1), "tamanho": i.get("tamanho", "")}
+                for i in edit_sol.get("itens", [])
+            ]
+        elif tipo == "EPI":
+            st.session_state["compras_nova_itens_epi"] = []
+        st.session_state["compras_items_ctx_key"] = ctx_key
 
     if tipo == "Material":
         st.markdown("**Materiais**")
         materiais = MATERIAIS_POR_CLIENTE.get(cliente, [])
+        itens_mat = st.session_state.get("compras_nova_itens_material", [])
 
-        if ctx_mudou:
-            if edit_sol and not st.session_state.get("compras_edit_loaded"):
-                itens_mat = [
-                    {"material": i.get("material", ""), "qtd": i.get("qtd", 1), "valorUnit": i.get("valorUnit", 0)}
-                    for i in edit_sol.get("itens", [])
-                ]
-                st.session_state["compras_edit_loaded"] = True
-            else:
-                itens_mat = [{"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0.0}]
-            st.session_state["df_mat"] = pd.DataFrame(itens_mat)
-            st.session_state["compras_items_ctx"] = context_key
+        if itens_mat:
+            st.dataframe(pd.DataFrame(itens_mat), use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum material adicionado.")
 
-        edited_mat = st.data_editor(
-            st.session_state["df_mat"],
-            num_rows="dynamic",
-            use_container_width=True,
-            key="editor_mat",
-            column_config={
-                "material": st.column_config.SelectboxColumn("Material", options=materiais, required=True),
-                "qtd": st.column_config.NumberColumn("Qtd", min_value=1, default=1, step=1),
-                "valorUnit": st.column_config.NumberColumn("Valor Unit.", min_value=0.0, format="%.2f", step=0.01, default=0.0),
-            },
-            hide_index=True,
-        )
-        # NAO atualiza st.session_state["df_mat"] aqui — deixa o Streamlit gerenciar via key
-        itens_para_salvar = edited_mat.to_dict("records") if edited_mat is not None and not edited_mat.empty else []
+        with st.form("add_mat_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns([3, 1, 1])
+            with c1:
+                mat_sel = st.selectbox("Material", materiais, key="add_mat_sel")
+            with c2:
+                qtd = st.number_input("Qtd", min_value=1, value=1, step=1, key="add_mat_qtd")
+            with c3:
+                val = st.number_input("Valor Unit.", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="add_mat_val")
+            if st.form_submit_button("➕ Adicionar"):
+                itens_mat.append({"material": mat_sel, "qtd": qtd, "valorUnit": val})
+                st.session_state["compras_nova_itens_material"] = itens_mat
+                _rerun_fragment()
+
+        if itens_mat:
+            idx = st.selectbox("Item para remover", range(len(itens_mat)),
+                               format_func=lambda i: f"{itens_mat[i]['material']} (x{itens_mat[i]['qtd']})",
+                               key="rem_mat_sel")
+            if st.button("🗑️ Remover", key="rem_mat_btn"):
+                itens_mat.pop(idx)
+                st.session_state["compras_nova_itens_material"] = itens_mat
+                _rerun_fragment()
+
+        itens_para_salvar = itens_mat
 
     elif tipo == "EPI":
         st.markdown("**EPIs**")
         epis = EPIS_POR_CLIENTE.get(cliente, EPIS_POR_CLIENTE.get("Smart Fit", []))
+        itens_epi = st.session_state.get("compras_nova_itens_epi", [])
 
-        if ctx_mudou:
-            if edit_sol and not st.session_state.get("compras_edit_loaded"):
-                itens_epi = [
-                    {"epi": i.get("epi", ""), "colaborador": i.get("colaborador", ""), "qtd": i.get("qtd", 1), "tamanho": i.get("tamanho", "")}
-                    for i in edit_sol.get("itens", [])
-                ]
-                st.session_state["compras_edit_loaded"] = True
-            else:
-                itens_epi = [{"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""}]
-            st.session_state["df_epi"] = pd.DataFrame(itens_epi)
-            st.session_state["compras_items_ctx"] = context_key
+        if itens_epi:
+            st.dataframe(pd.DataFrame(itens_epi), use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum EPI adicionado.")
 
-        edited_epi = st.data_editor(
-            st.session_state["df_epi"],
-            num_rows="dynamic",
-            use_container_width=True,
-            key="editor_epi",
-            column_config={
-                "epi": st.column_config.SelectboxColumn("EPI", options=epis, required=True),
-                "colaborador": st.column_config.TextColumn("Colaborador"),
-                "qtd": st.column_config.NumberColumn("Qtd", min_value=1, default=1, step=1),
-                "tamanho": st.column_config.SelectboxColumn("Tamanho", options=TAMANHOS_EPI),
-            },
-            hide_index=True,
-        )
-        # NAO atualiza st.session_state["df_epi"] aqui — deixa o Streamlit gerenciar via key
-        itens_para_salvar = edited_epi.to_dict("records") if edited_epi is not None and not edited_epi.empty else []
+        with st.form("add_epi_form", clear_on_submit=True):
+            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+            with c1:
+                epi_sel = st.selectbox("EPI", epis, key="add_epi_sel")
+            with c2:
+                colab = st.text_input("Colaborador", key="add_epi_colab")
+            with c3:
+                qtd = st.number_input("Qtd", min_value=1, value=1, step=1, key="add_epi_qtd")
+            with c4:
+                tam = st.selectbox("Tamanho", TAMANHOS_EPI, key="add_epi_tam")
+            if st.form_submit_button("➕ Adicionar"):
+                itens_epi.append({"epi": epi_sel, "colaborador": colab, "qtd": qtd, "tamanho": tam})
+                st.session_state["compras_nova_itens_epi"] = itens_epi
+                _rerun_fragment()
+
+        if itens_epi:
+            idx = st.selectbox("Item para remover", range(len(itens_epi)),
+                               format_func=lambda i: f"{itens_epi[i]['epi']} (x{itens_epi[i]['qtd']})",
+                               key="rem_epi_sel")
+            if st.button("🗑️ Remover", key="rem_epi_btn"):
+                itens_epi.pop(idx)
+                st.session_state["compras_nova_itens_epi"] = itens_epi
+                _rerun_fragment()
+
+        itens_para_salvar = itens_epi
 
     submitted = st.button("💾 Salvar Solicitação", type="primary")
 
@@ -928,14 +967,17 @@ def page_nova_solicitacao():
         for k in ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
                   "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
                   "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
-                  "df_mat", "df_epi", "compras_items_ctx", "compras_edit_loaded"]:
+                  "df_mat", "df_epi", "compras_items_ctx", "compras_edit_loaded",
+                  "compras_nova_itens_material", "compras_nova_itens_epi",
+                  "compras_items_ctx_key"]:
             if k in st.session_state:
                 del st.session_state[k]
         _salvar_compras_automatico()
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
-        st.rerun()
+        _rerun_fragment()
 
+@st.fragment
 def page_detalhes():
     ver_id = st.session_state.get("compras_ver_id")
     s = None
@@ -1000,9 +1042,10 @@ def page_detalhes():
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
         st.session_state["compras_ver_id"] = None
-        st.rerun()  # interrompe execução atual → volta instantâneo
+        _rerun_fragment()
 
 
+@st.fragment
 def page_entregas():
     st.markdown("### 🚚 Controle de Entregas")
 
@@ -1031,21 +1074,7 @@ def page_entregas():
         return
 
     # ── Tabela única (st.dataframe) — ZERO widgets por linha ──
-    df = pd.DataFrame([
-        {
-            "ID Solicitação": e.get("idSolicitacao", ""),
-            "Loja": e.get("loja", ""),
-            "Tipo": e.get("tipo", ""),
-            "Transportadora": e.get("transportadora", "-"),
-            "Rastreio": e.get("rastreio", "-"),
-            "Status": f"{get_badge_color(e.get('status'))} {e.get('status', '')}",
-            "Data Envio": formatar_data_br(e.get("dataEnvio")),
-            "Data Prevista": formatar_data_br(e.get("dataPrevista")),
-            "Data Entrega": formatar_data_br(e.get("dataEntrega")),
-            "Observações": e.get("observacoes", "-"),
-        }
-        for e in filtradas
-    ])
+    df = _cached_df_entregas(json.dumps(filtradas, ensure_ascii=False, default=str))
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # ── Edição rápida (3 widgets fixos, independente da quantidade) ──
@@ -1058,7 +1087,7 @@ def page_entregas():
     with c2:
         if st.button("📝 Editar", use_container_width=True, key="ent_btn_edit"):
             st.session_state["compras_entrega_edit_id"] = sel_id
-            st.rerun()
+            _rerun_fragment()
 
     # ── Formulário de edição inline (apenas 1 form, aberto sob demanda) ──
     edit_id = st.session_state.get("compras_entrega_edit_id")
@@ -1083,7 +1112,7 @@ def page_entregas():
                 with c_btn2:
                     if st.form_submit_button("❌ Cancelar", use_container_width=True):
                         st.session_state["compras_entrega_edit_id"] = None
-                        st.rerun()
+                        _rerun_fragment()
                 if submitted:
                     e["status"] = ne_status
                     e["transportadora"] = ne_transportadora
@@ -1099,9 +1128,10 @@ def page_entregas():
                     _salvar_compras_automatico()
                     st.session_state["compras_entrega_edit_id"] = None
                     st.success("Entrega atualizada!")
-                    st.rerun()
+                    _rerun_fragment()
 
 
+@st.fragment
 def page_materiais():
     st.markdown("### 📋 Catálogo de Materiais e EPIs")
 
@@ -1149,7 +1179,7 @@ def page_materiais():
                         MATERIAIS_POR_CLIENTE.setdefault(cliente_cad, [])
                         MATERIAIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
                         st.success(f"Material '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-                        st.rerun()
+                        _rerun_fragment()
                     else:
                         st.warning("Este material já está cadastrado para este cliente.")
                 else:
@@ -1157,11 +1187,12 @@ def page_materiais():
                         EPIS_POR_CLIENTE.setdefault(cliente_cad, [])
                         EPIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
                         st.success(f"EPI '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-                        st.rerun()
+                        _rerun_fragment()
                     else:
                         st.warning("Este EPI já está cadastrado para este cliente.")
 
 
+@st.fragment
 def page_lojas():
     st.markdown("### 🏬 Lojas e Clientes")
 
@@ -1178,6 +1209,7 @@ def page_lojas():
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+@st.fragment
 def page_relatorios():
     st.markdown("### 📁 Relatórios e Downloads")
 
@@ -1246,6 +1278,7 @@ def page_relatorios():
 
 
 # ========== MAIN ==========
+@st.fragment
 def render_compras():
     init_session_state()
 
@@ -1264,7 +1297,7 @@ def render_compras():
             if st.button("🔙 Voltar para Solicitações", use_container_width=True):
                 st.session_state["compras_page"] = "Solicitações"
                 st.session_state["compras_ver_id"] = None
-                st.rerun()
+                _rerun_fragment()
         else:
             menu = st.radio(
                 "",
@@ -1272,11 +1305,14 @@ def render_compras():
                 index=MENU_OPCOES.index(st.session_state["compras_page"])
                 if st.session_state["compras_page"] in MENU_OPCOES
                 else 0,
+                key="menu_compras",
             )
             if menu != st.session_state["compras_page"]:
                 st.session_state["compras_page"] = menu
                 st.session_state["compras_edit_id"] = None
                 st.session_state["compras_edit_loaded"] = False
+                # st.rerun() removido — o st.radio já provoca rerun nativo,
+                # chamar novamente causava segundo rerun desnecessário.
 
     with col_conteudo:
         page = st.session_state["compras_page"]
