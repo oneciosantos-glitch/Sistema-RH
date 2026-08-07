@@ -645,13 +645,14 @@ def page_nova_solicitacao():
                 edit_sol = s
                 break
 
-    # Detectar mudança de contexto (nova solicitação ou edição diferente) e limpar estado
+    # Detectar mudança de contexto (nova solicitação, edição diferente, tipo mudou, cliente mudou)
+    # e limpar estado
     last_edit_id = st.session_state.get("compras_last_edit_id")
     if last_edit_id != edit_id:
         keys_to_clear = ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
                          "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
                          "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
-                         "compras_nova_itens_material", "compras_nova_itens_epi", "compras_edit_loaded"]
+                         "compras_edit_loaded"]
         for k in keys_to_clear:
             if k in st.session_state:
                 del st.session_state[k]
@@ -744,25 +745,31 @@ def page_nova_solicitacao():
     st.markdown("---")
     st.markdown("#### 📦 Itens")
 
+    # =====================================================================
+    # CORRECAO DATA_EDITOR: DataFrame estavel no session_state.
+    # Inicializa APENAS quando contexto muda. Nao recria a cada rerun.
+    # =====================================================================
+    context_key = f"{edit_id or 'new'}_{tipo}_{cliente}"
+    ctx_mudou = st.session_state.get("compras_items_ctx") != context_key
+
     if tipo == "Material":
         st.markdown("**Materiais**")
         materiais = MATERIAIS_POR_CLIENTE.get(cliente, [])
 
-        if edit_sol and not st.session_state.get("compras_edit_loaded"):
-            st.session_state["compras_nova_itens_material"] = [
-                {"material": i.get("material", ""), "qtd": i.get("qtd", 1), "valorUnit": i.get("valorUnit", 0)}
-                for i in edit_sol.get("itens", [])
-            ]
-            st.session_state["compras_edit_loaded"] = True
+        if ctx_mudou:
+            if edit_sol and not st.session_state.get("compras_edit_loaded"):
+                itens_mat = [
+                    {"material": i.get("material", ""), "qtd": i.get("qtd", 1), "valorUnit": i.get("valorUnit", 0)}
+                    for i in edit_sol.get("itens", [])
+                ]
+                st.session_state["compras_edit_loaded"] = True
+            else:
+                itens_mat = [{"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0.0}]
+            st.session_state["df_mat"] = pd.DataFrame(itens_mat)
+            st.session_state["compras_items_ctx"] = context_key
 
-        itens_mat = st.session_state.get("compras_nova_itens_material", [])
-        if not itens_mat:
-            itens_mat = [{"material": materiais[0] if materiais else "", "qtd": 1, "valorUnit": 0.0}]
-            st.session_state["compras_nova_itens_material"] = itens_mat
-
-        df_mat = pd.DataFrame(itens_mat)
         edited_mat = st.data_editor(
-            df_mat,
+            st.session_state["df_mat"],
             num_rows="dynamic",
             use_container_width=True,
             key="editor_mat",
@@ -773,28 +780,27 @@ def page_nova_solicitacao():
             },
             hide_index=True,
         )
-        if edited_mat is not None and not edited_mat.empty:
-            st.session_state["compras_nova_itens_material"] = edited_mat.to_dict("records")
+        # NAO atualiza st.session_state["df_mat"] aqui — deixa o Streamlit gerenciar via key
+        itens_para_salvar = edited_mat.to_dict("records") if edited_mat is not None and not edited_mat.empty else []
 
     elif tipo == "EPI":
         st.markdown("**EPIs**")
         epis = EPIS_POR_CLIENTE.get(cliente, EPIS_POR_CLIENTE.get("Smart Fit", []))
 
-        if edit_sol and not st.session_state.get("compras_edit_loaded"):
-            st.session_state["compras_nova_itens_epi"] = [
-                {"epi": i.get("epi", ""), "colaborador": i.get("colaborador", ""), "qtd": i.get("qtd", 1), "tamanho": i.get("tamanho", "")}
-                for i in edit_sol.get("itens", [])
-            ]
-            st.session_state["compras_edit_loaded"] = True
+        if ctx_mudou:
+            if edit_sol and not st.session_state.get("compras_edit_loaded"):
+                itens_epi = [
+                    {"epi": i.get("epi", ""), "colaborador": i.get("colaborador", ""), "qtd": i.get("qtd", 1), "tamanho": i.get("tamanho", "")}
+                    for i in edit_sol.get("itens", [])
+                ]
+                st.session_state["compras_edit_loaded"] = True
+            else:
+                itens_epi = [{"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""}]
+            st.session_state["df_epi"] = pd.DataFrame(itens_epi)
+            st.session_state["compras_items_ctx"] = context_key
 
-        itens_epi = st.session_state.get("compras_nova_itens_epi", [])
-        if not itens_epi:
-            itens_epi = [{"epi": epis[0] if epis else "", "colaborador": "", "qtd": 1, "tamanho": ""}]
-            st.session_state["compras_nova_itens_epi"] = itens_epi
-
-        df_epi = pd.DataFrame(itens_epi)
         edited_epi = st.data_editor(
-            df_epi,
+            st.session_state["df_epi"],
             num_rows="dynamic",
             use_container_width=True,
             key="editor_epi",
@@ -806,22 +812,20 @@ def page_nova_solicitacao():
             },
             hide_index=True,
         )
-        if edited_epi is not None and not edited_epi.empty:
-            st.session_state["compras_nova_itens_epi"] = edited_epi.to_dict("records")
+        # NAO atualiza st.session_state["df_epi"] aqui — deixa o Streamlit gerenciar via key
+        itens_para_salvar = edited_epi.to_dict("records") if edited_epi is not None and not edited_epi.empty else []
 
     submitted = st.button("💾 Salvar Solicitação", type="primary")
 
     if submitted:
-        itens = []
+        itens = itens_para_salvar
         valor_total = 0
         if tipo == "Material":
-            itens = st.session_state.get("compras_nova_itens_material", [])
             valor_total = sum(i.get("valorUnit", 0) * i.get("qtd", 0) for i in itens)
             if not itens:
                 st.error("Adicione pelo menos um material.")
                 return
         elif tipo == "EPI":
-            itens = st.session_state.get("compras_nova_itens_epi", [])
             if not itens:
                 st.error("Adicione pelo menos um EPI.")
                 return
@@ -887,7 +891,7 @@ def page_nova_solicitacao():
         for k in ["nova_cliente", "nova_loja", "nova_tipo", "nova_solicitante",
                   "nova_data", "nova_prioridade", "nova_previsao", "nova_obs",
                   "nova_nome_func", "nova_encarregado", "nova_supervisor", "nova_data_bota",
-                  "compras_nova_itens_material", "compras_nova_itens_epi", "compras_edit_loaded"]:
+                  "df_mat", "df_epi", "compras_items_ctx", "compras_edit_loaded"]:
             if k in st.session_state:
                 del st.session_state[k]
         _salvar_compras_automatico()
