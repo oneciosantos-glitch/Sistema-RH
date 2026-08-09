@@ -1317,13 +1317,13 @@ def render_compras():
                 index=MENU_OPCOES.index(st.session_state["compras_page"])
                 if st.session_state["compras_page"] in MENU_OPCOES
                 else 0,
+                key="nav_compras",
             )
             if menu != st.session_state["compras_page"]:
                 st.session_state["compras_page"] = menu
                 st.session_state["compras_edit_id"] = None
                 st.session_state["compras_edit_loaded"] = False
-                # st.rerun() removido — o st.radio já provoca rerun nativo,
-                # chamar novamente causava segundo rerun desnecessário.
+                _rerun_fragment()
 
     with col_conteudo:
         page = st.session_state["compras_page"]
