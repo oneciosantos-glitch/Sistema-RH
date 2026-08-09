@@ -288,8 +288,7 @@ def _rerun_fragment():
 def switch_page(page):
     st.session_state["compras_page"] = page
     st.session_state["compras_edit_id"] = None
-    st.rerun()
-    st.rerun()
+    _rerun_fragment()
 
 
 def get_badge_color(status):
@@ -677,12 +676,12 @@ def page_solicitacoes():
         if st.button("👁️ Ver", use_container_width=True, key="btn_ver_sel"):
             st.session_state["compras_ver_id"] = sel_id
             st.session_state["compras_page"] = "Detalhes"
-            st.rerun()
+            _rerun_fragment()
     with c3:
         if st.button("✏️ Editar", use_container_width=True, key="btn_edit_sel"):
             st.session_state["compras_edit_id"] = sel_id
             st.session_state["compras_page"] = "Nova Solicitação"
-            st.rerun()
+            _rerun_fragment()
     with c4:
         if st.button("🗑️ Excluir", use_container_width=True, key="btn_del_sel"):
             st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != sel_id]
@@ -996,7 +995,7 @@ def page_nova_solicitacao():
         _salvar_compras_automatico()
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
-        st.rerun()
+        _rerun_fragment()
 
 @st.fragment
 def page_detalhes():
@@ -1063,7 +1062,7 @@ def page_detalhes():
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
         st.session_state["compras_ver_id"] = None
-        st.rerun()
+        _rerun_fragment()
 
 
 @st.fragment
@@ -1318,7 +1317,7 @@ def render_compras():
             if st.button("🔙 Voltar para Solicitações", use_container_width=True):
                 st.session_state["compras_page"] = "Solicitações"
                 st.session_state["compras_ver_id"] = None
-                st.rerun()
+                _rerun_fragment()
         else:
             menu = st.radio(
                 "",
