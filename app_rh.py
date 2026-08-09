@@ -23,8 +23,8 @@ from openpyxl.utils import get_column_letter
 # CACHE DE DADOS — evita recarregar arquivo JSON a cada rerun
 # ============================================================
 @st.cache_data(ttl=300, show_spinner=False)
-def _cached_carregar_compras_local(path: str):
-    """Carrega dados do JSON com cache de 5 min."""
+def _cached_carregar_compras_local(path: str, mtime: float = 0.0):
+    """Carrega dados do JSON com cache de 5 min (invalidado por mtime)."""
     if not os.path.exists(path):
         return [], []
     try:
@@ -250,7 +250,17 @@ def init_session_state():
                 sols, ents = [], []
         # Se não conseguiu do GS, carrega do arquivo local (com cache)
         if not sols and not ents:
-            sols, ents = _cached_carregar_compras_local(ARQUIVO_COMPRAS)
+            mtime = os.path.getmtime(ARQUIVO_COMPRAS) if os.path.exists(ARQUIVO_COMPRAS) else 0.0
+            sols, ents = _cached_carregar_compras_local(ARQUIVO_COMPRAS, mtime)
+            # Fallback de seguranca: se o arquivo existe e tem conteudo mas o cache retornou vazio, recarrega direto
+            if not sols and not ents and os.path.exists(ARQUIVO_COMPRAS) and os.path.getsize(ARQUIVO_COMPRAS) > 10:
+                try:
+                    with open(ARQUIVO_COMPRAS, "r", encoding="utf-8") as f:
+                        dados = json.load(f)
+                    sols = dados.get("solicitacoes", [])
+                    ents = dados.get("entregas", [])
+                except Exception:
+                    pass
         st.session_state["compras_solicitacoes"] = sols
         st.session_state["compras_entregas"] = ents
     if "compras_entregas" not in st.session_state:
@@ -278,6 +288,7 @@ def _rerun_fragment():
 def switch_page(page):
     st.session_state["compras_page"] = page
     st.session_state["compras_edit_id"] = None
+    st.rerun()
     st.rerun()
 
 
@@ -537,6 +548,16 @@ def _salvar_compras_local(solicitacoes, entregas):
         hash_antigo = st.session_state.get(chave_cache, "")
         if hash_novo == hash_antigo:
             return  # sem mudanças, ignora
+        # Protecao: nao salvar dados vazios por cima de arquivo existente com dados
+        if not solicitacoes and not entregas and os.path.exists(ARQUIVO_COMPRAS) and os.path.getsize(ARQUIVO_COMPRAS) > 10:
+            try:
+                with open(ARQUIVO_COMPRAS, "r", encoding="utf-8") as f:
+                    dados_existentes = json.load(f)
+                if dados_existentes.get("solicitacoes") or dados_existentes.get("entregas"):
+                    st.warning("⚠️ Tentativa de salvar dados vazios detectada e bloqueada. Arquivo original preservado.")
+                    return
+            except Exception:
+                pass
         st.session_state[chave_cache] = hash_novo
         with open(ARQUIVO_COMPRAS, "w", encoding="utf-8") as f:
             json.dump(dados, f, ensure_ascii=False, indent=2)
