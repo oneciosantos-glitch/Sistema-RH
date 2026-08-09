@@ -291,6 +291,36 @@ def switch_page(page):
     _rerun_fragment()
 
 
+def _cb_switch_page(page):
+    """Callback para navegação por botão. Executa antes do script, pode modificar key do radio."""
+    st.session_state["compras_page"] = page
+    st.session_state["compras_edit_id"] = None
+    if "nav_compras" in st.session_state:
+        st.session_state["nav_compras"] = page
+
+
+def _cb_voltar_solicitacoes():
+    """Callback para voltar à lista de solicitações."""
+    st.session_state["compras_page"] = "Solicitações"
+    st.session_state["compras_ver_id"] = None
+    if "nav_compras" in st.session_state:
+        st.session_state["nav_compras"] = "Solicitações"
+
+
+def _cb_ver_detalhes(sol_id):
+    """Callback para ver detalhes de uma solicitação."""
+    st.session_state["compras_ver_id"] = sol_id
+    st.session_state["compras_page"] = "Detalhes"
+
+
+def _cb_editar_solicitacao(sol_id):
+    """Callback para editar uma solicitação."""
+    st.session_state["compras_edit_id"] = sol_id
+    st.session_state["compras_page"] = "Nova Solicitação"
+    if "nav_compras" in st.session_state:
+        st.session_state["nav_compras"] = "Nova Solicitação"
+
+
 def get_badge_color(status):
     return {
         "Pendente": "🔴",
@@ -531,8 +561,8 @@ def page_dashboard():
     else:
         st.info("Nenhuma solicitação cadastrada.")
 
-    if st.button("➕ Nova Solicitação", type="primary", key="btn_nova_sol_dashboard"):
-        switch_page("Nova Solicitação")
+    st.button("➕ Nova Solicitação", type="primary", key="btn_nova_sol_dashboard",
+              on_click=_cb_switch_page, args=("Nova Solicitação",))
 
 
 
@@ -671,15 +701,11 @@ def page_solicitacoes():
     with c1:
         sel_id = st.selectbox("Selecionar solicitação", ids_disponiveis, key="sol_sel_id")
     with c2:
-        if st.button("👁️ Ver", use_container_width=True, key="btn_ver_sel"):
-            st.session_state["compras_ver_id"] = sel_id
-            st.session_state["compras_page"] = "Detalhes"
-            # Fragmento reexecuta automaticamente
+        st.button("👁️ Ver", use_container_width=True, key="btn_ver_sel",
+                  on_click=_cb_ver_detalhes, args=(sel_id,))
     with c3:
-        if st.button("✏️ Editar", use_container_width=True, key="btn_edit_sel"):
-            st.session_state["compras_edit_id"] = sel_id
-            st.session_state["compras_page"] = "Nova Solicitação"
-            # Fragmento reexecuta automaticamente
+        st.button("✏️ Editar", use_container_width=True, key="btn_edit_sel",
+                  on_click=_cb_editar_solicitacao, args=(sel_id,))
     with c4:
         if st.button("🗑️ Excluir", use_container_width=True, key="btn_del_sel"):
             st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != sel_id]
@@ -992,6 +1018,8 @@ def page_nova_solicitacao():
         _salvar_compras_automatico()
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
+        if "nav_compras" in st.session_state:
+            del st.session_state["nav_compras"]
         _rerun_fragment()
 
 def page_detalhes():
@@ -1055,10 +1083,7 @@ def page_detalhes():
                 key=f"anexo_{a['nome']}"
             )
 
-    if st.button("🔙 Voltar"):
-        st.session_state["compras_page"] = "Solicitações"
-        st.session_state["compras_ver_id"] = None
-        _rerun_fragment()
+    st.button("🔙 Voltar", on_click=_cb_voltar_solicitacoes)
 
 
 def page_entregas():
@@ -1306,10 +1331,8 @@ def render_compras():
         MENU_OPCOES = ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"]
         if st.session_state["compras_page"] == "Detalhes":
             st.info("👁️ Visualizando detalhes")
-            if st.button("🔙 Voltar para Solicitações", use_container_width=True):
-                st.session_state["compras_page"] = "Solicitações"
-                st.session_state["compras_ver_id"] = None
-                _rerun_fragment()
+            st.button("🔙 Voltar para Solicitações", use_container_width=True,
+                      on_click=_cb_voltar_solicitacoes)
         else:
             menu = st.radio(
                 "",
