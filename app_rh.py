@@ -288,10 +288,7 @@ def _rerun_fragment():
 def switch_page(page):
     st.session_state["compras_page"] = page
     st.session_state["compras_edit_id"] = None
-    # Sincroniza o radio do menu lateral para não sobrescrever a navegação
-    MENU_OPCOES = ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"]
-    if page in MENU_OPCOES and "menu_compras" in st.session_state:
-        st.session_state["menu_compras"] = page
+    _rerun_fragment()
 
 
 def get_badge_color(status):
@@ -995,8 +992,7 @@ def page_nova_solicitacao():
         _salvar_compras_automatico()
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
-        st.session_state["menu_compras"] = "Solicitações"
-            # Fragmento reexecuta automaticamente
+        _rerun_fragment()
 
 def page_detalhes():
     ver_id = st.session_state.get("compras_ver_id")
@@ -1061,9 +1057,8 @@ def page_detalhes():
 
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
-        st.session_state["menu_compras"] = "Solicitações"
         st.session_state["compras_ver_id"] = None
-            # Fragmento reexecuta automaticamente
+        _rerun_fragment()
 
 
 def page_entregas():
@@ -1313,9 +1308,8 @@ def render_compras():
             st.info("👁️ Visualizando detalhes")
             if st.button("🔙 Voltar para Solicitações", use_container_width=True):
                 st.session_state["compras_page"] = "Solicitações"
-                st.session_state["menu_compras"] = "Solicitações"
                 st.session_state["compras_ver_id"] = None
-            # Fragmento reexecuta automaticamente
+                _rerun_fragment()
         else:
             menu = st.radio(
                 "",
@@ -1323,7 +1317,6 @@ def render_compras():
                 index=MENU_OPCOES.index(st.session_state["compras_page"])
                 if st.session_state["compras_page"] in MENU_OPCOES
                 else 0,
-                key="menu_compras",
             )
             if menu != st.session_state["compras_page"]:
                 st.session_state["compras_page"] = menu
