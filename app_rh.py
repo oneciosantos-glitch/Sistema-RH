@@ -288,7 +288,8 @@ def _rerun_fragment():
 def switch_page(page):
     st.session_state["compras_page"] = page
     st.session_state["compras_edit_id"] = None
-    _rerun_fragment()
+    # Não chama st.rerun() aqui — dentro de @st.fragment o Streamlit já reexecuta
+    # o fragmento automaticamente após interação com widgets
 
 
 def get_badge_color(status):
@@ -676,19 +677,19 @@ def page_solicitacoes():
         if st.button("👁️ Ver", use_container_width=True, key="btn_ver_sel"):
             st.session_state["compras_ver_id"] = sel_id
             st.session_state["compras_page"] = "Detalhes"
-            _rerun_fragment()
+            # Fragmento reexecuta automaticamente
     with c3:
         if st.button("✏️ Editar", use_container_width=True, key="btn_edit_sel"):
             st.session_state["compras_edit_id"] = sel_id
             st.session_state["compras_page"] = "Nova Solicitação"
-            _rerun_fragment()
+            # Fragmento reexecuta automaticamente
     with c4:
         if st.button("🗑️ Excluir", use_container_width=True, key="btn_del_sel"):
             st.session_state["compras_solicitacoes"] = [x for x in sols if x["id"] != sel_id]
             st.session_state["compras_entregas"] = [e for e in st.session_state["compras_entregas"] if e.get("idSolicitacao") != sel_id]
             _salvar_compras_automatico()
             st.success("Excluído!")
-            _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
     # ── Exportar CSV ──
     csv_data = []
@@ -862,7 +863,7 @@ def page_nova_solicitacao():
             if st.form_submit_button("➕ Adicionar"):
                 itens_mat.append({"material": mat_sel, "qtd": qtd, "valorUnit": val})
                 st.session_state["compras_nova_itens_material"] = itens_mat
-                _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
         if itens_mat:
             idx = st.selectbox("Item para remover", range(len(itens_mat)),
@@ -871,7 +872,7 @@ def page_nova_solicitacao():
             if st.button("🗑️ Remover", key="rem_mat_btn"):
                 itens_mat.pop(idx)
                 st.session_state["compras_nova_itens_material"] = itens_mat
-                _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
         itens_para_salvar = itens_mat
 
@@ -898,7 +899,7 @@ def page_nova_solicitacao():
             if st.form_submit_button("➕ Adicionar"):
                 itens_epi.append({"epi": epi_sel, "colaborador": colab, "qtd": qtd, "tamanho": tam})
                 st.session_state["compras_nova_itens_epi"] = itens_epi
-                _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
         if itens_epi:
             idx = st.selectbox("Item para remover", range(len(itens_epi)),
@@ -907,7 +908,7 @@ def page_nova_solicitacao():
             if st.button("🗑️ Remover", key="rem_epi_btn"):
                 itens_epi.pop(idx)
                 st.session_state["compras_nova_itens_epi"] = itens_epi
-                _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
         itens_para_salvar = itens_epi
 
@@ -995,7 +996,7 @@ def page_nova_solicitacao():
         _salvar_compras_automatico()
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
-        _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
 @st.fragment
 def page_detalhes():
@@ -1062,7 +1063,7 @@ def page_detalhes():
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
         st.session_state["compras_ver_id"] = None
-        _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
 
 @st.fragment
@@ -1107,7 +1108,7 @@ def page_entregas():
     with c2:
         if st.button("📝 Editar", use_container_width=True, key="ent_btn_edit"):
             st.session_state["compras_entrega_edit_id"] = sel_id
-            _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
     # ── Formulário de edição inline (apenas 1 form, aberto sob demanda) ──
     edit_id = st.session_state.get("compras_entrega_edit_id")
@@ -1132,7 +1133,7 @@ def page_entregas():
                 with c_btn2:
                     if st.form_submit_button("❌ Cancelar", use_container_width=True):
                         st.session_state["compras_entrega_edit_id"] = None
-                        _rerun_fragment()
+            # Fragmento reexecuta automaticamente
                 if submitted:
                     e["status"] = ne_status
                     e["transportadora"] = ne_transportadora
@@ -1148,7 +1149,7 @@ def page_entregas():
                     _salvar_compras_automatico()
                     st.session_state["compras_entrega_edit_id"] = None
                     st.success("Entrega atualizada!")
-                    _rerun_fragment()
+            # Fragmento reexecuta automaticamente
 
 
 @st.fragment
@@ -1199,7 +1200,7 @@ def page_materiais():
                         MATERIAIS_POR_CLIENTE.setdefault(cliente_cad, [])
                         MATERIAIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
                         st.success(f"Material '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-                        _rerun_fragment()
+            # Fragmento reexecuta automaticamente
                     else:
                         st.warning("Este material já está cadastrado para este cliente.")
                 else:
@@ -1207,7 +1208,7 @@ def page_materiais():
                         EPIS_POR_CLIENTE.setdefault(cliente_cad, [])
                         EPIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
                         st.success(f"EPI '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-                        _rerun_fragment()
+            # Fragmento reexecuta automaticamente
                     else:
                         st.warning("Este EPI já está cadastrado para este cliente.")
 
@@ -1317,7 +1318,7 @@ def render_compras():
             if st.button("🔙 Voltar para Solicitações", use_container_width=True):
                 st.session_state["compras_page"] = "Solicitações"
                 st.session_state["compras_ver_id"] = None
-                _rerun_fragment()
+            # Fragmento reexecuta automaticamente
         else:
             menu = st.radio(
                 "",
