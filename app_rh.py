@@ -288,8 +288,10 @@ def _rerun_fragment():
 def switch_page(page):
     st.session_state["compras_page"] = page
     st.session_state["compras_edit_id"] = None
-    # Não chama st.rerun() aqui — dentro de @st.fragment o Streamlit já reexecuta
-    # o fragmento automaticamente após interação com widgets
+    # Sincroniza o radio do menu lateral para não sobrescrever a navegação
+    MENU_OPCOES = ["Dashboard", "Solicitações", "Nova Solicitação", "Controle de Entregas", "Catálogo de Materiais", "Lojas e Clientes", "Relatórios e Downloads"]
+    if page in MENU_OPCOES and "menu_compras" in st.session_state:
+        st.session_state["menu_compras"] = page
 
 
 def get_badge_color(status):
@@ -469,7 +471,6 @@ def gerar_xls_material(sol):
 
 
 # ========== PÁGINAS ==========
-@st.fragment
 # ========== CACHE DE DATAFRAMES ==========
 @st.cache_data(show_spinner=False)
 def _cached_df_solicitacoes(solicitacoes_json):
@@ -608,7 +609,6 @@ def _salvar_compras_automatico():
 
 # Inicialização Google Sheets: garante que abas existam
 
-@st.fragment
 def page_solicitacoes():
     st.markdown("### 📋 Todas as Solicitações")
 
@@ -711,7 +711,6 @@ def _build_df_mat(itens):
 def _build_df_epi(itens):
     return pd.DataFrame(itens)
 
-@st.fragment
 def page_nova_solicitacao():
     st.markdown("### ➕ Nova Solicitação de Compra")
 
@@ -996,9 +995,9 @@ def page_nova_solicitacao():
         _salvar_compras_automatico()
         st.success("Solicitação salva com sucesso!")
         st.session_state["compras_page"] = "Solicitações"
+        st.session_state["menu_compras"] = "Solicitações"
             # Fragmento reexecuta automaticamente
 
-@st.fragment
 def page_detalhes():
     ver_id = st.session_state.get("compras_ver_id")
     s = None
@@ -1062,11 +1061,11 @@ def page_detalhes():
 
     if st.button("🔙 Voltar"):
         st.session_state["compras_page"] = "Solicitações"
+        st.session_state["menu_compras"] = "Solicitações"
         st.session_state["compras_ver_id"] = None
             # Fragmento reexecuta automaticamente
 
 
-@st.fragment
 def page_entregas():
     st.markdown("### 🚚 Controle de Entregas")
 
@@ -1152,7 +1151,6 @@ def page_entregas():
             # Fragmento reexecuta automaticamente
 
 
-@st.fragment
 def page_materiais():
     st.markdown("### 📋 Catálogo de Materiais e EPIs")
 
@@ -1213,7 +1211,6 @@ def page_materiais():
                         st.warning("Este EPI já está cadastrado para este cliente.")
 
 
-@st.fragment
 def page_lojas():
     st.markdown("### 🏬 Lojas e Clientes")
 
@@ -1230,7 +1227,6 @@ def page_lojas():
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-@st.fragment
 def page_relatorios():
     st.markdown("### 📁 Relatórios e Downloads")
 
@@ -1317,6 +1313,7 @@ def render_compras():
             st.info("👁️ Visualizando detalhes")
             if st.button("🔙 Voltar para Solicitações", use_container_width=True):
                 st.session_state["compras_page"] = "Solicitações"
+                st.session_state["menu_compras"] = "Solicitações"
                 st.session_state["compras_ver_id"] = None
             # Fragmento reexecuta automaticamente
         else:
