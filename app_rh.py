@@ -869,32 +869,48 @@ def page_nova_solicitacao():
         materiais = MATERIAIS_POR_CLIENTE.get(cliente, [])
         itens_mat = st.session_state.get("compras_nova_itens_material", [])
 
+        # Reset select se cliente mudou
+        last_cli = st.session_state.get("_last_mat_cliente")
+        if last_cli != cliente:
+            for k in ["add_mat_sel", "add_mat_qtd", "add_mat_val"]:
+                st.session_state.pop(k, None)
+            st.session_state["_last_mat_cliente"] = cliente
+
         if itens_mat:
             st.dataframe(pd.DataFrame(itens_mat), use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum material adicionado.")
 
-        with st.form("add_mat_form", clear_on_submit=True):
-            c1, c2, c3 = st.columns([3, 1, 1])
-            with c1:
-                mat_sel = st.selectbox("Material", materiais, key="add_mat_sel")
-            with c2:
-                qtd = st.number_input("Qtd", min_value=1, value=1, step=1, key="add_mat_qtd")
-            with c3:
-                val = st.number_input("Valor Unit.", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="add_mat_val")
-            if st.form_submit_button("➕ Adicionar"):
-                itens_mat.append({"material": mat_sel, "qtd": qtd, "valorUnit": val})
-                st.session_state["compras_nova_itens_material"] = itens_mat
-            # Fragmento reexecuta automaticamente
+        # --- Adicionar ---
+        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+        with c1:
+            st.selectbox("Material", materiais, key="add_mat_sel")
+        with c2:
+            st.number_input("Qtd", min_value=1, value=1, step=1, key="add_mat_qtd")
+        with c3:
+            st.number_input("Valor Unit.", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="add_mat_val")
+        with c4:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("➕ Adicionar", key="btn_add_mat"):
+                sel = st.session_state.get("add_mat_sel", materiais[0] if materiais else "")
+                qtd = st.session_state.get("add_mat_qtd", 1)
+                val = st.session_state.get("add_mat_val", 0.0)
+                if sel:
+                    itens_mat.append({"material": sel, "qtd": int(qtd), "valorUnit": float(val)})
+                    st.session_state["compras_nova_itens_material"] = itens_mat
 
+        # --- Remover (botão por linha) ---
         if itens_mat:
-            idx = st.selectbox("Item para remover", range(len(itens_mat)),
-                               format_func=lambda i: f"{itens_mat[i]['material']} (x{itens_mat[i]['qtd']})",
-                               key="rem_mat_sel")
-            if st.button("🗑️ Remover", key="rem_mat_btn"):
-                itens_mat.pop(idx)
-                st.session_state["compras_nova_itens_material"] = itens_mat
-            # Fragmento reexecuta automaticamente
+            st.markdown("**Remover item:**")
+            for pos, item in enumerate(itens_mat):
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    st.caption(f"{item['material']}  ·  Qtd: {item['qtd']}  ·  Valor: {item['valorUnit']:.2f}")
+                with col_b:
+                    if st.button("🗑️ Remover", key=f"rem_mat_{pos}"):
+                        itens_mat.pop(pos)
+                        st.session_state["compras_nova_itens_material"] = itens_mat
+                        _rerun_fragment()
 
         itens_para_salvar = itens_mat
 
@@ -903,34 +919,51 @@ def page_nova_solicitacao():
         epis = EPIS_POR_CLIENTE.get(cliente, EPIS_POR_CLIENTE.get("Smart Fit", []))
         itens_epi = st.session_state.get("compras_nova_itens_epi", [])
 
+        # Reset select se cliente mudou
+        last_cli = st.session_state.get("_last_epi_cliente")
+        if last_cli != cliente:
+            for k in ["add_epi_sel", "add_epi_colab", "add_epi_qtd", "add_epi_tam"]:
+                st.session_state.pop(k, None)
+            st.session_state["_last_epi_cliente"] = cliente
+
         if itens_epi:
             st.dataframe(pd.DataFrame(itens_epi), use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum EPI adicionado.")
 
-        with st.form("add_epi_form", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-            with c1:
-                epi_sel = st.selectbox("EPI", epis, key="add_epi_sel")
-            with c2:
-                colab = st.text_input("Colaborador", key="add_epi_colab")
-            with c3:
-                qtd = st.number_input("Qtd", min_value=1, value=1, step=1, key="add_epi_qtd")
-            with c4:
-                tam = st.selectbox("Tamanho", TAMANHOS_EPI, key="add_epi_tam")
-            if st.form_submit_button("➕ Adicionar"):
-                itens_epi.append({"epi": epi_sel, "colaborador": colab, "qtd": qtd, "tamanho": tam})
-                st.session_state["compras_nova_itens_epi"] = itens_epi
-            # Fragmento reexecuta automaticamente
+        # --- Adicionar ---
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 1, 1])
+        with c1:
+            st.selectbox("EPI", epis, key="add_epi_sel")
+        with c2:
+            st.text_input("Colaborador", key="add_epi_colab")
+        with c3:
+            st.number_input("Qtd", min_value=1, value=1, step=1, key="add_epi_qtd")
+        with c4:
+            st.selectbox("Tamanho", TAMANHOS_EPI, key="add_epi_tam")
+        with c5:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("➕ Adicionar", key="btn_add_epi"):
+                sel = st.session_state.get("add_epi_sel", epis[0] if epis else "")
+                colab = st.session_state.get("add_epi_colab", "")
+                qtd = st.session_state.get("add_epi_qtd", 1)
+                tam = st.session_state.get("add_epi_tam", TAMANHOS_EPI[0] if TAMANHOS_EPI else "")
+                if sel:
+                    itens_epi.append({"epi": sel, "colaborador": colab, "qtd": int(qtd), "tamanho": tam})
+                    st.session_state["compras_nova_itens_epi"] = itens_epi
 
+        # --- Remover (botão por linha) ---
         if itens_epi:
-            idx = st.selectbox("Item para remover", range(len(itens_epi)),
-                               format_func=lambda i: f"{itens_epi[i]['epi']} (x{itens_epi[i]['qtd']})",
-                               key="rem_epi_sel")
-            if st.button("🗑️ Remover", key="rem_epi_btn"):
-                itens_epi.pop(idx)
-                st.session_state["compras_nova_itens_epi"] = itens_epi
-            # Fragmento reexecuta automaticamente
+            st.markdown("**Remover item:**")
+            for pos, item in enumerate(itens_epi):
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    st.caption(f"{item['epi']}  ·  {item['colaborador']}  ·  Qtd: {item['qtd']}  ·  Tam: {item['tamanho']}")
+                with col_b:
+                    if st.button("🗑️ Remover", key=f"rem_epi_{pos}"):
+                        itens_epi.pop(pos)
+                        st.session_state["compras_nova_itens_epi"] = itens_epi
+                        _rerun_fragment()
 
         itens_para_salvar = itens_epi
 
