@@ -2886,9 +2886,9 @@ with aba1:
                     col_v, col_b, col_e = st.columns([3,1,1])
                     with col_b:
                         if os.path.exists(doc["Caminho"]):
-                        with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
-                    else:
-                        st.warning("⚠️ Arquivo não encontrado no servidor.")
+                            with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
+                        else:
+                            st.warning("⚠️ Arquivo não encontrado no servidor.")
                     with col_e:
                         if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
                             if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
