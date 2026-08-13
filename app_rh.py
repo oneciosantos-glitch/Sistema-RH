@@ -576,6 +576,12 @@ def _salvar_compras_local(solicitacoes, entregas):
         hash_antigo = st.session_state.get(chave_cache, "")
         if hash_novo == hash_antigo:
             return  # sem mudanças, ignora
+        
+        # BACKUP AUTOMÁTICO antes de salvar
+        try:
+            pasta_bkp, arqs = criar_backup_automatico()
+        except Exception:
+            pass
         # Protecao: nao salvar dados vazios por cima de arquivo existente com dados
         if not solicitacoes and not entregas and os.path.exists(ARQUIVO_COMPRAS) and os.path.getsize(ARQUIVO_COMPRAS) > 10:
             try:
@@ -604,14 +610,53 @@ def _carregar_compras_local():
             conteudo = f.read()
         if not conteudo.strip():
             st.warning(f"⚠️ Arquivo de compras vazio: {caminho}")
+            # Tentar restaurar do backup
+            sols, ents = _tentar_restaurar_compras()
+            if sols or ents:
+                st.toast("🛡️ Compras recuperadas automaticamente do backup!")
+                return sols, ents
             return [], []
         dados = json.loads(conteudo)
         sols = dados.get("solicitacoes", [])
         ents = dados.get("entregas", [])
+        # PROTEÇÃO CONTRA DADOS VAZIOS: tentar restaurar do último backup se os dados foram perdidos
+        if _compras_estao_vazias(sols, ents):
+            sols_bkp, ents_bkp = _tentar_restaurar_compras()
+            if sols_bkp or ents_bkp:
+                st.toast("🛡️ Compras recuperadas automaticamente do backup!")
+                return sols_bkp, ents_bkp
         st.toast(f"📂 Compras carregadas do arquivo ({len(sols)} solicitações, {len(ents)} entregas)")
         return sols, ents
     except Exception as e:
         st.error(f"❌ Erro ao carregar compras do arquivo {caminho}: {e}")
+        # Tentar restaurar do backup em caso de erro
+        sols, ents = _tentar_restaurar_compras()
+        if sols or ents:
+            st.toast("🛡️ Compras recuperadas automaticamente do backup!")
+            return sols, ents
+        return [], []
+
+
+def _tentar_restaurar_compras():
+    """Tenta restaurar compras do último backup válido."""
+    try:
+        backups = listar_backups_automaticos()
+        if not backups:
+            return [], []
+        for _, _, bkp_path in backups:
+            try:
+                with zipfile.ZipFile(bkp_path, "r") as zf:
+                    if os.path.basename(ARQUIVO_COMPRAS) in zf.namelist():
+                        conteudo = zf.read(os.path.basename(ARQUIVO_COMPRAS)).decode("utf-8")
+                        dados = json.loads(conteudo)
+                        sols = dados.get("solicitacoes", [])
+                        ents = dados.get("entregas", [])
+                        if sols or ents:
+                            return sols, ents
+            except Exception:
+                continue
+        return [], []
+    except Exception:
         return [], []
 
 
@@ -1389,6 +1434,183 @@ os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 os.makedirs(PASTA_FOTOS, exist_ok=True)
 os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
 
+# ====================== SISTEMA DE BACKUP AUTOMÁTICO ======================
+PASTA_BACKUPS = os.path.join(BASE_DIR, "Backups_Auto")
+os.makedirs(PASTA_BACKUPS, exist_ok=True)
+MAX_BACKUPS = 50  # Mantém os últimos 50 backups
+INTERVALO_BACKUP_MINUTOS = 30  # Faz backup automático a cada 30 minutos
+
+ARQUIVOS_CRITICOS = [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS]
+
+
+def _dados_estao_vazios(dados):
+    """Verifica se os dados carregados estão vazios ou corrompidos."""
+    if not dados or not isinstance(dados, dict):
+        return True
+    total_registros = 0
+    for aba, df in dados.items():
+        if isinstance(df, pd.DataFrame):
+            total_registros += len(df)
+    return total_registros == 0
+
+
+def _diarias_estao_vazias(df):
+    """Verifica se o DataFrame de diárias está vazio."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return True
+    return len(df) == 0
+
+
+def _viagens_estao_vazias(df):
+    """Verifica se o DataFrame de viagens está vazio."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return True
+    return len(df) == 0
+
+
+def _compras_estao_vazias(solicitacoes, entregas):
+    """Verifica se os dados de compras estão vazios."""
+    sol_vazio = not solicitacoes or len(solicitacoes) == 0
+    ent_vazio = not entregas or len(entregas) == 0
+    return sol_vazio and ent_vazio
+
+
+def criar_backup_automatico():
+    """Cria um backup com timestamp de todos os arquivos críticos."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pasta_backup = os.path.join(PASTA_BACKUPS, f"backup_{timestamp}")
+    os.makedirs(pasta_backup, exist_ok=True)
+    
+    arquivos_backupeados = []
+    for arq in ARQUIVOS_CRITICOS:
+        if os.path.exists(arq) and os.path.getsize(arq) > 0:
+            destino = os.path.join(pasta_backup, os.path.basename(arq))
+            shutil.copy2(arq, destino)
+            arquivos_backupeados.append(os.path.basename(arq))
+    
+    # Também faz backup das pastas de documentos (fotos, comprovantes, docs)
+    for pasta_origem in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
+        if os.path.exists(pasta_origem):
+            nome_pasta = os.path.basename(pasta_origem)
+            pasta_destino = os.path.join(pasta_backup, nome_pasta)
+            os.makedirs(pasta_destino, exist_ok=True)
+            for root, dirs, files in os.walk(pasta_origem):
+                for file in files:
+                    src = os.path.join(root, file)
+                    rel = os.path.relpath(src, pasta_origem)
+                    dst = os.path.join(pasta_destino, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+    
+    # Limpa backups antigos (mantém apenas os MAX_BACKUPS mais recentes)
+    try:
+        backups = sorted([d for d in os.listdir(PASTA_BACKUPS) if d.startswith("backup_")])
+        while len(backups) > MAX_BACKUPS:
+            pasta_antiga = os.path.join(PASTA_BACKUPS, backups.pop(0))
+            shutil.rmtree(pasta_antiga, ignore_errors=True)
+    except Exception:
+        pass
+    
+    return pasta_backup, arquivos_backupeados
+
+
+def listar_backups_automaticos():
+    """Retorna lista de backups automáticos ordenados do mais recente ao mais antigo."""
+    if not os.path.exists(PASTA_BACKUPS):
+        return []
+    backups = [d for d in os.listdir(PASTA_BACKUPS) if d.startswith("backup_")]
+    backups.sort(reverse=True)
+    return backups
+
+
+def restaurar_backup_automatico(nome_backup):
+    """Restaura todos os arquivos críticos a partir de um backup automático."""
+    pasta_backup = os.path.join(PASTA_BACKUPS, nome_backup)
+    if not os.path.exists(pasta_backup):
+        return False, "Pasta de backup não encontrada."
+    
+    restaurados = []
+    erros = []
+    
+    # Restaura arquivos principais
+    for arq in ARQUIVOS_CRITICOS:
+        nome = os.path.basename(arq)
+        src = os.path.join(pasta_backup, nome)
+        if os.path.exists(src):
+            try:
+                shutil.copy2(src, arq)
+                restaurados.append(nome)
+            except Exception as e:
+                erros.append(f"{nome}: {e}")
+    
+    # Restaura pastas de documentos
+    for pasta_nome in ["Documentos_Lojas", "Documentos_Funcionarios", "Fotos_Funcionarios", "Comprovantes_Diarias"]:
+        src_pasta = os.path.join(pasta_backup, pasta_nome)
+        if os.path.exists(src_pasta):
+            dst_pasta = os.path.join(BASE_DIR, pasta_nome)
+            os.makedirs(dst_pasta, exist_ok=True)
+            for root, dirs, files in os.walk(src_pasta):
+                for file in files:
+                    src = os.path.join(root, file)
+                    rel = os.path.relpath(src, src_pasta)
+                    dst = os.path.join(dst_pasta, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    try:
+                        shutil.copy2(src, dst)
+                    except Exception as e:
+                        erros.append(f"{pasta_nome}/{rel}: {e}")
+            if pasta_nome not in restaurados:
+                restaurados.append(pasta_nome)
+    
+    if restaurados:
+        st.cache_data.clear()
+        return True, f"Restaurado: {', '.join(restaurados)}"
+    else:
+        return False, "Nenhum arquivo restaurado."
+
+
+def backup_automatico_periodico():
+    """Verifica se já passou o intervalo desde o último backup e cria um novo se necessário."""
+    try:
+        agora = datetime.now()
+        chave_ultimo_backup = "_ultimo_backup_periodico"
+        chave_ultimo_notificado = "_ultimo_backup_notificado"
+        ultimo_backup = st.session_state.get(chave_ultimo_backup)
+        
+        if ultimo_backup is not None:
+            # Verifica se já passou o intervalo
+            minutos_desde_ultimo = (agora - ultimo_backup).total_seconds() / 60.0
+            if minutos_desde_ultimo < INTERVALO_BACKUP_MINUTOS:
+                return  # Ainda não passou o tempo, não faz nada
+        
+        # Cria o backup e atualiza o timestamp
+        pasta_bkp, arqs = criar_backup_automatico()
+        st.session_state[chave_ultimo_backup] = agora
+        
+        # Notifica o usuário apenas se este backup ainda não foi notificado
+        ultimo_notificado = st.session_state.get(chave_ultimo_notificado)
+        if ultimo_notificado != pasta_bkp:
+            st.toast(f"🛡️ Backup automático criado! ({len(arqs)} arquivos protegidos)", icon="💾")
+            st.session_state[chave_ultimo_notificado] = pasta_bkp
+        
+        # Mostra no log também
+        print(f"[BACKUP PERIÓDICO] Backup criado em: {pasta_bkp} | Arquivos: {arqs}")
+    except Exception as e:
+        print(f"[BACKUP PERIÓDICO] Erro ao criar backup: {e}")
+
+
+def _tentar_restaurar_dados_vazios():
+    """Tenta restaurar dados automaticamente de um backup se detectar dados vazios."""
+    backups = listar_backups_automaticos()
+    if not backups:
+        return False
+    for nome_backup in backups:
+        sucesso, msg = restaurar_backup_automatico(nome_backup)
+        if sucesso:
+            return True
+    return False
+
+
 MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
 
 # ====================== FUNÇÕES DE BUSCA INTELIGENTE ======================
@@ -1734,6 +1956,7 @@ if GS_ENABLED:
 # ====================== BANCO DE DADOS ======================
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
+    dados = {}
     # Tenta carregar do Google Sheets primeiro
     if GS_ENABLED:
         try:
@@ -1756,6 +1979,18 @@ def carregar_dados():
             dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
         except:
             dados = {}
+    
+    # PROTEÇÃO: Se dados estiverem vazios/corrompidos, tenta restaurar do backup automático
+    if _dados_estao_vazios(dados):
+        st.warning("⚠️ Dados principais parecem vazios ou corrompidos. Tentando restaurar do backup automático...")
+        if _tentar_restaurar_dados_vazios():
+            try:
+                dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
+                st.success("✅ Dados restaurados automaticamente do backup mais recente!")
+            except:
+                dados = {}
+        else:
+            st.error("❌ Não foi possível restaurar automaticamente. Verifique a aba 'BACKUP / RESTAURAÇÃO' para restaurar manualmente.")
     
     padrao = {
         "Base_Dados": [
@@ -1900,9 +2135,32 @@ def carregar_diarias():
 
     # Garante ordem correta das colunas
     df = df[[c for c in cols_padrao if c in df.columns]]
+    
+    # PROTEÇÃO: Se diárias estiverem vazias/corrompidas, tenta restaurar do backup automático
+    if _diarias_estao_vazias(df):
+        st.warning("⚠️ Dados de diárias parecem vazios ou corrompidos. Tentando restaurar do backup automático...")
+        if _tentar_restaurar_dados_vazios():
+            try:
+                df_restaurado = pd.read_excel(ARQUIVO_DIARIAS, header=0, dtype=str, keep_default_na=False)
+                colunas_encontradas = [c for c in cols_padrao if c in df_restaurado.columns]
+                if len(colunas_encontradas) >= 3:
+                    df = df_restaurado
+                    for c in cols_padrao:
+                        if c not in df.columns:
+                            df[c] = ""
+                    st.success("✅ Diárias restauradas automaticamente do backup mais recente!")
+            except Exception:
+                pass
+    
     return df
 
 def salvar_dados(dados):
+    # BACKUP AUTOMÁTICO antes de salvar
+    try:
+        pasta_bkp, arqs = criar_backup_automatico()
+    except Exception:
+        pass
+    
     sucesso = False
     # Sempre salva localmente como fallback
     try:
@@ -1924,6 +2182,12 @@ def salvar_dados(dados):
     return sucesso
 
 def salvar_diarias(df_diarias):
+    # BACKUP AUTOMÁTICO antes de salvar
+    try:
+        pasta_bkp, arqs = criar_backup_automatico()
+    except Exception:
+        pass
+    
     # Sempre salva localmente como fallback
     try:
         with pd.ExcelWriter(ARQUIVO_DIARIAS, engine="openpyxl", mode="w") as f:
@@ -2073,11 +2337,25 @@ def carregar_viagens():
     for col in ["VALOR_LIBERADO", "TOTAL_GASTO", "RESTANTE"]:
         df[col] = df[col].astype(str).str.strip()
         df[col] = df[col].replace("", "0.00")
+    
+    # PROTEÇÃO CONTRA DADOS VAZIOS: tentar restaurar do último backup se a planilha foi corrompida
+    if _viagens_estao_vazias(df):
+        df_restaurado = _tentar_restaurar_dados("viagens", cols_padrao)
+        if df_restaurado is not None:
+            st.toast("🛡️ Viagens recuperadas automaticamente do backup!")
+            return df_restaurado
+    
     return df[cols_padrao]
 
 
 def salvar_viagens(df_viagens):
     """Salva o registro de viagens no arquivo Excel."""
+    # BACKUP AUTOMÁTICO antes de salvar
+    try:
+        pasta_bkp, arqs = criar_backup_automatico()
+    except Exception:
+        pass
+    
     try:
         with pd.ExcelWriter(ARQUIVO_VIAGENS, engine="openpyxl", mode="w") as f:
             df_viagens.to_excel(f, sheet_name="Viagens", index=False)
@@ -2477,6 +2755,9 @@ if "ferias_verificado" not in st.session_state:
 if "afastamentos_verificado" not in st.session_state:
     verificar_retorno_afastamentos_automatico()
     st.session_state["afastamentos_verificado"] = True
+
+# Backup automático por intervalo de tempo (verifica a cada interação se já passou o tempo)
+backup_automatico_periodico()
 
 # ⚠️ LINHA OBRIGATÓRIA: CRIA TODAS AS ABAS ANTES DE USÁ-LAS
 aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8, aba9, aba10, aba11, aba12 = st.tabs([
