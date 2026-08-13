@@ -418,253 +418,83 @@ div.Section1 {{ page: Section1; }}</style></head>
 
 
 def gerar_xls_material(sol):
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-    from io import BytesIO
-
     data_geracao = datetime.now().strftime("%d/%m/%Y")
     cliente = sol.get("cliente", "")
     itens = sol.get("itens", [])
 
-    wb = Workbook()
-    ws = wb.active
+    def build_rows_smart_self(items):
+        if not items:
+            return '<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center">&nbsp;</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center">UN.</td></tr>'
+        return "".join([
+            f'<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap">{i.get("material","")}</td>'
+            f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap">{i.get("qtd","&nbsp;")}</td>'
+            f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap">UN.</td></tr>'
+            for i in items
+        ])
 
-    thin = Side(style='thin', color='000000')
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    fill_header = PatternFill(start_color="DEEBF6", end_color="DEEBF6", fill_type="solid")
-    align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    def build_rows_assai(items):
+        if not items:
+            return '<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center">1</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center">&nbsp;</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center">peças</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:right">&nbsp;</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:right">&nbsp;</td></tr>'
+        rows = []
+        for idx, i in enumerate(items, 1):
+            qtd = i.get("qtd", "&nbsp;")
+            unit = f'R$ {i["valorUnit"]:.2f}'.replace(".", ",") if i.get("valorUnit") else "&nbsp;"
+            total = f'R$ {(i["valorUnit"]*i["qtd"]):.2f}'.replace(".", ",") if i.get("valorUnit") and i.get("qtd") else "&nbsp;"
+            rows.append(
+                f'<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap">{idx}</td>'
+                f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap">{i.get("material","")}</td>'
+                f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;white-space:nowrap">&nbsp;</td>'
+                f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap">{qtd}</td>'
+                f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:center;white-space:nowrap">peças</td>'
+                f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:right;white-space:nowrap">{unit}</td>'
+                f'<td style="border:1px solid #000;padding:4px 6px;font-size:11px;text-align:right;white-space:nowrap">{total}</td></tr>'
+            )
+        return "".join(rows)
 
     if cliente == "Smart Fit":
-        ws.merge_cells('A1:C1')
-        ws['A1'] = "SMART FIT"
-        ws['A1'].font = Font(bold=True, size=13)
-        ws['A1'].alignment = align_center
-        ws['A1'].fill = fill_header
-        for c in ['A1','B1','C1']:
-            ws[c].border = border
-
-        headers = ["SMART FIT", "QTD", "REF."]
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=2, column=col, value=h)
-            cell.font = Font(bold=True, size=11)
-            cell.fill = fill_header
-            cell.border = border
-            cell.alignment = align_center
-
-        for idx, i in enumerate(itens, 3):
-            ws.cell(row=idx, column=1, value=i.get("material","")).border = border
-            ws.cell(row=idx, column=2, value=i.get("qtd","")).border = border
-            ws.cell(row=idx, column=2).alignment = align_center
-            ws.cell(row=idx, column=3, value="UN.").border = border
-            ws.cell(row=idx, column=3).alignment = align_center
-        if not itens:
-            ws.cell(row=3, column=1, value="").border = border
-            ws.cell(row=3, column=2, value="").border = border
-            ws.cell(row=3, column=3, value="UN.").border = border
-
-        last_row = 3 + max(len(itens), 1)
-        ws.merge_cells(f'A{last_row}:C{last_row}')
-        ws.cell(row=last_row, column=1, value=f"Solicitação: {sol.get('id','')} | Loja: {sol.get('loja','')} | Data: {data_geracao}")
-        ws.cell(row=last_row, column=1).font = Font(size=10)
-        ws.cell(row=last_row, column=1).border = border
-        ws.cell(row=last_row, column=2).border = border
-        ws.cell(row=last_row, column=3).border = border
-
-        ws.column_dimensions['A'].width = 40
-        ws.column_dimensions['B'].width = 12
-        ws.column_dimensions['C'].width = 12
-        filename = f'Pedido_Material_SmartFit_{sol.get("id","")}.xlsx'
-
+        rows = build_rows_smart_self(itens)
+        html = f"""<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"><style>table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #000}}</style></head><body><table>
+<tr><th colspan="3" style="border:1px solid #000;padding:6px;font-size:13px;font-weight:bold;background:#DEEBF6;text-align:center">SMART FIT</th></tr>
+<tr><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">SMART FIT</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">QTD</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">REF.</th></tr>
+{rows}
+<tr><td colspan="3" style="border:1px solid #000;padding:4px 6px;font-size:10px">Solicitação: {sol.get("id","")} | Loja: {sol.get("loja","")} | Data: {data_geracao}</td></tr>
+</table></body></html>"""
+        filename = f'Pedido_Material_SmartFit_{sol.get("id","")}.xls'
     elif cliente == "Self Fit":
-        ws.merge_cells('A1:C1')
-        ws['A1'] = "SELF FIT"
-        ws['A1'].font = Font(bold=True, size=13)
-        ws['A1'].alignment = align_center
-        ws['A1'].fill = fill_header
-        for c in ['A1','B1','C1']:
-            ws[c].border = border
-
-        headers = ["SELF FIT", "QTD", "REF."]
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=2, column=col, value=h)
-            cell.font = Font(bold=True, size=11)
-            cell.fill = fill_header
-            cell.border = border
-            cell.alignment = align_center
-
-        row_start = 3
-        for idx, i in enumerate(itens, row_start):
-            ws.cell(row=idx, column=1, value=i.get("material","")).border = border
-            ws.cell(row=idx, column=2, value=i.get("qtd","")).border = border
-            ws.cell(row=idx, column=2).alignment = align_center
-            ws.cell(row=idx, column=3, value="UN.").border = border
-            ws.cell(row=idx, column=3).alignment = align_center
-        if not itens:
-            ws.cell(row=row_start, column=1, value="").border = border
-            ws.cell(row=row_start, column=2, value="").border = border
-            ws.cell(row=row_start, column=3, value="UN.").border = border
-
-        row = row_start + max(len(itens), 1)
-        ws.cell(row=row, column=1, value="DATA DO PEDIDO").border = border
-        ws.cell(row=row, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells(f'B{row}:C{row}')
-        ws.cell(row=row, column=2, value="").border = border
-        ws.cell(row=row, column=3, value="").border = border
-        row += 1
-        ws.cell(row=row, column=1, value="MÊS DE REFERÊNCIA").border = border
-        ws.cell(row=row, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells(f'B{row}:C{row}')
-        ws.cell(row=row, column=2, value="").border = border
-        ws.cell(row=row, column=3, value="").border = border
-        row += 1
-        ws.cell(row=row, column=1, value="SEPARADO").border = border
-        ws.cell(row=row, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells(f'B{row}:C{row}')
-        ws.cell(row=row, column=2, value="").border = border
-        ws.cell(row=row, column=3, value="").border = border
-        row += 1
-        ws.cell(row=row, column=1, value="ENVIADO").border = border
-        ws.cell(row=row, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells(f'B{row}:C{row}')
-        ws.cell(row=row, column=2, value="").border = border
-        ws.cell(row=row, column=3, value="").border = border
-        row += 1
-        ws.merge_cells(f'A{row}:C{row}')
-        ws.cell(row=row, column=1, value=f"Solicitação: {sol.get('id','')} | Loja: {sol.get('loja','')} | Data: {data_geracao}")
-        ws.cell(row=row, column=1).font = Font(size=10)
-        ws.cell(row=row, column=1).border = border
-        ws.cell(row=row, column=2).border = border
-        ws.cell(row=row, column=3).border = border
-
-        ws.column_dimensions['A'].width = 40
-        ws.column_dimensions['B'].width = 12
-        ws.column_dimensions['C'].width = 12
-        filename = f'Pedido_Material_SelfFit_{sol.get("id","")}.xlsx'
-
+        rows = build_rows_smart_self(itens)
+        html = f"""<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"><style>table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #000}}</style></head><body><table>
+<tr><th colspan="3" style="border:1px solid #000;padding:6px;font-size:13px;font-weight:bold;background:#DEEBF6;text-align:center">SELF FIT</th></tr>
+<tr><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">SELF FIT</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">QTD</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">REF.</th></tr>
+{rows}
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">DATA DO PEDIDO</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td></tr>
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">MÊS DE REFERÊNCIA</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td></tr>
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">SEPARADO</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td></tr>
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">ENVIADO</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td></tr>
+<tr><td colspan="3" style="border:1px solid #000;padding:4px 6px;font-size:10px">Solicitação: {sol.get("id","")} | Loja: {sol.get("loja","")} | Data: {data_geracao}</td></tr>
+</table></body></html>"""
+        filename = f'Pedido_Material_SelfFit_{sol.get("id","")}.xls'
     elif cliente == "Assaí Atacadista":
-        ws.merge_cells('A1:G1')
-        ws['A1'] = "R: Sgto Jeter Augusto Pereira N° 02 e 04 - São Paulo - CEP: 02188-070 - E-mail: vendas@thamesjlara.com.br - Site www.thamesjlara.com.br"
-        ws['A1'].font = Font(bold=True, size=11)
-        ws['A1'].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        for c in range(1,8): ws.cell(row=1, column=c).border = border
-
-        ws.row_dimensions[2].height = 8
-
-        ws.merge_cells('A3:B3')
-        ws.cell(row=3, column=1, value="Orçamento").border = border
-        ws.cell(row=3, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells('C3:D3')
-        ws.cell(row=3, column=3, value="At.: Sr.(a): Mendonça").border = border
-        ws.merge_cells('E3:F3')
-        ws.cell(row=3, column=5, value=f"Data: {data_geracao}").border = border
-        ws.cell(row=3, column=7, value="Vendedor: Hélio").border = border
-
-        ws.row_dimensions[4].height = 8
-
-        ws.merge_cells('A5:B5')
-        ws.cell(row=5, column=1, value="Razão Social").border = border
-        ws.cell(row=5, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells('C5:E5')
-        ws.cell(row=5, column=3, value="FG Services Eireli - ME").border = border
-        ws.cell(row=5, column=6, value="CNPJ/CPF").border = border
-        ws.cell(row=5, column=6).font = Font(bold=True, size=11)
-        ws.cell(row=5, column=7, value="23.585.374/0001-11").border = border
-
-        ws.merge_cells('A6:B6')
-        ws.cell(row=6, column=1, value="Endereço").border = border
-        ws.cell(row=6, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells('C6:D6')
-        ws.cell(row=6, column=3, value="Av. Barão de Vera Cruz, 586 BR 101 Norte").border = border
-        ws.cell(row=6, column=5, value="Bairro").border = border
-        ws.cell(row=6, column=5).font = Font(bold=True, size=11)
-        ws.cell(row=6, column=6, value="Cruz de Rebouças").border = border
-        ws.cell(row=6, column=7, value="Cidade").border = border
-        ws.cell(row=6, column=7).font = Font(bold=True, size=11)
-
-        ws.cell(row=7, column=1, value="Igarassu").border = border
-        ws.cell(row=7, column=2, value="UF").border = border
-        ws.cell(row=7, column=2).font = Font(bold=True, size=11)
-        ws.cell(row=7, column=3, value="PE").border = border
-        ws.merge_cells('D7:E7')
-        ws.cell(row=7, column=4, value="CEP").border = border
-        ws.cell(row=7, column=4).font = Font(bold=True, size=11)
-        ws.merge_cells('F7:G7')
-        ws.cell(row=7, column=6, value="53635-015").border = border
-
-        ws.row_dimensions[8].height = 8
-
-        ws.merge_cells('A9:B9')
-        ws.cell(row=9, column=1, value="Telefone").border = border
-        ws.cell(row=9, column=1).font = Font(bold=True, size=11)
-        ws.merge_cells('C9:D9')
-        ws.cell(row=9, column=3, value="(0xx81) 3545-3990").border = border
-        ws.merge_cells('E9:F9')
-        ws.cell(row=9, column=5, value="E-mail").border = border
-        ws.cell(row=9, column=5).font = Font(bold=True, size=11)
-        ws.merge_cells('G9:G9')
-        ws.cell(row=9, column=7, value="").border = border
-
-        ws.row_dimensions[10].height = 8
-
-        headers = ["Item", "Descrição", "Marca", "Qtde", "Unid", "Valor Unit.", "Total"]
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=11, column=col, value=h)
-            cell.font = Font(bold=True, size=11)
-            cell.fill = fill_header
-            cell.border = border
-            cell.alignment = align_center
-
-        row = 12
-        for idx, i in enumerate(itens, 1):
-            qtd = i.get("qtd", "")
-            unit = f'R$ {i["valorUnit"]:.2f}'.replace(".", ",") if i.get("valorUnit") else ""
-            total = f'R$ {(i["valorUnit"]*i["qtd"]):.2f}'.replace(".", ",") if i.get("valorUnit") and i.get("qtd") else ""
-            ws.cell(row=row, column=1, value=idx).border = border
-            ws.cell(row=row, column=1).alignment = align_center
-            ws.cell(row=row, column=2, value=i.get("material","")).border = border
-            ws.cell(row=row, column=3, value="").border = border
-            ws.cell(row=row, column=4, value=qtd).border = border
-            ws.cell(row=row, column=4).alignment = align_center
-            ws.cell(row=row, column=5, value="peças").border = border
-            ws.cell(row=row, column=5).alignment = align_center
-            ws.cell(row=row, column=6, value=unit).border = border
-            ws.cell(row=row, column=6).alignment = align_center
-            ws.cell(row=row, column=7, value=total).border = border
-            ws.cell(row=row, column=7).alignment = align_center
-            row += 1
-        if not itens:
-            ws.cell(row=row, column=1, value=1).border = border
-            ws.cell(row=row, column=1).alignment = align_center
-            ws.cell(row=row, column=2, value="").border = border
-            ws.cell(row=row, column=3, value="").border = border
-            ws.cell(row=row, column=4, value="").border = border
-            ws.cell(row=row, column=5, value="peças").border = border
-            ws.cell(row=row, column=5).alignment = align_center
-            ws.cell(row=row, column=6, value="").border = border
-            ws.cell(row=row, column=7, value="").border = border
-            row += 1
-
-        ws.merge_cells(f'A{row}:G{row}')
-        ws.cell(row=row, column=1, value=f"Solicitação: {sol.get('id','')} | Loja: {sol.get('loja','')} | Data: {data_geracao}")
-        ws.cell(row=row, column=1).font = Font(size=10)
-        for c in range(1,8): ws.cell(row=row, column=c).border = border
-
-        ws.column_dimensions['A'].width = 8
-        ws.column_dimensions['B'].width = 35
-        ws.column_dimensions['C'].width = 15
-        ws.column_dimensions['D'].width = 10
-        ws.column_dimensions['E'].width = 10
-        ws.column_dimensions['F'].width = 14
-        ws.column_dimensions['G'].width = 14
-        filename = f'Orcamento_Assai_{sol.get("id","")}.xlsx'
+        item_rows = build_rows_assai(itens)
+        html = f"""<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"><style>table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #000}}</style></head><body>
+<table style="width:100%;border-collapse:collapse">
+<tr><td colspan="7" style="border:1px solid #000;padding:6px;font-size:11px;text-align:center;font-weight:bold">R: Sgto Jeter Augusto Pereira N° 02 e 04 - São Paulo - CEP: 02188-070 - E-mail: vendas@thamesjlara.com.br - Site www.thamesjlara.com.br</td></tr>
+<tr><td colspan="7" style="height:10px"></td></tr>
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">Orçamento</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">At.: Sr.(a): Mendonça</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">Data: {data_geracao}</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">Vendedor: Hélio</td></tr>
+<tr><td colspan="7" style="height:10px"></td></tr>
+<tr><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">Razão Social</td><td colspan="3" style="border:1px solid #000;padding:4px 6px;font-size:11px">FG Services Eireli - ME</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">CNPJ/CPF</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px">23.585.374/0001-11</td></tr>
+<tr><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">Endereço</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">Av. Barão de Vera Cruz, 586 BR 101 Norte</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">Bairro</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px">Cruz de Rebouças</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">Cidade</td></tr>
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px">Igarassu</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">UF</td><td style="border:1px solid #000;padding:4px 6px;font-size:11px">PE</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">CEP</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">53635-015</td></tr>
+<tr><td colspan="7" style="height:10px"></td></tr>
+<tr><td style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">Telefone</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">(0xx81) 3545-3990</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold">E-mail</td><td colspan="2" style="border:1px solid #000;padding:4px 6px;font-size:11px">&nbsp;</td></tr>
+<tr><td colspan="7" style="height:10px"></td></tr>
+<tr><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Item</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Descrição</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Marca</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Qtde</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Unid</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Valor Unit.</th><th style="border:1px solid #000;padding:4px 6px;font-size:11px;font-weight:bold;background:#DEEBF6;white-space:nowrap">Total</th></tr>
+{item_rows}
+<tr><td colspan="7" style="border:1px solid #000;padding:4px 6px;font-size:10px">Solicitação: {sol.get("id","")} | Loja: {sol.get("loja","")} | Data: {data_geracao}</td></tr>
+</table></body></html>"""
+        filename = f'Orcamento_Assai_{sol.get("id","")}.xls'
     else:
         return None, None
-
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue(), filename
+    return html, filename
 
 
 # ========== PÁGINAS ==========
@@ -1039,48 +869,32 @@ def page_nova_solicitacao():
         materiais = MATERIAIS_POR_CLIENTE.get(cliente, [])
         itens_mat = st.session_state.get("compras_nova_itens_material", [])
 
-        # Reset select se cliente mudou
-        last_cli = st.session_state.get("_last_mat_cliente")
-        if last_cli != cliente:
-            for k in ["add_mat_sel", "add_mat_qtd", "add_mat_val"]:
-                st.session_state.pop(k, None)
-            st.session_state["_last_mat_cliente"] = cliente
-
         if itens_mat:
             st.dataframe(pd.DataFrame(itens_mat), use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum material adicionado.")
 
-        # --- Adicionar ---
-        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-        with c1:
-            st.selectbox("Material", materiais, key="add_mat_sel")
-        with c2:
-            st.number_input("Qtd", min_value=1, value=1, step=1, key="add_mat_qtd")
-        with c3:
-            st.number_input("Valor Unit.", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="add_mat_val")
-        with c4:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if st.button("➕ Adicionar", key="btn_add_mat"):
-                sel = st.session_state.get("add_mat_sel", materiais[0] if materiais else "")
-                qtd = st.session_state.get("add_mat_qtd", 1)
-                val = st.session_state.get("add_mat_val", 0.0)
-                if sel:
-                    itens_mat.append({"material": sel, "qtd": int(qtd), "valorUnit": float(val)})
-                    st.session_state["compras_nova_itens_material"] = itens_mat
+        with st.form("add_mat_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns([3, 1, 1])
+            with c1:
+                mat_sel = st.selectbox("Material", materiais, key="add_mat_sel")
+            with c2:
+                qtd = st.number_input("Qtd", min_value=1, value=1, step=1, key="add_mat_qtd")
+            with c3:
+                val = st.number_input("Valor Unit.", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="add_mat_val")
+            if st.form_submit_button("➕ Adicionar"):
+                itens_mat.append({"material": mat_sel, "qtd": qtd, "valorUnit": val})
+                st.session_state["compras_nova_itens_material"] = itens_mat
+            # Fragmento reexecuta automaticamente
 
-        # --- Remover (botão por linha) ---
         if itens_mat:
-            st.markdown("**Remover item:**")
-            for pos, item in enumerate(itens_mat):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.caption(f"{item['material']}  ·  Qtd: {item['qtd']}  ·  Valor: {item['valorUnit']:.2f}")
-                with col_b:
-                    if st.button("🗑️ Remover", key=f"rem_mat_{pos}"):
-                        itens_mat.pop(pos)
-                        st.session_state["compras_nova_itens_material"] = itens_mat
-                        _rerun_fragment()
+            idx = st.selectbox("Item para remover", range(len(itens_mat)),
+                               format_func=lambda i: f"{itens_mat[i]['material']} (x{itens_mat[i]['qtd']})",
+                               key="rem_mat_sel")
+            if st.button("🗑️ Remover", key="rem_mat_btn"):
+                itens_mat.pop(idx)
+                st.session_state["compras_nova_itens_material"] = itens_mat
+            # Fragmento reexecuta automaticamente
 
         itens_para_salvar = itens_mat
 
@@ -1089,51 +903,34 @@ def page_nova_solicitacao():
         epis = EPIS_POR_CLIENTE.get(cliente, EPIS_POR_CLIENTE.get("Smart Fit", []))
         itens_epi = st.session_state.get("compras_nova_itens_epi", [])
 
-        # Reset select se cliente mudou
-        last_cli = st.session_state.get("_last_epi_cliente")
-        if last_cli != cliente:
-            for k in ["add_epi_sel", "add_epi_colab", "add_epi_qtd", "add_epi_tam"]:
-                st.session_state.pop(k, None)
-            st.session_state["_last_epi_cliente"] = cliente
-
         if itens_epi:
             st.dataframe(pd.DataFrame(itens_epi), use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum EPI adicionado.")
 
-        # --- Adicionar ---
-        c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 1, 1])
-        with c1:
-            st.selectbox("EPI", epis, key="add_epi_sel")
-        with c2:
-            st.text_input("Colaborador", key="add_epi_colab")
-        with c3:
-            st.number_input("Qtd", min_value=1, value=1, step=1, key="add_epi_qtd")
-        with c4:
-            st.selectbox("Tamanho", TAMANHOS_EPI, key="add_epi_tam")
-        with c5:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if st.button("➕ Adicionar", key="btn_add_epi"):
-                sel = st.session_state.get("add_epi_sel", epis[0] if epis else "")
-                colab = st.session_state.get("add_epi_colab", "")
-                qtd = st.session_state.get("add_epi_qtd", 1)
-                tam = st.session_state.get("add_epi_tam", TAMANHOS_EPI[0] if TAMANHOS_EPI else "")
-                if sel:
-                    itens_epi.append({"epi": sel, "colaborador": colab, "qtd": int(qtd), "tamanho": tam})
-                    st.session_state["compras_nova_itens_epi"] = itens_epi
+        with st.form("add_epi_form", clear_on_submit=True):
+            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+            with c1:
+                epi_sel = st.selectbox("EPI", epis, key="add_epi_sel")
+            with c2:
+                colab = st.text_input("Colaborador", key="add_epi_colab")
+            with c3:
+                qtd = st.number_input("Qtd", min_value=1, value=1, step=1, key="add_epi_qtd")
+            with c4:
+                tam = st.selectbox("Tamanho", TAMANHOS_EPI, key="add_epi_tam")
+            if st.form_submit_button("➕ Adicionar"):
+                itens_epi.append({"epi": epi_sel, "colaborador": colab, "qtd": qtd, "tamanho": tam})
+                st.session_state["compras_nova_itens_epi"] = itens_epi
+            # Fragmento reexecuta automaticamente
 
-        # --- Remover (botão por linha) ---
         if itens_epi:
-            st.markdown("**Remover item:**")
-            for pos, item in enumerate(itens_epi):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.caption(f"{item['epi']}  ·  {item['colaborador']}  ·  Qtd: {item['qtd']}  ·  Tam: {item['tamanho']}")
-                with col_b:
-                    if st.button("🗑️ Remover", key=f"rem_epi_{pos}"):
-                        itens_epi.pop(pos)
-                        st.session_state["compras_nova_itens_epi"] = itens_epi
-                        _rerun_fragment()
+            idx = st.selectbox("Item para remover", range(len(itens_epi)),
+                               format_func=lambda i: f"{itens_epi[i]['epi']} (x{itens_epi[i]['qtd']})",
+                               key="rem_epi_sel")
+            if st.button("🗑️ Remover", key="rem_epi_btn"):
+                itens_epi.pop(idx)
+                st.session_state["compras_nova_itens_epi"] = itens_epi
+            # Fragmento reexecuta automaticamente
 
         itens_para_salvar = itens_epi
 
@@ -1186,7 +983,7 @@ def page_nova_solicitacao():
                 nova_sol["anexos"].append({
                     "nome": filename_xls,
                     "conteudo": html_xls,
-                    "tipo": "xlsx"
+                    "tipo": "xls"
                 })
 
         sols = st.session_state["compras_solicitacoes"]
@@ -1280,7 +1077,7 @@ def page_detalhes():
         for a in s["anexos"]:
             st.download_button(
                 label=f"📥 {a['nome']}",
-                data=a["conteudo"] if isinstance(a["conteudo"], bytes) else a["conteudo"].encode("utf-8"),
+                data=a["conteudo"].encode("utf-8"),
                 file_name=a["nome"],
                 mime="application/octet-stream",
                 key=f"anexo_{a['nome']}"
@@ -1491,7 +1288,7 @@ def page_relatorios():
                 if a:
                     st.download_button(
                         label=f"Confirmar download: {a['nome']}",
-                        data=a["conteudo"] if isinstance(a["conteudo"], bytes) else a["conteudo"].encode("utf-8"),
+                        data=a["conteudo"].encode("utf-8"),
                         file_name=a["nome"],
                         mime="application/octet-stream",
                         key="rel_confirm_down"
@@ -3088,7 +2885,10 @@ with aba1:
                 with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
                     col_v, col_b, col_e = st.columns([3,1,1])
                     with col_b:
+                        if os.path.exists(doc["Caminho"]):
                         with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
+                    else:
+                        st.warning("⚠️ Arquivo não encontrado no servidor.")
                     with col_e:
                         if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
                             if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
@@ -3356,7 +3156,10 @@ with aba6:
     else:
         for i,d in filt.iterrows():
             with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
-                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                if os.path.exists(d["Caminho"]):
+                    with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                else:
+                    st.warning("⚠️ Arquivo não encontrado no servidor.")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
                     os.remove(d["Caminho"])
                     dados["Docs_Lojas"].drop(i,inplace=True)
