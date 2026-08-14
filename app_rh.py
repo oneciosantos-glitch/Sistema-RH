@@ -3534,26 +3534,33 @@ with aba8:
     
     arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
     if arq_diarias is not None:
-        # Salva temporariamente para validar
-        temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
-        with open(temp_path, "wb") as f:
-            f.write(arq_diarias.read())
-        
-        # Valida se o arquivo tem dados legíveis
-        try:
-            df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
-            if df_test.empty or df_test.shape[0] < 1:
-                st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
-            else:
-                # Move o arquivo temporário para o definitivo
-                shutil.move(temp_path, ARQUIVO_DIARIAS)
-                st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
-                st.info("🔄 A página será atualizada em instantes...")
-                st.rerun()
-        except Exception as e:
-            st.error(f"❌ Erro ao ler a planilha: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        # Evita loop infinito: só processa se este arquivo ainda não foi processado nesta sessão
+        chave_processado = f"_diarias_processado_{arq_diarias.name}"
+        if st.session_state.get(chave_processado):
+            # Já processado, apenas exibe mensagem de sucesso
+            st.success(f"✅ Planilha '{arq_diarias.name}' já foi carregada. Recarregue a página (F5) se necessário.")
+        else:
+            # Salva temporariamente para validar
+            temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
+            with open(temp_path, "wb") as f:
+                f.write(arq_diarias.read())
+            
+            # Valida se o arquivo tem dados legíveis
+            try:
+                df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
+                if df_test.empty or df_test.shape[0] < 1:
+                    st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
+                else:
+                    # Move o arquivo temporário para o definitivo
+                    shutil.move(temp_path, ARQUIVO_DIARIAS)
+                    st.session_state[chave_processado] = True
+                    st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
+                    st.info("🔄 Atualizando a página...")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ Erro ao ler a planilha: {e}")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
     df_diarias = carregar_diarias()
     if df_diarias.empty:
