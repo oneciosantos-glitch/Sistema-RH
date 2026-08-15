@@ -2002,7 +2002,7 @@ def carregar_dados():
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-            "CaminhoFoto"
+            "TipoAfastamento","CaminhoFoto"
         ],
         "Historico": [
             "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -2894,7 +2894,7 @@ with aba1:
         mat_busca = str(mat_sel).strip()
         reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_busca]
 
-    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
+    val_campo = lambda nome: reg.iloc[0][nome] if (not reg.empty and nome in reg.columns) else ""
 
     prazos_exp = []
     if not reg.empty and val_campo("Admissao").strip():
