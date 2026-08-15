@@ -2930,9 +2930,21 @@ with aba1:
         term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
         situacao_val = "Ativo"
 
+    # ---------- Controle de modo (novo vs edição) ----------
+    modo_edicao = bool(mat_sel.strip())
+    matricula_original = mat_sel.strip() if modo_edicao else ""
+
+    # Salva matrícula original no session_state para garantir consistência
+    if modo_edicao:
+        st.session_state["_matricula_original_edicao"] = matricula_original
+    elif "_matricula_original_edicao" not in st.session_state:
+        st.session_state["_matricula_original_edicao"] = ""
+
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
         if "autocomplete_func" in st.session_state:
             del st.session_state["autocomplete_func"]
+        st.session_state["_matricula_original_edicao"] = ""
+        st.session_state.pop("confirmar_exclusao", None)
         st.rerun()
     with st.form("form_cadastro", clear_on_submit=False):
         st.subheader("Dados Básicos")
@@ -2951,7 +2963,11 @@ with aba1:
         with col_dados:
             c1,c2,c3 = st.columns(3)
             with c1:
-                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
+                if modo_edicao:
+                    matricula = st.text_input("Matrícula * (igual planilha)", value=matricula_original, disabled=True)
+                    st.caption("🔒 Matrícula bloqueada em modo de edição")
+                else:
+                    matricula = st.text_input("Matrícula * (igual planilha)", value="")
                 nome = st.text_input("Nome Completo", value=val_campo("Nome"))
                 cpf = st.text_input("CPF", value=val_campo("CPF"))
                 rg = st.text_input("RG", value=val_campo("RG"))
@@ -3010,7 +3026,7 @@ with aba1:
             dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
             dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
             ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
-            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"])
+            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=["Nenhum", "Doença", "Acidente", "Maternidade"].index(val_campo("TipoAfastamento")) if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0)
         with af2:
             st.markdown("**Desligamento**")
             dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
@@ -3026,6 +3042,9 @@ with aba1:
                 if not matricula_tratada:
                     st.error("❌ INFORME A MATRÍCULA!")
                     st.stop()
+                # Usa a matrícula original do registro selecionado para garantir edição correta
+                mat_para_busca = matricula_original if modo_edicao else matricula_tratada
+                mat_para_busca = mat_para_busca.strip()
                 caminho_final_foto = caminho_foto_atual
                 if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
                     os.remove(caminho_final_foto)
@@ -3066,9 +3085,11 @@ with aba1:
                     "DataTerminoLicenca": dados_form["termino_lic"],
                     "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
                     "DataRetornoAfastamento": dados_form["retorno_af"],
+                    "TipoAfastamento": dados_form.get("tipo_af", "Nenhum"),
                     "CaminhoFoto": caminho_final_foto
                 }
-                indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
+                # Busca pela matrícula original em caso de edição, ou pela matrícula informada em novo cadastro
+                indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_para_busca].tolist()
                 acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
                 if indice:
                     idx_linha = indice[0]
@@ -3079,8 +3100,11 @@ with aba1:
                 if not salvar_dados(dados):
                     st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
                     st.stop()
-                add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
-                st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
+                add_historico_auto(matricula_tratada, dados_form["nome"], acao_hist, registro_final)
+                # Limpa flag de edição após salvar
+                if "_matricula_original_edicao" in st.session_state:
+                    st.session_state["_matricula_original_edicao"] = ""
+                st.success(f"✅ {'Atualização' if acao_hist == 'Atualização Cadastral' else 'Cadastro'} realizada! Matrícula: **{matricula_tratada}**")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Erro ao salvar: {e}")
@@ -3089,45 +3113,58 @@ with aba1:
 
     # ---------- EXCLUSÃO DE REGISTRO ----------
     if mat_sel.strip():
-        if st.button("🗑️ EXCLUIR REGISTRO", use_container_width=True, type="secondary"):
-            st.session_state["confirmar_exclusao"] = True
-
-        if st.session_state.get("confirmar_exclusao"):
-            st.warning("⚠️ Esta ação não pode ser desfeita!")
+        st.markdown("---")
+        st.markdown("**⚠️ Zona de Exclusão**")
+        
+        with st.expander("🗑️ EXCLUIR REGISTRO (clique para expandir)", expanded=False):
+            st.warning("⚠️ Esta ação não pode ser desfeita! Todos os dados, foto e documentos deste colaborador serão removidos permanentemente.")
+            
+            # Usa a matrícula original para garantir consistência
+            mat_para_excluir = matricula_original if modo_edicao else mat_sel.strip()
+            st.info(f"Colaborador a excluir: **{mat_para_excluir} - {val_campo('Nome')}**")
+            
             confirma = st.checkbox("CONFIRMO QUE DESEJO EXCLUIR PERMANENTEMENTE", key="chk_confirma_exclusao")
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ SIM, EXCLUIR", type="primary", use_container_width=True):
-                    if confirma:
-                        indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_sel.strip()].tolist()
-                        if indice:
-                            dados_excluir = dados["Base_Dados"].loc[indice[0]].to_dict()
-                            if dados_excluir.get("CaminhoFoto") and os.path.exists(dados_excluir["CaminhoFoto"]):
-                                os.remove(dados_excluir["CaminhoFoto"])
-                            docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_sel.strip()]
-                            for _, d in docs_excluir.iterrows():
-                                if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
-                            dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_sel.strip()]
-                            dados["Base_Dados"] = dados["Base_Dados"].drop(indice[0])
-                            if not salvar_dados(dados):
-                                st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
-                                st.stop()
-                            add_historico_auto(mat_sel.strip(), dados_excluir["Nome"], "Exclusão de Cadastro", dados_excluir)
-                            st.session_state["confirmar_exclusao"] = False
-                            if "chk_confirma_exclusao" in st.session_state:
-                                del st.session_state["chk_confirma_exclusao"]
-                            st.success("✅ Registro, foto e documentos excluídos!")
-                            st.rerun()
-                        else:
-                            st.error("❌ Registro não encontrado!")
-                    else:
-                        st.error("❌ Marque a caixa de confirmação para prosseguir.")
+                btn_confirmar_exclusao = st.button("✅ SIM, EXCLUIR", type="primary", use_container_width=True, key="btn_confirmar_excluir_registro", disabled=not confirma)
             with c2:
-                if st.button("❌ CANCELAR", type="secondary", use_container_width=True):
-                    st.session_state["confirmar_exclusao"] = False
-                    if "chk_confirma_exclusao" in st.session_state:
-                        del st.session_state["chk_confirma_exclusao"]
-                    st.rerun()
+                btn_cancelar_exclusao = st.button("❌ CANCELAR", type="secondary", use_container_width=True, key="btn_cancelar_excluir_registro")
+            
+            if btn_cancelar_exclusao:
+                st.info("Exclusão cancelada.")
+            
+            if btn_confirmar_exclusao and confirma:
+                try:
+                    indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_para_excluir.strip()].tolist()
+                    if indice:
+                        dados_excluir = dados["Base_Dados"].loc[indice[0]].to_dict()
+                        if dados_excluir.get("CaminhoFoto") and os.path.exists(str(dados_excluir["CaminhoFoto"])):
+                            os.remove(str(dados_excluir["CaminhoFoto"]))
+                        docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_para_excluir.strip()]
+                        for _, d in docs_excluir.iterrows():
+                            if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
+                        dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_para_excluir.strip()]
+                        dados["Base_Dados"] = dados["Base_Dados"].drop(indice[0])
+                        if not salvar_dados(dados):
+                            st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
+                            st.stop()
+                        add_historico_auto(mat_para_excluir.strip(), dados_excluir.get("Nome", ""), "Exclusão de Cadastro", dados_excluir)
+                        # Limpa sessão
+                        if "autocomplete_func" in st.session_state:
+                            del st.session_state["autocomplete_func"]
+                        if "_matricula_original_edicao" in st.session_state:
+                            st.session_state["_matricula_original_edicao"] = ""
+                        st.session_state.pop("confirmar_exclusao", None)
+                        if "chk_confirma_exclusao" in st.session_state:
+                            del st.session_state["chk_confirma_exclusao"]
+                        st.success("✅ Registro, foto e documentos excluídos com sucesso!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Registro não encontrado! Matrícula: " + mat_para_excluir)
+                except Exception as e:
+                    st.error(f"❌ Erro ao excluir: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
     st.markdown("---")
     st.subheader("📎 DOCUMENTOS DO FUNCIONÁRIO")
