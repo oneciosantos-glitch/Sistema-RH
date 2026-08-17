@@ -7,6 +7,7 @@ except ImportError:
     MATPLOT = False
 import pandas as pd
 import os
+import sys
 import shutil
 import time
 import io
@@ -1457,7 +1458,6 @@ def render_compras():
 # Diretório base fixo onde o script está (garante persistência entre reinícios)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Log de diagnóstico no stderr para debug de persistência
-import sys
 print(f"[DEBUG] BASE_DIR={BASE_DIR}", file=sys.stderr)
 print(f"[DEBUG] ARQUIVO_COMPRAS={os.path.join(BASE_DIR, 'dados_compras.json')}", file=sys.stderr)
 
@@ -1484,9 +1484,18 @@ ARQUIVOS_CRITICOS = [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS]
 
 
 def _dados_estao_vazios(dados):
-    """Verifica se os dados carregados estão vazios ou corrompidos."""
+    """Verifica se os dados carregados estão vazios ou corrompidos.
+    Checa tanto o total geral quanto a Base_Dados especificamente —
+    se a Base_Dados estiver vazia mas outras abas tiverem dados,
+    isso indica corrupção parcial e também retorna True.
+    """
     if not dados or not isinstance(dados, dict):
         return True
+    # Verifica se Base_Dados (aba crítica) está vazia
+    base = dados.get("Base_Dados")
+    if base is None or not isinstance(base, pd.DataFrame) or len(base) == 0:
+        return True
+    # Verifica se TODAS as abas estão vazias
     total_registros = 0
     for aba, df in dados.items():
         if isinstance(df, pd.DataFrame):
@@ -1994,9 +2003,16 @@ if GS_ENABLED:
         pass
 
 # ====================== BANCO DE DADOS ======================
+
+# Guarda último carregamento válido em memória (proteção contra leitura falha)
+_ultimo_dados_validos = None
+
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
+    global _ultimo_dados_validos
     dados = {}
+    erro_leitura = None
+    
     # Tenta carregar do Google Sheets primeiro
     if GS_ENABLED:
         try:
@@ -2012,24 +2028,42 @@ def carregar_dados():
             st.warning(f"⚠️ Erro ao carregar do Google Sheets: {e}. Usando arquivo local.")
             try:
                 dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-            except:
+            except Exception as ex:
+                erro_leitura = str(ex)
                 dados = {}
     else:
         try:
             dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-        except:
+        except Exception as ex:
+            erro_leitura = str(ex)
             dados = {}
     
-    # PROTEÇÃO: Se dados estiverem vazios/corrompidos, tenta restaurar do backup automático
+    # PROTEÇÃO CONTRA LEITURA FALHA: Se pd.read_excel falhou, NÃO usar dict vazio.
+    # Em vez disso, tentar restaurar do backup ou usar dados em memória.
     if _dados_estao_vazios(dados):
-        st.warning("⚠️ Dados principais parecem vazios ou corrompidos. Tentando restaurar do backup automático...")
+        # Se houve erro de leitura explícito, loga
+        if erro_leitura:
+            print(f"[CRÍTICO] Erro ao ler {ARQUIVO}: {erro_leitura}. Tentando backup...", file=sys.stderr)
+        
+        # 1ª tentativa: restaurar do backup automático
+        restaurado = False
         if _tentar_restaurar_dados_vazios():
             try:
                 dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-                st.success("✅ Dados restaurados automaticamente do backup mais recente!")
-            except:
-                dados = {}
-        else:
+                if not _dados_estao_vazios(dados):
+                    st.success("✅ Dados restaurados automaticamente do backup mais recente!")
+                    restaurado = True
+            except Exception:
+                pass
+        
+        # 2ª tentativa: usar dados em memória do último carregamento válido
+        if not restaurado and _ultimo_dados_validos is not None:
+            dados = _ultimo_dados_validos
+            st.warning("⚠️ Arquivo não pôde ser lido. Usando dados da última sessão válida em memória. "
+                       "NÃO faça alterações até restaurar o backup manualmente.")
+            restaurado = True
+        
+        if not restaurado:
             st.error("❌ Não foi possível restaurar automaticamente. Verifique a aba 'BACKUP / RESTAURAÇÃO' para restaurar manualmente.")
     
     padrao = {
@@ -2072,7 +2106,8 @@ def carregar_dados():
                 dados[aba]["Situacao"] = dados[aba]["Situacao"].astype(str).str.strip()
     
     # SEED: Popular colunas Cliente/Material/EPI do Auxiliares com dados dos fallbacks
-    # se estiverem todas vazias (primeira execução com colunas novas)
+    # APENAS se estiverem todas vazias E arquivo não existir (primeira execução)
+    # NÃO concatena duplicatas — verifica se os dados de fallback já existem antes de semear
     if "Auxiliares" in dados:
         aux = dados["Auxiliares"]
         precisa_seed = False
@@ -2084,18 +2119,15 @@ def carregar_dados():
             else:
                 precisa_seed = True
                 break
-        if precisa_seed:
+        if precisa_seed and not os.path.exists(ARQUIVO):
+            # Só semeia se o arquivo NÃO existe (primeira execução real)
             linhas_seed = []
             for cliente in CLIENTES_FALLBACK:
-                # Cria linha com nome do cliente
                 linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": "", "EPI": ""})
-                # Lojas para este cliente
                 for loja in LOJAS_POR_CLIENTE_FALLBACK.get(cliente, []):
                     linhas_seed.append({"Loja": loja, "Cargo": "", "Cliente": cliente, "Material": "", "EPI": ""})
-                # Materiais para este cliente
                 for mat in MATERIAIS_POR_CLIENTE_FALLBACK.get(cliente, []):
                     linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": mat, "EPI": ""})
-                # EPIs para este cliente
                 for epi in EPIS_POR_CLIENTE_FALLBACK.get(cliente, []):
                     linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": "", "EPI": epi})
             if linhas_seed:
@@ -2104,13 +2136,10 @@ def carregar_dados():
                     if col not in aux.columns:
                         aux[col] = ""
                 dados["Auxiliares"] = pd.concat([aux, df_seed], ignore_index=True)
-                # Salvar seed no arquivo para persistir
-                try:
-                    with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
-                        for aba_nome, df_abas in dados.items():
-                            df_abas.to_excel(f, sheet_name=aba_nome, index=False)
-                except Exception:
-                    pass
+    
+    # Guarda dados válidos em memória como fallback para futuras leituras falhas
+    if not _dados_estao_vazios(dados):
+        _ultimo_dados_validos = dados
     
     return dados
 
@@ -2236,7 +2265,58 @@ def carregar_diarias():
     
     return df
 
+def _contar_registros_base_arquivo():
+    """Conta registros na Base_Dados do arquivo atual em disco (sem usar cache)."""
+    try:
+        df_base = pd.read_excel(ARQUIVO, sheet_name="Base_Dados", dtype=str, keep_default_na=False)
+        return len(df_base)
+    except Exception:
+        return -1  # Não conseguiu ler — não bloqueia o salvamento
+
 def salvar_dados(dados):
+    # ========== WRITE GUARD: Proteção anti-perda de dados ==========
+    # Antes de salvar, verificar se a Base_Dados está íntegra.
+    # Se o novo salvamento tiver MUITO menos registros que o arquivo atual,
+    # abortar para evitar sobrescrever dados bons com dados vazios.
+    base_nova = dados.get("Base_Dados")
+    if base_nova is not None and isinstance(base_nova, pd.DataFrame):
+        registros_novos = len(base_nova)
+        registros_arquivo = _contar_registros_base_arquivo()
+        
+        # Se arquivo tem registros mas o novo salvamento tem drasticamente menos
+        if registros_arquivo > 0 and registros_novos < registros_arquivo * 0.5:
+            # Perda de mais de 50% dos registros — ABORTAR
+            st.error(
+                f"🚨 PROTEÇÃO ANTI-PERDA ATIVADA!\n"
+                f"O arquivo atual tem **{registros_arquivo}** registros na Base_Dados, "
+                f"mas a tentativa de salvar tem apenas **{registros_novos}**.\n"
+                f"O salvamento foi BLOQUEADO para evitar perda de dados.\n"
+                f"Isso geralmente ocorre quando o arquivo não pôde ser lido corretamente. "
+                f"Verifique a aba '💾 Backup' para restaurar se necessário."
+            )
+            print(f"[WRITE GUARD] BLOQUEADO: arquivo={registros_arquivo} registros, nova={registros_novos} registros", file=sys.stderr)
+            return False
+        
+        # Se Base_Dados está VAZIA mas arquivo tem registros — também bloquear
+        if registros_novos == 0 and registros_arquivo > 0:
+            st.error(
+                f"🚨 PROTEÇÃO ANTI-PERDA ATIVADA!\n"
+                f"A Base_Dados está vazia (0 registros) mas o arquivo tem **{registros_arquivo}** registros.\n"
+                f"O salvamento foi BLOQUEADO. Verifique a aba '💾 Backup' para restaurar."
+            )
+            print(f"[WRITE GUARD] BLOQUEADO: Base_Dados vazia, arquivo tem {registros_arquivo} registros", file=sys.stderr)
+            return False
+    elif base_nova is None or (isinstance(base_nova, pd.DataFrame) and len(base_nova) == 0):
+        # Base_Dados completamente ausente ou vazia no dict
+        registros_arquivo = _contar_registros_base_arquivo()
+        if registros_arquivo > 0:
+            st.error(
+                f"🚨 PROTEÇÃO ANTI-PERDA ATIVADA!\n"
+                f"Base_Dados ausente/vazia mas o arquivo tem **{registros_arquivo}** registros.\n"
+                f"Salvamento BLOQUEADO."
+            )
+            return False
+    
     # BACKUP AUTOMÁTICO antes de salvar
     try:
         pasta_bkp, arqs = criar_backup_automatico()
@@ -2244,38 +2324,103 @@ def salvar_dados(dados):
         pass
     
     sucesso = False
-    # Sempre salva localmente como fallback
+    # ========== ATOMIC WRITE: salva em arquivo temporário primeiro ==========
+    arquivo_temp = ARQUIVO + ".tmp"
     try:
-        with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
+        with pd.ExcelWriter(arquivo_temp, engine="openpyxl", mode="w") as f:
             for aba, df in dados.items():
                 df.to_excel(f, sheet_name=aba, index=False)
+        # Só renomeia para o arquivo real após escrita confirmada
+        if os.path.exists(ARQUIVO):
+            # Em Windows, precisa remover o destino antes de renomear
+            try:
+                os.replace(arquivo_temp, ARQUIVO)
+            except Exception:
+                os.remove(ARQUIVO)
+                os.rename(arquivo_temp, ARQUIVO)
+        else:
+            os.rename(arquivo_temp, ARQUIVO)
         sucesso = True
     except Exception as e:
         st.error(f"❌ Erro ao salvar arquivo local: {e}")
+        # Limpa arquivo temporário se falhou
+        if os.path.exists(arquivo_temp):
+            try:
+                os.remove(arquivo_temp)
+            except Exception:
+                pass
     
     # Se Google Sheets ativo, salva na nuvem também
-    if GS_ENABLED:
+    if GS_ENABLED and sucesso:
         try:
             _salvar_dados_gs(dados)
         except Exception as e:
             st.warning(f"⚠️ Erro ao salvar no Google Sheets: {e}")
     
-    st.cache_data.clear()
+    # Limpa cache de dados (apenas funções de carregamento, não tudo)
+    # NOTA: st.cache_data.clear() limpa TUDO — incluindo caches de traduções, compras etc.
+    # Ideal seria limpar apenas a cache de carregar_dados, mas Streamlit não suporta
+    # clear seletivo. Como workaround, limpamos tudo mesmo, mas DEPOIS do salvamento.
+    if sucesso:
+        st.cache_data.clear()
+    
     return sucesso
 
+def _contar_diarias_arquivo():
+    """Conta registros de diárias no arquivo atual em disco."""
+    try:
+        df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
+        return len(df)
+    except Exception:
+        return -1
+
 def salvar_diarias(df_diarias):
+    # ========== WRITE GUARD: Proteção anti-perda de diárias ==========
+    registros_novos = len(df_diarias)
+    registros_arquivo = _contar_diarias_arquivo()
+    
+    if registros_arquivo > 0 and registros_novos < registros_arquivo * 0.5:
+        st.error(
+            f"🚨 PROTEÇÃO ANTI-PERDA (Diárias)! O arquivo tem **{registros_arquivo}** registros, "
+            f"mas a tentativa de salvar tem apenas **{registros_novos}**. "
+            f"Salvamento BLOQUEADO."
+        )
+        return False
+    
+    if registros_novos == 0 and registros_arquivo > 0:
+        st.error(
+            f"🚨 PROTEÇÃO ANTI-PERDA (Diárias)! Diárias vazias (0) mas arquivo tem **{registros_arquivo}** registros. "
+            f"Salvamento BLOQUEADO."
+        )
+        return False
+    
     # BACKUP AUTOMÁTICO antes de salvar
     try:
         pasta_bkp, arqs = criar_backup_automatico()
     except Exception:
         pass
     
-    # Sempre salva localmente como fallback
+    # ========== ATOMIC WRITE ==========
+    arquivo_temp = ARQUIVO_DIARIAS + ".tmp"
     try:
-        with pd.ExcelWriter(ARQUIVO_DIARIAS, engine="openpyxl", mode="w") as f:
+        with pd.ExcelWriter(arquivo_temp, engine="openpyxl", mode="w") as f:
             df_diarias.to_excel(f, sheet_name="Diarias", index=False)
-    except Exception:
-        pass
+        if os.path.exists(ARQUIVO_DIARIAS):
+            try:
+                os.replace(arquivo_temp, ARQUIVO_DIARIAS)
+            except Exception:
+                os.remove(ARQUIVO_DIARIAS)
+                os.rename(arquivo_temp, ARQUIVO_DIARIAS)
+        else:
+            os.rename(arquivo_temp, ARQUIVO_DIARIAS)
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar diárias: {e}")
+        if os.path.exists(arquivo_temp):
+            try:
+                os.remove(arquivo_temp)
+            except Exception:
+                pass
+        return False
     
     # Se Google Sheets ativo, salva na nuvem também
     if GS_ENABLED:
@@ -2285,6 +2430,7 @@ def salvar_diarias(df_diarias):
             st.warning(f"⚠️ Erro ao salvar diárias no Google Sheets: {e}")
     
     st.cache_data.clear()
+    return True
 
 def exportar_diarias_formatado(df, caminho):
     """Exporta DataFrame de diárias para Excel com a mesma formatação da planilha padrão."""
