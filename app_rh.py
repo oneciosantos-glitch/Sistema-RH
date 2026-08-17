@@ -89,9 +89,10 @@ except AttributeError:
 
 
 # ========== DADOS ==========
-CLIENTES = ["Smart Fit", "Self Fit", "Assaí Atacadista"]
+# Fallback estático (usado apenas quando Auxiliares não tem dados de Cliente/Loja)
+CLIENTES_FALLBACK = ["Smart Fit", "Self Fit", "Assaí Atacadista"]
 
-LOJAS_POR_CLIENTE = {
+LOJAS_POR_CLIENTE_FALLBACK = {
     "Smart Fit": [
         "Smart Fit Shopping Manoa", "Smart Fit Shopping Cidade Leste", "Smart Fit Macapá Shopping",
         "Smart Fit Shopping Grande Circular", "Smart Fit Shopping Via Norte", "Smart Fit Cidade Nova",
@@ -110,7 +111,7 @@ LOJAS_POR_CLIENTE = {
     ]
 }
 
-MATERIAIS_POR_CLIENTE = {
+MATERIAIS_POR_CLIENTE_FALLBACK = {
     "Smart Fit": [
         "ÁGUA SANITÁRIA", "ASPIRADOR SEMI-INDUSTRIAL 23L", "BALDE 15L", "BALDE 6L",
         "BALDE ESPREMEDOR COMPLETO", "CABO DE ALUMINIO SEM ROSCA", "DISCO VERMELHO 510",
@@ -140,7 +141,7 @@ MATERIAIS_POR_CLIENTE = {
     ]
 }
 
-EPIS_POR_CLIENTE = {
+EPIS_POR_CLIENTE_FALLBACK = {
     "Smart Fit": [
         "Luva látex", "Óculos de proteção", "Luva de Vinil", "Máscara de Proteção",
         "Protetor auricular plug", "Protetor tipo concha", "Luva para jardineiro", "Avental de raspa",
@@ -694,9 +695,9 @@ def page_solicitacoes():
         with c2:
             fstatus = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, key="sol_fstatus")
         with c3:
-            floja = st.selectbox("Loja", ["Todas"] + sorted(list(set(l for c in LOJAS_POR_CLIENTE.values() for l in c))), key="sol_floja")
+            floja = st.selectbox("Loja", ["Todas"] + sorted(list(set(l for c in lista_lojas_por_cliente().values() for l in c))), key="sol_floja")
         with c4:
-            fcliente = st.selectbox("Cliente", ["Todos"] + CLIENTES, key="sol_fcliente")
+            fcliente = st.selectbox("Cliente", ["Todos"] + lista_clientes(), key="sol_fcliente")
         with c5:
             fdi_txt = st.text_input("Data Início (DD/MM/AAAA)", value="", key="sol_fdi")
             fdi = _parse_data_br(fdi_txt) if fdi_txt.strip() else None
@@ -805,7 +806,7 @@ def page_nova_solicitacao():
 
     # ── INICIALIZA VALORES PADRÃO NO SESSION_STATE ──
     if "nova_cliente" not in st.session_state:
-        st.session_state["nova_cliente"] = edit_sol["cliente"] if edit_sol and edit_sol.get("cliente") in CLIENTES else CLIENTES[0]
+        st.session_state["nova_cliente"] = edit_sol["cliente"] if edit_sol and edit_sol.get("cliente") in lista_clientes() else lista_clientes()[0]
     if "nova_loja" not in st.session_state:
         st.session_state["nova_loja"] = edit_sol["loja"] if edit_sol and edit_sol.get("loja") else ""
     if "nova_tipo" not in st.session_state:
@@ -841,9 +842,9 @@ def page_nova_solicitacao():
     # ── WIDGETS COM KEY (sem st.form) ──
     col_sel1, col_sel2, col_sel3 = st.columns(3)
     with col_sel1:
-        st.selectbox("Cliente *", CLIENTES, key="nova_cliente")
+        st.selectbox("Cliente *", lista_clientes(), key="nova_cliente")
     with col_sel2:
-        lojas = LOJAS_POR_CLIENTE.get(st.session_state["nova_cliente"], [])
+        lojas = lista_lojas_por_cliente(st.session_state["nova_cliente"])
         if st.session_state["nova_loja"] not in lojas:
             st.session_state["nova_loja"] = lojas[0] if lojas else ""
         st.selectbox("Loja *", lojas, key="nova_loja")
@@ -874,7 +875,7 @@ def page_nova_solicitacao():
         st.text_input("Data Última Bota (DD/MM/AAAA)", key="nova_data_bota")
 
     # ── VALORES FINAIS DO CABEÇALHO ──
-    cliente = st.session_state.get("nova_cliente", CLIENTES[0])
+    cliente = st.session_state.get("nova_cliente", lista_clientes()[0])
     loja = st.session_state.get("nova_loja", "")
     tipo = st.session_state.get("nova_tipo", TIPOS_SOLICITACAO[0])
     solicitante = st.session_state.get("nova_solicitante", "")
@@ -911,7 +912,7 @@ def page_nova_solicitacao():
 
     if tipo == "Material":
         st.markdown("**Materiais**")
-        materiais = MATERIAIS_POR_CLIENTE.get(cliente, [])
+        materiais = lista_materiais_por_cliente(cliente)
         itens_mat = st.session_state.get("compras_nova_itens_material", [])
 
         if itens_mat:
@@ -945,7 +946,7 @@ def page_nova_solicitacao():
 
     elif tipo == "EPI":
         st.markdown("**EPIs**")
-        epis = EPIS_POR_CLIENTE.get(cliente, EPIS_POR_CLIENTE.get("Smart Fit", []))
+        epis = lista_epis_por_cliente(cliente) or lista_epis_por_cliente("Smart Fit")
         itens_epi = st.session_state.get("compras_nova_itens_epi", [])
 
         if itens_epi:
@@ -1222,9 +1223,9 @@ def page_materiais():
     tab_mat, tab_epi, tab_cad = st.tabs(["📦 Materiais", "👷 EPIs", "➕ Cadastrar Novo"])
 
     with tab_mat:
-        fcliente = st.selectbox("Filtrar por Cliente", ["Todos"] + CLIENTES, key="mat_fcliente_tab")
+        fcliente = st.selectbox("Filtrar por Cliente", ["Todos"] + lista_clientes(), key="mat_fcliente_tab")
         dados = []
-        for cliente, lista in MATERIAIS_POR_CLIENTE.items():
+        for cliente, lista in lista_materiais_por_cliente().items():
             if fcliente != "Todos" and cliente != fcliente:
                 continue
             for idx, nome in enumerate(lista, 1):
@@ -1236,9 +1237,9 @@ def page_materiais():
             st.info("Nenhum material encontrado.")
 
     with tab_epi:
-        fcliente_epi = st.selectbox("Filtrar por Cliente", ["Todos"] + CLIENTES, key="epi_fcliente_tab")
+        fcliente_epi = st.selectbox("Filtrar por Cliente", ["Todos"] + lista_clientes(), key="epi_fcliente_tab")
         dados_epi = []
-        for cliente, lista in EPIS_POR_CLIENTE.items():
+        for cliente, lista in lista_epis_por_cliente().items():
             if fcliente_epi != "Todos" and cliente != fcliente_epi:
                 continue
             for idx, nome in enumerate(lista, 1):
@@ -1252,26 +1253,42 @@ def page_materiais():
     with tab_cad:
         st.markdown("#### ➕ Cadastrar Novo Item")
         tipo_cad = st.selectbox("Tipo", ["Material", "EPI"], key="cad_tipo")
-        cliente_cad = st.selectbox("Cliente", CLIENTES, key="cad_cliente")
+        cliente_cad = st.selectbox("Cliente", lista_clientes(), key="cad_cliente")
         nome_cad = st.text_input("Nome do Item *", key="cad_nome")
         if st.button("💾 Salvar Item", type="primary", key="cad_salvar"):
             if not nome_cad.strip():
                 st.error("Informe o nome do item.")
             else:
                 if tipo_cad == "Material":
-                    if nome_cad.strip() not in MATERIAIS_POR_CLIENTE.get(cliente_cad, []):
-                        MATERIAIS_POR_CLIENTE.setdefault(cliente_cad, [])
-                        MATERIAIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
-                        st.success(f"Material '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-            # Fragmento reexecuta automaticamente
+                    mats_existentes = lista_materiais_por_cliente(cliente_cad)
+                    if nome_cad.strip() not in mats_existentes:
+                        dados_salvar = carregar_dados()
+                        nova_linha = {"Loja": "", "Cargo": "", "Cliente": cliente_cad, "Material": nome_cad.strip(), "EPI": ""}
+                        # Garantir colunas existam
+                        for col in ["Cliente", "Material", "EPI"]:
+                            if col not in dados_salvar["Auxiliares"].columns:
+                                dados_salvar["Auxiliares"][col] = ""
+                        dados_salvar["Auxiliares"] = pd.concat([dados_salvar["Auxiliares"], pd.DataFrame([nova_linha])], ignore_index=True)
+                        if salvar_dados(dados_salvar):
+                            st.success(f"Material '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
+                        else:
+                            st.error("❌ Não foi possível salvar os dados.")
                     else:
                         st.warning("Este material já está cadastrado para este cliente.")
                 else:
-                    if nome_cad.strip() not in EPIS_POR_CLIENTE.get(cliente_cad, []):
-                        EPIS_POR_CLIENTE.setdefault(cliente_cad, [])
-                        EPIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
-                        st.success(f"EPI '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-            # Fragmento reexecuta automaticamente
+                    epis_existentes = lista_epis_por_cliente(cliente_cad)
+                    if nome_cad.strip() not in epis_existentes:
+                        dados_salvar = carregar_dados()
+                        nova_linha = {"Loja": "", "Cargo": "", "Cliente": cliente_cad, "Material": "", "EPI": nome_cad.strip()}
+                        # Garantir colunas existam
+                        for col in ["Cliente", "Material", "EPI"]:
+                            if col not in dados_salvar["Auxiliares"].columns:
+                                dados_salvar["Auxiliares"][col] = ""
+                        dados_salvar["Auxiliares"] = pd.concat([dados_salvar["Auxiliares"], pd.DataFrame([nova_linha])], ignore_index=True)
+                        if salvar_dados(dados_salvar):
+                            st.success(f"EPI '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
+                        else:
+                            st.error("❌ Não foi possível salvar os dados.")
                     else:
                         st.warning("Este EPI já está cadastrado para este cliente.")
 
@@ -1279,17 +1296,40 @@ def page_materiais():
 def page_lojas():
     st.markdown("### 🏬 Lojas e Clientes")
 
-    tab1, tab2 = st.tabs(["Lojas", "Clientes"])
+    tab1, tab2, tab3 = st.tabs(["Lojas", "Clientes", "➕ Adicionar Cliente"])
     with tab1:
         dados = []
-        for cliente, lista in LOJAS_POR_CLIENTE.items():
-            for loja in lista:
+        for cliente in lista_clientes():
+            for loja in lista_lojas_por_cliente(cliente):
                 dados.append({"Loja": loja, "Cliente": cliente})
-        df = pd.DataFrame(dados)
+        df = pd.DataFrame(dados) if dados else pd.DataFrame(columns=["Loja", "Cliente"])
         st.dataframe(df, use_container_width=True, hide_index=True)
     with tab2:
-        df = pd.DataFrame([{"Cliente": c, "Qtd Lojas": len(LOJAS_POR_CLIENTE.get(c, [])), "Qtd Materiais": len(MATERIAIS_POR_CLIENTE.get(c, [])), "Qtd EPIs": len(EPIS_POR_CLIENTE.get(c, []))} for c in CLIENTES])
+        clientes_atuais = lista_clientes()
+        df = pd.DataFrame([{"Cliente": c, "Qtd Lojas": len(lista_lojas_por_cliente(c)), "Qtd Materiais": len(lista_materiais_por_cliente(c)), "Qtd EPIs": len(lista_epis_por_cliente(c))} for c in clientes_atuais])
         st.dataframe(df, use_container_width=True, hide_index=True)
+    with tab3:
+        st.markdown("#### ➕ Adicionar Novo Cliente")
+        novo_cliente = st.text_input("Nome do novo cliente:", key="novo_cliente_input")
+        if st.button("💾 Cadastrar Cliente", key="btn_cad_cliente"):
+            if novo_cliente.strip():
+                clientes_existentes = lista_clientes()
+                if novo_cliente.strip() not in clientes_existentes:
+                    dados_salvar = carregar_dados()
+                    nova_linha = {"Loja": "", "Cargo": "", "Cliente": novo_cliente.strip(), "Material": "", "EPI": ""}
+                    for col in ["Cliente", "Material", "EPI"]:
+                        if col not in dados_salvar["Auxiliares"].columns:
+                            dados_salvar["Auxiliares"][col] = ""
+                    dados_salvar["Auxiliares"] = pd.concat([dados_salvar["Auxiliares"], pd.DataFrame([nova_linha])], ignore_index=True)
+                    if salvar_dados(dados_salvar):
+                        st.success(f"Cliente '{novo_cliente.strip()}' cadastrado com sucesso!")
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível salvar os dados.")
+                else:
+                    st.warning("Este cliente já está cadastrado.")
+            else:
+                st.warning("Digite um nome válido para o cliente.")
 
 
 def page_relatorios():
@@ -1940,7 +1980,7 @@ if GS_ENABLED:
                 "DataLicenca","DiasLicenca","DataTerminoLicenca",
                 "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
             ],
-            "Auxiliares": ["Loja", "Cargo"],
+            "Auxiliares": ["Loja", "Cargo", "Cliente", "Material", "EPI"],
             "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
             "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
         }
@@ -2014,7 +2054,7 @@ def carregar_dados():
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
         ],
-        "Auxiliares": ["Loja", "Cargo"],
+        "Auxiliares": ["Loja", "Cargo", "Cliente", "Material", "EPI"],
         "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
         "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
     }
@@ -2030,6 +2070,48 @@ def carregar_dados():
                 dados[aba]["Matricula"] = dados[aba]["Matricula"].astype(str).str.strip()
             if "Situacao" in dados[aba].columns:
                 dados[aba]["Situacao"] = dados[aba]["Situacao"].astype(str).str.strip()
+    
+    # SEED: Popular colunas Cliente/Material/EPI do Auxiliares com dados dos fallbacks
+    # se estiverem todas vazias (primeira execução com colunas novas)
+    if "Auxiliares" in dados:
+        aux = dados["Auxiliares"]
+        precisa_seed = False
+        for col in ["Cliente", "Material", "EPI"]:
+            if col in aux.columns:
+                if aux[col].astype(str).str.strip().replace("", None).dropna().empty:
+                    precisa_seed = True
+                    break
+            else:
+                precisa_seed = True
+                break
+        if precisa_seed:
+            linhas_seed = []
+            for cliente in CLIENTES_FALLBACK:
+                # Cria linha com nome do cliente
+                linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": "", "EPI": ""})
+                # Lojas para este cliente
+                for loja in LOJAS_POR_CLIENTE_FALLBACK.get(cliente, []):
+                    linhas_seed.append({"Loja": loja, "Cargo": "", "Cliente": cliente, "Material": "", "EPI": ""})
+                # Materiais para este cliente
+                for mat in MATERIAIS_POR_CLIENTE_FALLBACK.get(cliente, []):
+                    linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": mat, "EPI": ""})
+                # EPIs para este cliente
+                for epi in EPIS_POR_CLIENTE_FALLBACK.get(cliente, []):
+                    linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": "", "EPI": epi})
+            if linhas_seed:
+                df_seed = pd.DataFrame(linhas_seed)
+                for col in ["Cliente", "Material", "EPI"]:
+                    if col not in aux.columns:
+                        aux[col] = ""
+                dados["Auxiliares"] = pd.concat([aux, df_seed], ignore_index=True)
+                # Salvar seed no arquivo para persistir
+                try:
+                    with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
+                        for aba_nome, df_abas in dados.items():
+                            df_abas.to_excel(f, sheet_name=aba_nome, index=False)
+                except Exception:
+                    pass
+    
     return dados
 
 @st.cache_data(ttl=0, show_spinner=False)
@@ -2403,37 +2485,12 @@ def restaurar_backup_zip(zip_file):
     return arquivos_extraidos
 
 def lista_lojas():
-    return [
-        "Assaí Atacadista Batista Campos",
-        "Assaí Atacadista Almirante Barroso",
-        "Assaí Atacadista Castanhal",
-        "Assaí Atacadista Ananindeua",
-        "Assaí Atacadista Augusto Monte Negro",
-        "Assaí Atacadista Boa Vista",
-        "Assaí Atacadista Manaus",
-        "Assaí Atacadista Macapá",
-        "Assaí Atacadista Belém",
-        "Smart Fit Shopping Manoa",
-        "Smart Fit Shopping Cidade Leste",
-        "Smart Fit Macapá Shopping",
-        "Smart Fit Shopping Grande Circular",
-        "Smart Fit Shopping Via Norte",
-        "Smart Fit Cidade Nova",
-        "Smart Fit Parque Mosaico",
-        "Smart Fit Cachoeirinha",
-        "Smart Fit Flores",
-        "Smart Fit Ponta Negra",
-        "Smart Fit Nova Porto Velho",
-        "Smart Fit Porto Velho Flodoaldo",
-        "Smart Fit Alvorada",
-        "Smart Fit Novo Aleixo",
-        "Smart Fit São José do Operário",
-        "Smart Fit Santana Macapá",
-        "Smart Fit Toequato Tapajós",
-        "Self Fit Hiper DB Ponta Negra",
-        "Self Fit Manaus Plaza Shopping",
-        "Self Fit Vieira Alves",
-    ]
+    d = carregar_dados()
+    todas = sorted(set(
+        [str(l).strip() for l in d["Base_Dados"]["Loja"] if str(l).strip() != ""] +
+        [str(l).strip() for l in d["Auxiliares"]["Loja"] if str(l).strip() != ""]
+    ))
+    return todas if todas else ["Sem Loja"]
 
 def lista_cargos():
     d = carregar_dados()
@@ -2442,6 +2499,87 @@ def lista_cargos():
         [str(c).strip() for c in d["Auxiliares"]["Cargo"] if str(c).strip() != ""]
     ))
     return todas if todas else ["Sem Cargo"]
+
+def lista_clientes():
+    """Retorna lista dinâmica de clientes lendo da aba Auxiliares."""
+    d = carregar_dados()
+    if "Cliente" in d["Auxiliares"].columns:
+        clientes = sorted(set(
+            [str(c).strip() for c in d["Auxiliares"]["Cliente"] if str(c).strip() != ""]
+        ))
+        if clientes:
+            return clientes
+    # Fallback para dados estáticos
+    return list(CLIENTES_FALLBACK)
+
+def lista_lojas_por_cliente(cliente=None):
+    """Retorna dict {cliente: [lojas]} ou lista de lojas de um cliente específico."""
+    d = carregar_dados()
+    if "Cliente" in d["Auxiliares"].columns and "Loja" in d["Auxiliares"].columns:
+        df_cli = d["Auxiliares"][d["Auxiliares"]["Cliente"].str.strip() != ""]
+        if not df_cli.empty:
+            resultado = {}
+            for cli in df_cli["Cliente"].unique():
+                cli_str = str(cli).strip()
+                lojas = sorted(set(
+                    [str(l).strip() for l in df_cli[df_cli["Cliente"].str.strip() == cli_str]["Loja"] if str(l).strip() != ""]
+                ))
+                if lojas:
+                    resultado[cli_str] = lojas
+            if resultado:
+                if cliente:
+                    return resultado.get(cliente, [])
+                return resultado
+    # Fallback para dados estáticos
+    if cliente:
+        return LOJAS_POR_CLIENTE_FALLBACK.get(cliente, [])
+    return dict(LOJAS_POR_CLIENTE_FALLBACK)
+
+def lista_materiais_por_cliente(cliente=None):
+    """Retorna dict {cliente: [materiais]} ou lista de materiais de um cliente específico."""
+    d = carregar_dados()
+    if "Cliente" in d["Auxiliares"].columns and "Material" in d["Auxiliares"].columns:
+        df_mat = d["Auxiliares"][d["Auxiliares"]["Material"].str.strip() != ""]
+        if not df_mat.empty:
+            resultado = {}
+            for cli in df_mat["Cliente"].unique():
+                cli_str = str(cli).strip()
+                mats = sorted(set(
+                    [str(m).strip() for m in df_mat[df_mat["Cliente"].str.strip() == cli_str]["Material"] if str(m).strip() != ""]
+                ))
+                if mats:
+                    resultado[cli_str] = mats
+            if resultado:
+                if cliente:
+                    return resultado.get(cliente, [])
+                return resultado
+    # Fallback para dados estáticos
+    if cliente:
+        return MATERIAIS_POR_CLIENTE_FALLBACK.get(cliente, [])
+    return dict(MATERIAIS_POR_CLIENTE_FALLBACK)
+
+def lista_epis_por_cliente(cliente=None):
+    """Retorna dict {cliente: [epis]} ou lista de epis de um cliente específico."""
+    d = carregar_dados()
+    if "Cliente" in d["Auxiliares"].columns and "EPI" in d["Auxiliares"].columns:
+        df_epi = d["Auxiliares"][d["Auxiliares"]["EPI"].str.strip() != ""]
+        if not df_epi.empty:
+            resultado = {}
+            for cli in df_epi["Cliente"].unique():
+                cli_str = str(cli).strip()
+                epis = sorted(set(
+                    [str(e).strip() for e in df_epi[df_epi["Cliente"].str.strip() == cli_str]["EPI"] if str(e).strip() != ""]
+                ))
+                if epis:
+                    resultado[cli_str] = epis
+            if resultado:
+                if cliente:
+                    return resultado.get(cliente, [])
+                return resultado
+    # Fallback para dados estáticos
+    if cliente:
+        return EPIS_POR_CLIENTE_FALLBACK.get(cliente, [])
+    return dict(EPIS_POR_CLIENTE_FALLBACK)
 
 def calcular_e_atualizar(form):
     hoje = datetime.now().date()
