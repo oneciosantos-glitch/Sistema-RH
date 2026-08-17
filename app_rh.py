@@ -1696,7 +1696,8 @@ SITUACOES_DIARIA = ["Todas", "FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
-    "Ativo", "Pré-cadastro", "Abandono", "Desistente", "Término de Contrato",
+    "Ativo", "Pré-cadastro", "Aviso Prévio", "Licença", "Abandono", "Desistente",
+    "Término de Contrato",
     "Demitido S/JC", "Demitido C/JC", "Pedido de Conta",
     "Rescisão Indireta", "Férias", "Doença", "Acidente", "Maternidade"
 ]
@@ -3253,7 +3254,7 @@ with aba1:
             "input_dt_fer_", "input_dias_fer_",
             "input_dt_af_", "input_dias_af_", "sel_tipo_af_",
             "input_dt_ped_", "input_dt_res_", "input_dt_aband_", "input_dt_desist_",
-            "input_dt_termcont_", "btn_salvar_cad_"
+            "input_dt_termcont_", "btn_salvar_cad_", "_auto_sit_forced_"
         ]
         _keys_para_remover = [k for k in st.session_state if any(k.startswith(p) for p in _prefixos_keys)]
         for k in _keys_para_remover:
@@ -3412,12 +3413,23 @@ with aba1:
     rt_result = calcular_e_atualizar(dict(rt_form))
     situacao_sugerida = rt_result["situacao"]
 
-    # Mostra badge informativo se a situação sugerida difere da selecionada
-    if situacao_sugerida != situacao and situacao_sugerida != situacao_val:
-        st.info(f"🔄 Situação sugerida pelos eventos: **{situacao_sugerida}** (atualmente selecionada: **{situacao}**)")
-    elif situacao_sugerida != situacao_val and situacao_sugerida == situacao:
-        # Usuário já selecionou a situação correta, apenas confirma visualmente
-        pass
+    # Atualização automática do selectbox Situação quando eventos vencem
+    sit_key = f"sel_sit_{mat_sel}"
+    sit_atual = st.session_state.get(sit_key, situacao)
+    _auto_sit_key = f"_auto_sit_forced_{mat_sel}"
+
+    if situacao_sugerida != sit_atual and situacao_sugerida in SITUACOES:
+        # A situação sugerida pelos eventos difere do selectbox → forçar atualização
+        st.session_state[sit_key] = situacao_sugerida
+        st.session_state[_auto_sit_key] = True  # flag: foi atualização automática
+        st.rerun()
+    elif sit_atual == situacao_sugerida and st.session_state.get(_auto_sit_key, False):
+        # Após rerun automático, limpa a flag para permitir edição manual futura
+        st.session_state[_auto_sit_key] = False
+
+    # Badge informativo (apenas informativo se por algum motivo a auto-atualização não ocorreu)
+    if situacao_sugerida != sit_atual and situacao_sugerida in SITUACOES:
+        st.info(f"🔄 Situação sugerida pelos eventos: **{situacao_sugerida}** (atualmente selecionada: **{sit_atual}**)")
 
     btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key=f"btn_salvar_cad_{mat_sel}")
     if btn_salvar:
@@ -3825,7 +3837,7 @@ with aba4:
 with aba5:
     st.subheader("📄 RELATÓRIOS")
     rel_opcoes = [
-        "Prazos Experiência","Ativos","Pré-cadastro","Férias","Afastados","Avisos",
+        "Prazos Experiência","Ativos","Pré-cadastro","Férias","Licença","Afastados","Avisos",
         "Abandono","Término de Contrato","Demitido S/JC","Demitido C/JC",
         "Pedido de Conta","Rescisão Indireta","Desistente","Doença","Acidente","Maternidade",
         "Histórico","Individual"
@@ -3847,6 +3859,7 @@ with aba5:
         elif rel == "Ativos": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Ativo"]
         elif rel == "Pré-cadastro": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Pré-cadastro"]
         elif rel == "Férias": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Férias"]
+        elif rel == "Licença": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Licença"]
         elif rel == "Afastados": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"].isin(["Doença","Acidente","Maternidade"])]
         elif rel == "Avisos": df = dados["Base_Dados"][dados["Base_Dados"]["DataAvisoPrevio"].str.strip()!=""]
         elif rel == "Abandono": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Abandono"]
