@@ -3707,7 +3707,7 @@ with aba8:
         ⚠️ **Atenção:** ao carregar uma planilha, os dados anteriores serão substituídos pelos dados do arquivo. Faça backup se necessário.
         """)
     
-    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
+    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx ou .csv)", type=["xlsx", "csv"], key="upload_diarias")
     if arq_diarias is not None:
         # Evita loop infinito: só processa se este arquivo ainda não foi processado nesta sessão
         chave_processado = f"_diarias_processado_{arq_diarias.name}"
@@ -3715,14 +3715,27 @@ with aba8:
             # Já processado, apenas exibe mensagem de sucesso
             st.success(f"✅ Planilha '{arq_diarias.name}' já foi carregada. Recarregue a página (F5) se necessário.")
         else:
-            # Salva temporariamente para validar
-            temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
+            # Determina extensão e caminho temporário
+            extensao = os.path.splitext(arq_diarias.name)[1].lower()
+            if extensao == ".csv":
+                temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.csv")
+            else:
+                temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
             with open(temp_path, "wb") as f:
                 f.write(arq_diarias.read())
             
             # Valida se o arquivo tem dados legíveis
             try:
-                df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
+                if extensao == ".csv":
+                    df_test = pd.read_csv(temp_path, dtype=str, keep_default_na=False, sep=None, engine="python")
+                    # Converte CSV para XLSX para manter compatibilidade com o resto do app
+                    temp_xlsx = temp_path.replace(".csv", ".xlsx")
+                    df_test.to_excel(temp_xlsx, index=False, engine="openpyxl")
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    temp_path = temp_xlsx
+                else:
+                    df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
                 if df_test.empty or df_test.shape[0] < 1:
                     st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
                 else:
