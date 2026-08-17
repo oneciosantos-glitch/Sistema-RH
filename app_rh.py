@@ -3083,171 +3083,224 @@ with aba1:
             del st.session_state["autocomplete_func"]
         st.session_state["_matricula_original_edicao"] = ""
         st.session_state.pop("confirmar_exclusao", None)
+        # Limpar todas as keys dinâmicas dos widgets do cadastro
+        _prefixos_keys = [
+            "foto_", "chk_excluir_foto_", "chk_bloq_mat_", "input_matricula_",
+            "input_nome_", "input_cpf_", "input_rg_", "input_pis_",
+            "input_nasc_", "input_adm_", "input_tel_", "input_end_",
+            "sel_loja_", "sel_cargo_", "input_sal_", "sel_sit_",
+            "input_dt_aviso_", "input_dias_aviso_", "input_term_aviso_",
+            "input_dt_lic_", "input_dias_lic_", "input_term_lic_",
+            "input_dt_fer_", "input_dias_fer_", "input_ret_fer_",
+            "input_dt_af_", "input_dias_af_", "input_ret_af_", "sel_tipo_af_",
+            "input_dt_ped_", "input_dt_res_", "input_dt_aband_", "input_dt_desist_",
+            "input_dt_termcont_", "btn_salvar_cad_"
+        ]
+        _keys_para_remover = [k for k in st.session_state if any(k.startswith(p) for p in _prefixos_keys)]
+        for k in _keys_para_remover:
+            del st.session_state[k]
         st.rerun()
-    with st.form("form_cadastro", clear_on_submit=False):
-        st.subheader("Dados Básicos")
-        col_foto, col_dados = st.columns([1,3])
-        
-        with col_foto:
-            st.markdown("**Foto do Funcionário**")
-            if caminho_foto_atual and os.path.exists(caminho_foto_atual):
-                st.image(caminho_foto_atual, width=180, caption="Foto atual")
-            else:
-                st.info("Sem foto")
-            
-            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
-            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
+    # ── Chave dinâmica para forçar re-render dos campos ao trocar funcionário ──
+    _chave_form = f"cad_{mat_sel if mat_sel.strip() else 'novo'}_{int(datetime.now().timestamp()) if not mat_sel.strip() else ''}"
 
-        with col_dados:
-            c1,c2,c3 = st.columns(3)
-            with c1:
-                if modo_edicao:
-                    matricula = st.text_input("Matrícula * (igual planilha)", value=matricula_original, disabled=True)
-                    st.caption("🔒 Matrícula bloqueada em modo de edição")
-                else:
-                    matricula = st.text_input("Matrícula * (igual planilha)", value="")
-                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
-                cpf = st.text_input("CPF", value=val_campo("CPF"))
-                rg = st.text_input("RG", value=val_campo("RG"))
-                pis = st.text_input("PIS", value=val_campo("PIS"))
-            with c2:
-                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
-                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
-                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
-                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
-            with c3:
-                lojas = lista_lojas()
-                idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
-                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
+    st.subheader("Dados Básicos")
+    col_foto, col_dados = st.columns([1,3])
 
-                cargos = lista_cargos()
-                idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
-                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
+    with col_foto:
+        st.markdown("**Foto do Funcionário**")
+        if caminho_foto_atual and os.path.exists(caminho_foto_atual):
+            st.image(caminho_foto_atual, width=180, caption="Foto atual")
+        else:
+            st.info("Sem foto")
 
-                salario = st.text_input("Salário", value=val_campo("Salario"))
+        nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
+        excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False, key=f"chk_excluir_foto_{mat_sel}")
 
-                idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
-                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
-
-        if prazos_exp:
-            st.markdown("---")
-            st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
-            st.dataframe(
-                pd.DataFrame(prazos_exp, columns=["Prazo", "Data Final", "Situação"]),
-                use_container_width=True, hide_index=True
+    with col_dados:
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            # ── Matrícula: editável com opção de bloquear ──
+            bloquear_mat = st.checkbox("🔒 Bloquear matrícula", value=modo_edicao, key=f"chk_bloq_mat_{mat_sel}")
+            matricula = st.text_input(
+                "Matrícula * (igual planilha)",
+                value=matricula_original if modo_edicao else "",
+                disabled=bloquear_mat,
+                key=f"input_matricula_{mat_sel}"
             )
-        elif not reg.empty:
-            st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos.")
+            if modo_edicao and bloquear_mat:
+                st.caption("🔒 Matrícula bloqueada — desmarque para alterar")
+            elif modo_edicao and not bloquear_mat:
+                st.warning("⚠️ Ao alterar a matrícula, ela será renomeada em TODAS as abas (Base, Histórico, Docs).")
+            nome = st.text_input("Nome Completo", value=val_campo("Nome"), key=f"input_nome_{mat_sel}")
+            cpf = st.text_input("CPF", value=val_campo("CPF"), key=f"input_cpf_{mat_sel}")
+            rg = st.text_input("RG", value=val_campo("RG"), key=f"input_rg_{mat_sel}")
+            pis = st.text_input("PIS", value=val_campo("PIS"), key=f"input_pis_{mat_sel}")
+        with c2:
+            nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"), key=f"input_nasc_{mat_sel}")
+            admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"), key=f"input_adm_{mat_sel}")
+            telefone = st.text_input("Telefone", value=val_campo("Telefone"), key=f"input_tel_{mat_sel}")
+            endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"), key=f"input_end_{mat_sel}")
+        with c3:
+            lojas = lista_lojas()
+            idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
+            loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key=f"sel_loja_{mat_sel}")
 
+            cargos = lista_cargos()
+            idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
+            cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key=f"sel_cargo_{mat_sel}")
+
+            salario = st.text_input("Salário", value=val_campo("Salario"), key=f"input_sal_{mat_sel}")
+
+            idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
+            situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sel_sit_{mat_sel}")
+
+    if prazos_exp:
         st.markdown("---")
-        st.subheader("Eventos Trabalhistas")
-        av1,av2,av3 = st.columns(3)
-        with av1:
-            st.markdown("**Aviso Prévio**")
-            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"))
-            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"))
-            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True)
-        with av2:
-            st.markdown("**Licença**")
-            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"))
-            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"))
-            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True)
-        with av3:
-            st.markdown("**Férias**")
-            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"))
-            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"))
-            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True)
+        st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
+        st.dataframe(
+            pd.DataFrame(prazos_exp, columns=["Prazo", "Data Final", "Situação"]),
+            use_container_width=True, hide_index=True
+        )
+    elif not reg.empty:
+        st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos.")
 
-        af1,af2 = st.columns(2)
-        with af1:
-            st.markdown("**Afastamento**")
-            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
-            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
-            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
-            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=["Nenhum", "Doença", "Acidente", "Maternidade"].index(val_campo("TipoAfastamento")) if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0)
-        with af2:
-            st.markdown("**Desligamento**")
-            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
-            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
-            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
-            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"))
-            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
+    st.markdown("---")
+    st.subheader("Eventos Trabalhistas")
+    av1,av2,av3 = st.columns(3)
+    with av1:
+        st.markdown("**Aviso Prévio**")
+        dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"), key=f"input_dt_aviso_{mat_sel}")
+        dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"), key=f"input_dias_aviso_{mat_sel}")
+        term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key=f"input_term_aviso_{mat_sel}")
+    with av2:
+        st.markdown("**Licença**")
+        dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"), key=f"input_dt_lic_{mat_sel}")
+        dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"), key=f"input_dias_lic_{mat_sel}")
+        term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key=f"input_term_lic_{mat_sel}")
+    with av3:
+        st.markdown("**Férias**")
+        dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"), key=f"input_dt_fer_{mat_sel}")
+        dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"), key=f"input_dias_fer_{mat_sel}")
+        ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key=f"input_ret_fer_{mat_sel}")
 
-        btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
-        if btn_salvar:
-            try:
-                matricula_tratada = str(matricula).strip()
-                if not matricula_tratada:
-                    st.error("❌ INFORME A MATRÍCULA!")
+    af1,af2 = st.columns(2)
+    with af1:
+        st.markdown("**Afastamento**")
+        dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"), key=f"input_dt_af_{mat_sel}")
+        dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"), key=f"input_dias_af_{mat_sel}")
+        ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key=f"input_ret_af_{mat_sel}")
+        tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=["Nenhum", "Doença", "Acidente", "Maternidade"].index(val_campo("TipoAfastamento")) if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0, key=f"sel_tipo_af_{mat_sel}")
+    with af2:
+        st.markdown("**Desligamento**")
+        dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"), key=f"input_dt_ped_{mat_sel}")
+        dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"), key=f"input_dt_res_{mat_sel}")
+        dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"), key=f"input_dt_aband_{mat_sel}")
+        dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"input_dt_desist_{mat_sel}")
+        dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"input_dt_termcont_{mat_sel}")
+
+    btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key=f"btn_salvar_cad_{mat_sel}")
+    if btn_salvar:
+        try:
+            matricula_tratada = str(matricula).strip()
+            if not matricula_tratada:
+                st.error("❌ INFORME A MATRÍCULA!")
+                st.stop()
+            # Usa a matrícula original do registro selecionado para garantir edição correta
+            mat_para_busca = matricula_original if modo_edicao else matricula_tratada
+            mat_para_busca = mat_para_busca.strip()
+
+            # ── Renomear matrícula se foi alterada em modo de edição ──
+            matricula_alterada = False
+            if modo_edicao and matricula_tratada != matricula_original:
+                matricula_alterada = True
+                # Verifica se a nova matrícula já existe
+                existe_nova = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == matricula_tratada]
+                if not existe_nova.empty:
+                    st.error(f"❌ A matrícula **{matricula_tratada}** já existe! Escolha outra.")
                     st.stop()
-                # Usa a matrícula original do registro selecionado para garantir edição correta
-                mat_para_busca = matricula_original if modo_edicao else matricula_tratada
-                mat_para_busca = mat_para_busca.strip()
-                caminho_final_foto = caminho_foto_atual
-                if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
+                # Renomeia em Base_Dados
+                mask_base = dados["Base_Dados"]["Matricula"] == matricula_original
+                dados["Base_Dados"].loc[mask_base, "Matricula"] = matricula_tratada
+                # Renomeia em Historico
+                if "Matricula" in dados["Historico"].columns:
+                    mask_hist = dados["Historico"]["Matricula"] == matricula_original
+                    dados["Historico"].loc[mask_hist, "Matricula"] = matricula_tratada
+                # Renomeia em Docs_Funcionarios
+                if "Matricula" in dados["Docs_Funcionarios"].columns:
+                    mask_docs = dados["Docs_Funcionarios"]["Matricula"] == matricula_original
+                    dados["Docs_Funcionarios"].loc[mask_docs, "Matricula"] = matricula_tratada
+                st.info(f"🔄 Matrícula renomeada: **{matricula_original}** → **{matricula_tratada}**")
+
+            caminho_final_foto = caminho_foto_atual
+            if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
+                os.remove(caminho_final_foto)
+                caminho_final_foto = ""
+            if nova_foto:
+                if caminho_final_foto and os.path.exists(caminho_final_foto):
                     os.remove(caminho_final_foto)
-                    caminho_final_foto = ""
-                if nova_foto:
-                    if caminho_final_foto and os.path.exists(caminho_final_foto):
-                        os.remove(caminho_final_foto)
-                    extensao = os.path.splitext(nova_foto.name)[1].lower()
-                    nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
-                    caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
-                    img = Image.open(nova_foto)
-                    img.save(caminho_final_foto)
+                extensao = os.path.splitext(nova_foto.name)[1].lower()
+                nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
+                caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
+                img = Image.open(nova_foto)
+                img.save(caminho_final_foto)
 
-                dados_form = calcular_e_atualizar({
-                    "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
-                    "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
-                    "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
-                    "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
-                    "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
-                    "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
-                    "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af, "tipo_af": tipo_af,
-                    "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
-                    "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
-                })
-                registro_final = {
-                    "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
-                    "RG": dados_form["rg"], "PIS": dados_form["pis"], "Nascimento": dados_form["nasc"],
-                    "Admissao": dados_form["adm"], "Telefone": dados_form["tel"], "Endereco": dados_form["end"],
-                    "Loja": dados_form["loja"], "Cargo": dados_form["cargo"], "Salario": dados_form["sal"],
-                    "Situacao": dados_form["situacao"], "DataAvisoPrevio": dados_form["dt_aviso"],
-                    "DiasAvisoPrevio": dados_form["dias_aviso"], "DataTerminoAviso": dados_form["termino_aviso"],
-                    "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
-                    "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
-                    "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
-                    "DataDesistencia": dados_form["dt_desistencia"],
-                    "DataTerminoContrato": dados_form["dt_termino_cont"],
-                    "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
-                    "DataTerminoLicenca": dados_form["termino_lic"],
-                    "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
-                    "DataRetornoAfastamento": dados_form["retorno_af"],
-                    "TipoAfastamento": dados_form.get("tipo_af", "Nenhum"),
-                    "CaminhoFoto": caminho_final_foto
-                }
-                # Busca pela matrícula original em caso de edição, ou pela matrícula informada em novo cadastro
-                indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_para_busca].tolist()
-                acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
-                if indice:
-                    idx_linha = indice[0]
-                    for coluna, valor in registro_final.items():
-                        dados["Base_Dados"].at[idx_linha, coluna] = valor
-                else:
-                    dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
-                if not salvar_dados(dados):
-                    st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
-                    st.stop()
-                add_historico_auto(matricula_tratada, dados_form["nome"], acao_hist, registro_final)
-                # Limpa flag de edição após salvar
-                if "_matricula_original_edicao" in st.session_state:
-                    st.session_state["_matricula_original_edicao"] = ""
-                st.success(f"✅ {'Atualização' if acao_hist == 'Atualização Cadastral' else 'Cadastro'} realizada! Matrícula: **{matricula_tratada}**")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Erro ao salvar: {e}")
-                import traceback
-                st.code(traceback.format_exc())
+            dados_form = calcular_e_atualizar({
+                "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
+                "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
+                "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
+                "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
+                "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
+                "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
+                "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af, "tipo_af": tipo_af,
+                "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
+                "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
+            })
+            registro_final = {
+                "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
+                "RG": dados_form["rg"], "PIS": dados_form["pis"], "Nascimento": dados_form["nasc"],
+                "Admissao": dados_form["adm"], "Telefone": dados_form["tel"], "Endereco": dados_form["end"],
+                "Loja": dados_form["loja"], "Cargo": dados_form["cargo"], "Salario": dados_form["sal"],
+                "Situacao": dados_form["situacao"], "DataAvisoPrevio": dados_form["dt_aviso"],
+                "DiasAvisoPrevio": dados_form["dias_aviso"], "DataTerminoAviso": dados_form["termino_aviso"],
+                "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
+                "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
+                "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
+                "DataDesistencia": dados_form["dt_desistencia"],
+                "DataTerminoContrato": dados_form["dt_termino_cont"],
+                "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
+                "DataTerminoLicenca": dados_form["termino_lic"],
+                "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
+                "DataRetornoAfastamento": dados_form["retorno_af"],
+                "TipoAfastamento": dados_form.get("tipo_af", "Nenhum"),
+                "CaminhoFoto": caminho_final_foto
+            }
+            # Busca pela matrícula original em caso de edição, ou pela matrícula informada em novo cadastro
+            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_para_busca].tolist()
+            acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
+            if matricula_alterada:
+                acao_hist = "Atualização Cadastral (Matrícula alterada)"
+            if indice:
+                idx_linha = indice[0]
+                for coluna, valor in registro_final.items():
+                    dados["Base_Dados"].at[idx_linha, coluna] = valor
+            else:
+                dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
+            if not salvar_dados(dados):
+                st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
+                st.stop()
+            add_historico_auto(matricula_tratada, dados_form["nome"], acao_hist, registro_final)
+            # Limpa flag de edição após salvar
+            if "_matricula_original_edicao" in st.session_state:
+                st.session_state["_matricula_original_edicao"] = ""
+            # Se matrícula foi alterada, atualiza o autocomplete para refletir
+            if matricula_alterada and "autocomplete_func" in st.session_state:
+                del st.session_state["autocomplete_func"]
+            st.success(f"✅ {'Atualização' if 'Atualização' in acao_hist else 'Cadastro'} realizada! Matrícula: **{matricula_tratada}**")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Erro ao salvar: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
     # ---------- EXCLUSÃO DE REGISTRO ----------
     if mat_sel.strip():
