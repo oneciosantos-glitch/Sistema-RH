@@ -3311,6 +3311,39 @@ with aba1:
 
             salario = st.text_input("Salário", value=val_campo("Salario"), key=f"input_sal_{mat_sel}")
 
+            # ── Auto-atualização da Situação ANTES do selectbox ──
+            # Recalcula a situação com base nos valores atuais dos inputs de eventos
+            # (lê do session_state se já existem, senão usa valores do registro)
+            _sit_rt = calcular_e_atualizar({
+                "dt_aviso": st.session_state.get(f"input_dt_aviso_{mat_sel}", val_campo("DataAvisoPrevio")),
+                "dias_aviso": st.session_state.get(f"input_dias_aviso_{mat_sel}", val_campo("DiasAvisoPrevio")),
+                "dt_lic": st.session_state.get(f"input_dt_lic_{mat_sel}", val_campo("DataLicenca")),
+                "dias_lic": st.session_state.get(f"input_dias_lic_{mat_sel}", val_campo("DiasLicenca")),
+                "dt_fer": st.session_state.get(f"input_dt_fer_{mat_sel}", val_campo("DataFeriasInicio")),
+                "dias_fer": st.session_state.get(f"input_dias_fer_{mat_sel}", val_campo("DiasFerias")),
+                "dt_af": st.session_state.get(f"input_dt_af_{mat_sel}", val_campo("DataAfastamento")),
+                "dias_af": st.session_state.get(f"input_dias_af_{mat_sel}", val_campo("DiasAfastamento")),
+                "tipo_af": st.session_state.get(f"sel_tipo_af_{mat_sel}", val_campo("TipoAfastamento") or "Nenhum"),
+                "dt_pedido": st.session_state.get(f"input_dt_ped_{mat_sel}", val_campo("DataPedidoConta")),
+                "dt_rescisao": st.session_state.get(f"input_dt_res_{mat_sel}", val_campo("DataRescisao")),
+                "dt_abandono": st.session_state.get(f"input_dt_aband_{mat_sel}", val_campo("DataAbandono")),
+                "dt_desistencia": st.session_state.get(f"input_dt_desist_{mat_sel}", val_campo("DataDesistencia")),
+                "dt_termino_cont": st.session_state.get(f"input_dt_termcont_{mat_sel}", val_campo("DataTerminoContrato")),
+                "situacao": situacao_val
+            })
+            _situacao_auto = _sit_rt["situacao"]
+
+            # Se a situação sugerida difere do session_state atual do selectbox,
+            # atualiza ANTES de renderizar o widget (permitido pelo Streamlit)
+            _sit_key = f"sel_sit_{mat_sel}"
+            if _sit_key in st.session_state:
+                _sit_atual_ss = st.session_state[_sit_key]
+                if _situacao_auto != _sit_atual_ss and _situacao_auto in SITUACOES:
+                    st.session_state[_sit_key] = _situacao_auto
+            else:
+                # Primeira renderização: usa a situação sugerida como index
+                situacao_val = _situacao_auto if _situacao_auto in SITUACOES else situacao_val
+
             idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
             situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sel_sit_{mat_sel}")
 
@@ -3389,10 +3422,7 @@ with aba1:
         dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"input_dt_termcont_{mat_sel}")
 
     # ── Situação automática em tempo real ──
-    # Recalcula a situação com base nos valores atuais dos inputs
-    hoje_rt = datetime.now().date()
-
-    # Monta dicionário com valores atuais (session_state ou variáveis locais)
+    # Recalcula a situação com base nos valores atuais dos inputs (para badge informativo)
     rt_form = {
         "dt_aviso": _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
         "dias_aviso": _ss_val(f"input_dias_aviso_{mat_sel}", dias_aviso),
@@ -3408,28 +3438,14 @@ with aba1:
         "dt_abandono": _ss_val(f"input_dt_aband_{mat_sel}", dt_aband),
         "dt_desistencia": _ss_val(f"input_dt_desist_{mat_sel}", dt_desist),
         "dt_termino_cont": _ss_val(f"input_dt_termcont_{mat_sel}", dt_termino_cont),
-        "situacao": situacao_val
+        "situacao": situacao
     }
     rt_result = calcular_e_atualizar(dict(rt_form))
     situacao_sugerida = rt_result["situacao"]
 
-    # Atualização automática do selectbox Situação quando eventos vencem
-    sit_key = f"sel_sit_{mat_sel}"
-    sit_atual = st.session_state.get(sit_key, situacao)
-    _auto_sit_key = f"_auto_sit_forced_{mat_sel}"
-
-    if situacao_sugerida != sit_atual and situacao_sugerida in SITUACOES:
-        # A situação sugerida pelos eventos difere do selectbox → forçar atualização
-        st.session_state[sit_key] = situacao_sugerida
-        st.session_state[_auto_sit_key] = True  # flag: foi atualização automática
-        st.rerun()
-    elif sit_atual == situacao_sugerida and st.session_state.get(_auto_sit_key, False):
-        # Após rerun automático, limpa a flag para permitir edição manual futura
-        st.session_state[_auto_sit_key] = False
-
-    # Badge informativo (apenas informativo se por algum motivo a auto-atualização não ocorreu)
-    if situacao_sugerida != sit_atual and situacao_sugerida in SITUACOES:
-        st.info(f"🔄 Situação sugerida pelos eventos: **{situacao_sugerida}** (atualmente selecionada: **{sit_atual}**)")
+    # Badge informativo se a situação sugerida pelos eventos difere da selecionada
+    if situacao_sugerida != situacao and situacao_sugerida in SITUACOES:
+        st.info(f"🔄 Situação sugerida pelos eventos: **{situacao_sugerida}** (atualmente selecionada: **{situacao}**)")
 
     btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key=f"btn_salvar_cad_{mat_sel}")
     if btn_salvar:
