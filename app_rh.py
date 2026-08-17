@@ -2727,6 +2727,18 @@ def lista_epis_por_cliente(cliente=None):
         return EPIS_POR_CLIENTE_FALLBACK.get(cliente, [])
     return dict(EPIS_POR_CLIENTE_FALLBACK)
 
+def _calc_termino(dt_str, dias_str):
+    """Calcula data término/retorno a partir de data início + dias. Retorna string dd/mm/aaaa ou vazio."""
+    if not dt_str or not dt_str.strip() or not dias_str or not str(dias_str).strip():
+        return ""
+    if not str(dias_str).strip().isdigit():
+        return ""
+    try:
+        dt = datetime.strptime(dt_str.strip(), "%d/%m/%Y")
+        return (dt + timedelta(days=int(dias_str) - 1)).strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        return ""
+
 def calcular_e_atualizar(form):
     hoje = datetime.now().date()
 
@@ -3205,7 +3217,8 @@ with aba1:
             "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
             "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
             "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
-            "dt_abandono": val_campo("DataAbandono"), "dt_termino_cont": val_campo("DataTerminoContrato"),
+            "dt_abandono": val_campo("DataAbandono"), "dt_desistencia": val_campo("DataDesistencia"),
+            "dt_termino_cont": val_campo("DataTerminoContrato"),
             "situacao": val_campo("Situacao"), "caminho_foto": val_campo("CaminhoFoto")
         }
         temp = calcular_e_atualizar(temp)
@@ -3235,10 +3248,10 @@ with aba1:
             "input_nome_", "input_cpf_", "input_rg_", "input_pis_",
             "input_nasc_", "input_adm_", "input_tel_", "input_end_",
             "sel_loja_", "sel_cargo_", "input_sal_", "sel_sit_",
-            "input_dt_aviso_", "input_dias_aviso_", "input_term_aviso_",
-            "input_dt_lic_", "input_dias_lic_", "input_term_lic_",
-            "input_dt_fer_", "input_dias_fer_", "input_ret_fer_",
-            "input_dt_af_", "input_dias_af_", "input_ret_af_", "sel_tipo_af_",
+            "input_dt_aviso_", "input_dias_aviso_",
+            "input_dt_lic_", "input_dias_lic_",
+            "input_dt_fer_", "input_dias_fer_",
+            "input_dt_af_", "input_dias_af_", "sel_tipo_af_",
             "input_dt_ped_", "input_dt_res_", "input_dt_aband_", "input_dt_desist_",
             "input_dt_termcont_", "btn_salvar_cad_"
         ]
@@ -3312,29 +3325,59 @@ with aba1:
 
     st.markdown("---")
     st.subheader("Eventos Trabalhistas")
+
+    # ── Cálculo em tempo real: usar valores atuais dos widgets (session_state) ──
+    # No Streamlit, após digitar e pressionar Enter/sair do campo, a página
+    # reroda e os widgets atualizam o session_state. Usamos isso para
+    # recalcular Término/Retorno imediatamente.
+    def _ss_val(key, fallback=""):
+        """Lê o valor atual do widget via session_state, ou fallback."""
+        return st.session_state.get(key, fallback)
+
     av1,av2,av3 = st.columns(3)
     with av1:
         st.markdown("**Aviso Prévio**")
         dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"), key=f"input_dt_aviso_{mat_sel}")
         dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"), key=f"input_dias_aviso_{mat_sel}")
-        term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key=f"input_term_aviso_{mat_sel}")
+        # Recalcula em tempo real usando o que o usuário acabou de digitar
+        _term_aviso_rt = _calc_termino(
+            _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
+            _ss_val(f"input_dias_aviso_{mat_sel}", dias_aviso)
+        )
+        term_aviso = _term_aviso_rt
+        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Término Aviso:</b> {_term_aviso_rt or "—"}</div>', unsafe_allow_html=True)
     with av2:
         st.markdown("**Licença**")
         dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"), key=f"input_dt_lic_{mat_sel}")
         dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"), key=f"input_dias_lic_{mat_sel}")
-        term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key=f"input_term_lic_{mat_sel}")
+        _term_lic_rt = _calc_termino(
+            _ss_val(f"input_dt_lic_{mat_sel}", dt_lic),
+            _ss_val(f"input_dias_lic_{mat_sel}", dias_lic)
+        )
+        term_lic = _term_lic_rt
+        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Término Licença:</b> {_term_lic_rt or "—"}</div>', unsafe_allow_html=True)
     with av3:
         st.markdown("**Férias**")
         dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"), key=f"input_dt_fer_{mat_sel}")
         dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"), key=f"input_dias_fer_{mat_sel}")
-        ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key=f"input_ret_fer_{mat_sel}")
+        _ret_fer_rt = _calc_termino(
+            _ss_val(f"input_dt_fer_{mat_sel}", dt_fer),
+            _ss_val(f"input_dias_fer_{mat_sel}", dias_fer)
+        )
+        ret_fer = _ret_fer_rt
+        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Retorno Férias:</b> {_ret_fer_rt or "—"}</div>', unsafe_allow_html=True)
 
     af1,af2 = st.columns(2)
     with af1:
         st.markdown("**Afastamento**")
         dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"), key=f"input_dt_af_{mat_sel}")
         dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"), key=f"input_dias_af_{mat_sel}")
-        ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key=f"input_ret_af_{mat_sel}")
+        _ret_af_rt = _calc_termino(
+            _ss_val(f"input_dt_af_{mat_sel}", dt_af),
+            _ss_val(f"input_dias_af_{mat_sel}", dias_af)
+        )
+        ret_af = _ret_af_rt
+        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Retorno Afastamento:</b> {_ret_af_rt or "—"}</div>', unsafe_allow_html=True)
         tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=["Nenhum", "Doença", "Acidente", "Maternidade"].index(val_campo("TipoAfastamento")) if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0, key=f"sel_tipo_af_{mat_sel}")
     with af2:
         st.markdown("**Desligamento**")
@@ -3343,6 +3386,38 @@ with aba1:
         dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"), key=f"input_dt_aband_{mat_sel}")
         dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"input_dt_desist_{mat_sel}")
         dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"input_dt_termcont_{mat_sel}")
+
+    # ── Situação automática em tempo real ──
+    # Recalcula a situação com base nos valores atuais dos inputs
+    hoje_rt = datetime.now().date()
+
+    # Monta dicionário com valores atuais (session_state ou variáveis locais)
+    rt_form = {
+        "dt_aviso": _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
+        "dias_aviso": _ss_val(f"input_dias_aviso_{mat_sel}", dias_aviso),
+        "dt_lic": _ss_val(f"input_dt_lic_{mat_sel}", dt_lic),
+        "dias_lic": _ss_val(f"input_dias_lic_{mat_sel}", dias_lic),
+        "dt_fer": _ss_val(f"input_dt_fer_{mat_sel}", dt_fer),
+        "dias_fer": _ss_val(f"input_dias_fer_{mat_sel}", dias_fer),
+        "dt_af": _ss_val(f"input_dt_af_{mat_sel}", dt_af),
+        "dias_af": _ss_val(f"input_dias_af_{mat_sel}", dias_af),
+        "tipo_af": _ss_val(f"sel_tipo_af_{mat_sel}", tipo_af),
+        "dt_pedido": _ss_val(f"input_dt_ped_{mat_sel}", dt_ped),
+        "dt_rescisao": _ss_val(f"input_dt_res_{mat_sel}", dt_res),
+        "dt_abandono": _ss_val(f"input_dt_aband_{mat_sel}", dt_aband),
+        "dt_desistencia": _ss_val(f"input_dt_desist_{mat_sel}", dt_desist),
+        "dt_termino_cont": _ss_val(f"input_dt_termcont_{mat_sel}", dt_termino_cont),
+        "situacao": situacao_val
+    }
+    rt_result = calcular_e_atualizar(dict(rt_form))
+    situacao_sugerida = rt_result["situacao"]
+
+    # Mostra badge informativo se a situação sugerida difere da selecionada
+    if situacao_sugerida != situacao and situacao_sugerida != situacao_val:
+        st.info(f"🔄 Situação sugerida pelos eventos: **{situacao_sugerida}** (atualmente selecionada: **{situacao}**)")
+    elif situacao_sugerida != situacao_val and situacao_sugerida == situacao:
+        # Usuário já selecionou a situação correta, apenas confirma visualmente
+        pass
 
     btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key=f"btn_salvar_cad_{mat_sel}")
     if btn_salvar:
@@ -3390,16 +3465,31 @@ with aba1:
                 img = Image.open(nova_foto)
                 img.save(caminho_final_foto)
 
+            # Ao salvar, usa _ss_val() para ler valores atuais do session_state
+            # (evita valores stale de widgets que não foram "commitados" pelo Enter)
+            _sv = lambda k, fb: st.session_state.get(k, fb) if k in st.session_state else fb
             dados_form = calcular_e_atualizar({
                 "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
                 "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
                 "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
-                "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
-                "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
-                "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
-                "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af, "tipo_af": tipo_af,
-                "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
-                "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
+                "dt_aviso": _sv(f"input_dt_aviso_{mat_sel}", dt_aviso),
+                "dias_aviso": _sv(f"input_dias_aviso_{mat_sel}", dias_aviso),
+                "termino_aviso": term_aviso,
+                "dt_lic": _sv(f"input_dt_lic_{mat_sel}", dt_lic),
+                "dias_lic": _sv(f"input_dias_lic_{mat_sel}", dias_lic),
+                "termino_lic": term_lic,
+                "dt_fer": _sv(f"input_dt_fer_{mat_sel}", dt_fer),
+                "dias_fer": _sv(f"input_dias_fer_{mat_sel}", dias_fer),
+                "retorno_fer": ret_fer,
+                "dt_af": _sv(f"input_dt_af_{mat_sel}", dt_af),
+                "dias_af": _sv(f"input_dias_af_{mat_sel}", dias_af),
+                "retorno_af": ret_af,
+                "tipo_af": _sv(f"sel_tipo_af_{mat_sel}", tipo_af),
+                "dt_pedido": _sv(f"input_dt_ped_{mat_sel}", dt_ped),
+                "dt_rescisao": _sv(f"input_dt_res_{mat_sel}", dt_res),
+                "dt_abandono": _sv(f"input_dt_aband_{mat_sel}", dt_aband),
+                "dt_desistencia": _sv(f"input_dt_desist_{mat_sel}", dt_desist),
+                "dt_termino_cont": _sv(f"input_dt_termcont_{mat_sel}", dt_termino_cont)
             })
             registro_final = {
                 "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
