@@ -2325,7 +2325,7 @@ def salvar_dados(dados):
     
     sucesso = False
     # ========== ATOMIC WRITE: salva em arquivo temporário primeiro ==========
-    arquivo_temp = ARQUIVO + ".tmp"
+    arquivo_temp = ARQUIVO + ".saving.xlsx"
     try:
         with pd.ExcelWriter(arquivo_temp, engine="openpyxl", mode="w") as f:
             for aba, df in dados.items():
@@ -2401,7 +2401,7 @@ def salvar_diarias(df_diarias):
         pass
     
     # ========== ATOMIC WRITE ==========
-    arquivo_temp = ARQUIVO_DIARIAS + ".tmp"
+    arquivo_temp = ARQUIVO_DIARIAS + ".saving.xlsx"
     try:
         with pd.ExcelWriter(arquivo_temp, engine="openpyxl", mode="w") as f:
             df_diarias.to_excel(f, sheet_name="Diarias", index=False)
