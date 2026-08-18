@@ -3407,99 +3407,8 @@ with aba1:
 
             salario = st.text_input("Salário", value=val_campo("Salario"), key=f"input_sal_{mat_sel}")
 
-            # ── Auto-atualização da Situação ANTES do selectbox ──
-            # Recalcula a situação com base nos valores atuais dos inputs de eventos
-            # (lê do session_state se já existem, senão usa valores do registro)
-            _sit_rt = calcular_e_atualizar({
-                "dt_aviso": st.session_state.get(f"input_dt_aviso_{mat_sel}", val_campo("DataAvisoPrevio")),
-                "dias_aviso": st.session_state.get(f"input_dias_aviso_{mat_sel}", val_campo("DiasAvisoPrevio")),
-                "dt_lic": st.session_state.get(f"input_dt_lic_{mat_sel}", val_campo("DataLicenca")),
-                "dias_lic": st.session_state.get(f"input_dias_lic_{mat_sel}", val_campo("DiasLicenca")),
-                "dt_fer": st.session_state.get(f"input_dt_fer_{mat_sel}", val_campo("DataFeriasInicio")),
-                "dias_fer": st.session_state.get(f"input_dias_fer_{mat_sel}", val_campo("DiasFerias")),
-                "dt_af": st.session_state.get(f"input_dt_af_{mat_sel}", val_campo("DataAfastamento")),
-                "dias_af": st.session_state.get(f"input_dias_af_{mat_sel}", val_campo("DiasAfastamento")),
-                "tipo_af": st.session_state.get(f"sel_tipo_af_{mat_sel}", val_campo("TipoAfastamento") or "Nenhum"),
-                "dt_pedido": st.session_state.get(f"input_dt_ped_{mat_sel}", val_campo("DataPedidoConta")),
-                "dt_rescisao": st.session_state.get(f"input_dt_res_{mat_sel}", val_campo("DataRescisao")),
-                "dt_abandono": st.session_state.get(f"input_dt_aband_{mat_sel}", val_campo("DataAbandono")),
-                "dt_desistencia": st.session_state.get(f"input_dt_desist_{mat_sel}", val_campo("DataDesistencia")),
-                "dt_termino_cont": st.session_state.get(f"input_dt_termcont_{mat_sel}", val_campo("DataTerminoContrato")),
-                "situacao": situacao_val
-            })
-            _situacao_auto = _sit_rt["situacao"]
-
-            # ── Limpeza de campos de eventos temporários vencidos ──
-            # Se calcular_e_atualizar detectou que férias/licença/afastamento venceu,
-            # atualiza o Excel imediatamente (limpa campos + muda Situação) e
-            # depois deleta session_state keys + rerun para refletir na tela.
-            # Isso evita loop infinito, pois na rerun val_campo lerá do Excel já limpo.
-            _need_rerun = False
-            _campos_limpar = []  # (col_excel, ss_key) pares
-            if _sit_rt.get("_fer_venceu"):
-                _campos_limpar += [
-                    ("DataFeriasInicio", f"input_dt_fer_{mat_sel}"),
-                    ("DiasFerias", f"input_dias_fer_{mat_sel}"),
-                    ("DataRetornoFerias", None),  # campo calculado, sem widget direto
-                ]
-            if _sit_rt.get("_lic_venceu"):
-                _campos_limpar += [
-                    ("DataLicenca", f"input_dt_lic_{mat_sel}"),
-                    ("DiasLicenca", f"input_dias_lic_{mat_sel}"),
-                    ("DataTerminoLicenca", None),  # campo calculado
-                ]
-            if _sit_rt.get("_af_venceu"):
-                _campos_limpar += [
-                    ("DataAfastamento", f"input_dt_af_{mat_sel}"),
-                    ("DiasAfastamento", f"input_dias_af_{mat_sel}"),
-                    ("DataRetornoAfastamento", None),  # campo calculado
-                    ("TipoAfastamento", f"sel_tipo_af_{mat_sel}"),
-                ]
-            if _campos_limpar:
-                # Salva no Excel os campos limpos + situação atualizada
-                try:
-                    _dados_limpeza = carregar_dados()
-                    _base_limpeza = _dados_limpeza["Base_Dados"]
-                    _idx_limpeza = _base_limpeza.index[_base_limpeza["Matricula"] == mat_sel].tolist()
-                    if _idx_limpeza:
-                        _i = _idx_limpeza[0]
-                        for _col, _ssk in _campos_limpar:
-                            if _col in _base_limpeza.columns:
-                                # TipoAfastamento volta para "Nenhum" (não vazio)
-                                _val_limpeza = "Nenhum" if _col == "TipoAfastamento" else ""
-                                _base_limpeza.at[_i, _col] = _val_limpeza
-                        if "Situacao" in _base_limpeza.columns:
-                            _base_limpeza.at[_i, "Situacao"] = _situacao_auto
-                        salvar_dados(_dados_limpeza)
-                except Exception:
-                    pass  # Se falhar ao salvar, segue sem limpar
-                # Deleta session_state keys dos widgets
-                for _col, _ssk in _campos_limpar:
-                    if _ssk and _ssk in st.session_state:
-                        del st.session_state[_ssk]
-                        _need_rerun = True
-                # Garante que a situação no session_state também esteja atualizada
-                _sit_key = f"sel_sit_{mat_sel}"
-                if _sit_key in st.session_state and st.session_state[_sit_key] != _situacao_auto and _situacao_auto in SITUACOES:
-                    st.session_state[_sit_key] = _situacao_auto
-                    _need_rerun = True
-                if _need_rerun:
-                    st.rerun()
-
-            # Se a situação sugerida difere do session_state atual do selectbox,
-            # atualiza ANTES de renderizar o widget (permitido pelo Streamlit)
-            _sit_key = f"sel_sit_{mat_sel}"
-            if _sit_key in st.session_state:
-                _sit_atual_ss = st.session_state[_sit_key]
-                if _situacao_auto != _sit_atual_ss and _situacao_auto in SITUACOES:
-                    st.session_state[_sit_key] = _situacao_auto
-                    st.rerun()  # Força rerun para o selectbox renderizar com o novo valor
-            else:
-                # Primeira renderização: usa a situação sugerida como index
-                situacao_val = _situacao_auto if _situacao_auto in SITUACOES else situacao_val
-
-            idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
-            situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sel_sit_{mat_sel}")
+            # ── Situação: selectbox movido para DEPOIS dos Eventos Trabalhistas ──
+            # (ver seção "Eventos Trabalhistas" abaixo)
 
     if prazos_exp:
         st.markdown("---")
@@ -3575,9 +3484,10 @@ with aba1:
         dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"input_dt_desist_{mat_sel}")
         dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"input_dt_termcont_{mat_sel}")
 
-    # ── Situação automática em tempo real ──
-    # Recalcula a situação com base nos valores atuais dos inputs (para badge informativo)
-    rt_form = {
+    # ── Situação automática em tempo real (DEPOIS dos widgets de eventos) ──
+    # Agora que todos os widgets de eventos já foram renderizados e seus valores
+    # estão disponíveis no session_state, podemos calcular a situação correta.
+    _sit_rt = calcular_e_atualizar({
         "dt_aviso": _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
         "dias_aviso": _ss_val(f"input_dias_aviso_{mat_sel}", dias_aviso),
         "dt_lic": _ss_val(f"input_dt_lic_{mat_sel}", dt_lic),
@@ -3592,14 +3502,92 @@ with aba1:
         "dt_abandono": _ss_val(f"input_dt_aband_{mat_sel}", dt_aband),
         "dt_desistencia": _ss_val(f"input_dt_desist_{mat_sel}", dt_desist),
         "dt_termino_cont": _ss_val(f"input_dt_termcont_{mat_sel}", dt_termino_cont),
-        "situacao": situacao
-    }
-    rt_result = calcular_e_atualizar(dict(rt_form))
-    situacao_sugerida = rt_result["situacao"]
+        "situacao": situacao_val
+    })
+    _situacao_auto = _sit_rt["situacao"]
 
-    # Badge informativo se a situação sugerida pelos eventos difere da selecionada
-    if situacao_sugerida != situacao and situacao_sugerida in SITUACOES:
-        st.info(f"🔄 Situação sugerida pelos eventos: **{situacao_sugerida}** (atualmente selecionada: **{situacao}**)")
+    # ── Limpeza de campos de eventos temporários vencidos ──
+    # Se calcular_e_atualizar detectou que férias/licença/afastamento venceu,
+    # atualiza o Excel imediatamente (limpa campos + muda Situação) e
+    # depois deleta session_state keys + rerun para refletir na tela.
+    _need_rerun_limpeza = False
+    _campos_limpar = []  # (col_excel, ss_key) pares
+    if _sit_rt.get("_fer_venceu"):
+        _campos_limpar += [
+            ("DataFeriasInicio", f"input_dt_fer_{mat_sel}"),
+            ("DiasFerias", f"input_dias_fer_{mat_sel}"),
+            ("DataRetornoFerias", None),  # campo calculado, sem widget direto
+        ]
+    if _sit_rt.get("_lic_venceu"):
+        _campos_limpar += [
+            ("DataLicenca", f"input_dt_lic_{mat_sel}"),
+            ("DiasLicenca", f"input_dias_lic_{mat_sel}"),
+            ("DataTerminoLicenca", None),  # campo calculado
+        ]
+    if _sit_rt.get("_af_venceu"):
+        _campos_limpar += [
+            ("DataAfastamento", f"input_dt_af_{mat_sel}"),
+            ("DiasAfastamento", f"input_dias_af_{mat_sel}"),
+            ("DataRetornoAfastamento", None),  # campo calculado
+            ("TipoAfastamento", f"sel_tipo_af_{mat_sel}"),
+        ]
+    if _campos_limpar:
+        # Salva no Excel os campos limpos + situação atualizada
+        try:
+            _dados_limpeza = carregar_dados()
+            _base_limpeza = _dados_limpeza["Base_Dados"]
+            _idx_limpeza = _base_limpeza.index[_base_limpeza["Matricula"] == mat_sel].tolist()
+            if _idx_limpeza:
+                _i = _idx_limpeza[0]
+                for _col, _ssk in _campos_limpar:
+                    if _col in _base_limpeza.columns:
+                        _val_limpeza = "Nenhum" if _col == "TipoAfastamento" else ""
+                        _base_limpeza.at[_i, _col] = _val_limpeza
+                if "Situacao" in _base_limpeza.columns:
+                    _base_limpeza.at[_i, "Situacao"] = _situacao_auto
+                salvar_dados(_dados_limpeza)
+        except Exception:
+            pass
+        # Deleta session_state keys dos widgets para que rerenderizem com valor vazio
+        for _col, _ssk in _campos_limpar:
+            if _ssk and _ssk in st.session_state:
+                del st.session_state[_ssk]
+                _need_rerun_limpeza = True
+        # Atualiza a situação no session_state do selectbox
+        _sit_key = f"sel_sit_{mat_sel}"
+        if _sit_key in st.session_state and st.session_state[_sit_key] != _situacao_auto and _situacao_auto in SITUACOES:
+            st.session_state[_sit_key] = _situacao_auto
+            _need_rerun_limpeza = True
+        if _need_rerun_limpeza:
+            st.rerun()
+
+    # ── Atualizar selectbox Situação automaticamente ──
+    # Se a situação automática difere do que está no session_state do selectbox,
+    # atualiza ANTES de renderizar (permitido pelo Streamlit: antes do widget ser criado nesta run)
+    _sit_key = f"sel_sit_{mat_sel}"
+    if _sit_key in st.session_state:
+        if st.session_state[_sit_key] != _situacao_auto and _situacao_auto in SITUACOES:
+            # Proteção contra loop: se já forçamos a atualização nesta run, não faz rerun de novo
+            _loop_flag = f"_auto_sit_forced_{mat_sel}"
+            if not st.session_state.get(_loop_flag):
+                st.session_state[_sit_key] = _situacao_auto
+                st.session_state[_loop_flag] = True
+                st.rerun()
+            else:
+                # Já forçamos nesta run, limpa a flag para a próxima
+                st.session_state[_loop_flag] = False
+    else:
+        # Primeira renderização: define o index pelo valor automático
+        situacao_val = _situacao_auto if _situacao_auto in SITUACOES else situacao_val
+
+    st.markdown("---")
+    st.subheader("📊 Situação do Funcionário")
+    idx_sit = SITUACOES.index(_situacao_auto) if _situacao_auto in SITUACOES else (SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0)
+    situacao = st.selectbox("Situação", SITUACOES, index=idx_sit, key=f"sel_sit_{mat_sel}")
+
+    # Badge informativo se o usuário alterar manualmente a situação diferente do automático
+    if situacao != _situacao_auto:
+        st.warning(f"⚠️ Situação manual: **{situacao}** | Situação sugerida pelos eventos: **{_situacao_auto}**")
 
     btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key=f"btn_salvar_cad_{mat_sel}")
     if btn_salvar:
