@@ -3340,6 +3340,7 @@ with aba1:
                 _sit_atual_ss = st.session_state[_sit_key]
                 if _situacao_auto != _sit_atual_ss and _situacao_auto in SITUACOES:
                     st.session_state[_sit_key] = _situacao_auto
+                    st.rerun()  # Força rerun para o selectbox renderizar com o novo valor
             else:
                 # Primeira renderização: usa a situação sugerida como index
                 situacao_val = _situacao_auto if _situacao_auto in SITUACOES else situacao_val
