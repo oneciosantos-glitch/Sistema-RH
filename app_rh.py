@@ -2741,15 +2741,31 @@ def _calc_termino(dt_str, dias_str):
         return ""
 
 def calcular_e_atualizar(form):
+    """Calcula campos derivados (término/retorno) e define situação automática.
+    
+    IMPORTANTE: Quando um evento temporário VENCE (data de término/retorno < hoje),
+    os campos de data/dias desse evento são LIMPADOS no form para não ficar
+    informação obsoleta preenchida na tela. Eventos definitivos (Pedido de Conta,
+    Rescisão, Abandono, etc.) NÃO são limpos pois são registros permanentes.
+    
+    Hierarquia de prioridade (maior → menor):
+    1. Eventos definitivos (Término Contrato > Pedido Conta > Rescisão > Abandono > Desistente)
+    2. Aviso Prévio (em andamento → 'Aviso Prévio'; vencido → 'Demitido S/JC')
+    3. Afastamentos temporários em andamento (Doença/Acidente/Maternidade)
+    4. Licença em andamento
+    5. Férias em andamento
+    6. Se nenhum evento ativo → 'Ativo'
+    """
     hoje = datetime.now().date()
 
-    # Aviso Prévio
+    # ── Aviso Prévio ──
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_aviso"], "%d/%m/%Y")
             form["termino_aviso"] = (dt + timedelta(days=int(form["dias_aviso"]) - 1)).strftime("%d/%m/%Y")
             termino_aviso_date = datetime.strptime(form["termino_aviso"], "%d/%m/%Y").date()
-            # Se o aviso prévio venceu e não tem outro evento, muda para Demitido S/JC
+            # Se o aviso prévio venceu e não tem evento definitivo, muda para Demitido S/JC
+            # NÃO limpa os campos do aviso — é registro definitivo para histórico
             if termino_aviso_date < hoje and not any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
@@ -2765,86 +2781,89 @@ def calcular_e_atualizar(form):
         except: form["termino_aviso"] = ""
     else: form["termino_aviso"] = ""
 
-    # Licença
+    # ── Licença (evento temporário) ──
     if form.get("dt_lic") and form.get("dias_lic") and str(form["dias_lic"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_lic"], "%d/%m/%Y")
             form["termino_lic"] = (dt + timedelta(days=int(form["dias_lic"]) - 1)).strftime("%d/%m/%Y")
             termino_lic_date = datetime.strptime(form["termino_lic"], "%d/%m/%Y").date()
-            # Se a licença venceu e não tem outro evento, volta para Ativo
-            if termino_lic_date < hoje and not any([
+            # Se a licença venceu e não tem outro evento ativo, volta para Ativo
+            # e LIMPA os campos da licença (evento temporário concluído)
+            _outros_eventos_ativos = any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
                 form.get("dt_termino_cont","").strip(),
                 form.get("dt_aviso","").strip(), form.get("dt_fer","").strip(),
                 form.get("dt_af","").strip()
-            ]):
+            ])
+            if termino_lic_date < hoje and not _outros_eventos_ativos:
                 form["situacao"] = "Ativo"
-            elif termino_lic_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_fer","").strip(),
-                form.get("dt_af","").strip()
-            ]):
+                # Limpa campos da licença vencida
+                form["dt_lic"] = ""
+                form["dias_lic"] = ""
+                form["termino_lic"] = ""
+                form["_lic_venceu"] = True  # flag para limpar session_state
+            elif termino_lic_date >= hoje and not _outros_eventos_ativos:
                 form["situacao"] = "Licença"
         except: form["termino_lic"] = ""
     else: form["termino_lic"] = ""
 
-    # Férias
+    # ── Férias (evento temporário) ──
     if form.get("dt_fer") and form.get("dias_fer") and str(form["dias_fer"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]) - 1)).strftime("%d/%m/%Y")
             retorno_date = datetime.strptime(form["retorno_fer"], "%d/%m/%Y").date()
-            if retorno_date < hoje and not any([
+            _outros_eventos_ativos = any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
                 form.get("dt_termino_cont","").strip(),
                 form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
                 form.get("dt_af","").strip()
-            ]):
+            ])
+            if retorno_date < hoje and not _outros_eventos_ativos:
                 form["situacao"] = "Ativo"
-            elif retorno_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
-                form.get("dt_af","").strip()
-            ]):
+                # Limpa campos das férias vencidas
+                form["dt_fer"] = ""
+                form["dias_fer"] = ""
+                form["retorno_fer"] = ""
+                form["_fer_venceu"] = True  # flag para limpar session_state
+            elif retorno_date >= hoje and not _outros_eventos_ativos:
                 form["situacao"] = "Férias"
         except:
             form["retorno_fer"] = ""
     else:
         form["retorno_fer"] = ""
 
-    # Afastamento
+    # ── Afastamento (evento temporário: Doença, Acidente, Maternidade) ──
     if form.get("dt_af") and form.get("dias_af") and str(form["dias_af"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_af"], "%d/%m/%Y")
             form["retorno_af"] = (dt + timedelta(days=int(form["dias_af"]) - 1)).strftime("%d/%m/%Y")
             retorno_af_date = datetime.strptime(form["retorno_af"], "%d/%m/%Y").date()
             tipo_af = form.get("tipo_af", "Nenhum")
-            if tipo_af != "Nenhum" and retorno_af_date < hoje and not any([
+            _outros_eventos_ativos = any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
                 form.get("dt_termino_cont","").strip(),
                 form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
                 form.get("dt_fer","").strip()
-            ]):
+            ])
+            if tipo_af != "Nenhum" and retorno_af_date < hoje and not _outros_eventos_ativos:
                 form["situacao"] = "Ativo"
-            elif tipo_af != "Nenhum" and retorno_af_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
-                form.get("dt_fer","").strip()
-            ]):
+                # Limpa campos do afastamento vencido
+                form["dt_af"] = ""
+                form["dias_af"] = ""
+                form["retorno_af"] = ""
+                form["tipo_af"] = "Nenhum"
+                form["_af_venceu"] = True  # flag para limpar session_state
+            elif tipo_af != "Nenhum" and retorno_af_date >= hoje and not _outros_eventos_ativos:
                 form["situacao"] = tipo_af
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
-    # Eventos definitivos (mantêm prioridade)
+    # ── Eventos definitivos (prioridade máxima — SEMPRE alteram a situação) ──
+    # Estes NÃO são limpos pois são registros permanentes de desligamento
     if form.get("dt_termino_cont") and form.get("dt_termino_cont").strip():
         form["situacao"] = "Término de Contrato"
     elif form.get("dt_pedido") and form.get("dt_pedido").strip():
@@ -2938,7 +2957,8 @@ def gerar_ficha_individual(fd, fh, mr):
     return nome_arq
 
 def verificar_retorno_ferias_automatico():
-    """Verifica funcionários em férias que já deveriam ter retornado e atualiza para Ativo."""
+    """Verifica funcionários em férias que já deveriam ter retornado e atualiza para Ativo.
+    Também LIMPA os campos de férias (DataFeriasInicio, DiasFerias, DataRetornoFerias) no cadastro."""
     try:
         dados = carregar_dados()
         hoje = datetime.now().date()
@@ -2953,8 +2973,11 @@ def verificar_retorno_ferias_automatico():
             try:
                 retorno_date = datetime.strptime(retorno_str, "%d/%m/%Y").date()
                 if retorno_date < hoje:
-                    # Já passou a data de retorno, volta para Ativo
+                    # Já passou a data de retorno, volta para Ativo e LIMPA campos
                     base.at[idx, "Situacao"] = "Ativo"
+                    base.at[idx, "DataFeriasInicio"] = ""
+                    base.at[idx, "DiasFerias"] = ""
+                    base.at[idx, "DataRetornoFerias"] = ""
                     alterados.append({
                         "Matricula": row.get("Matricula", ""),
                         "Nome": row.get("Nome", ""),
@@ -2989,7 +3012,8 @@ def verificar_retorno_ferias_automatico():
         pass
 
 def verificar_retorno_afastamentos_automatico():
-    """Verifica funcionários em afastamento (Doença, Acidente, Maternidade) que já deveriam ter retornado e atualiza para Ativo."""
+    """Verifica funcionários em afastamento (Doença, Acidente, Maternidade) que já deveriam ter retornado.
+    Atualiza para Ativo e LIMPA os campos de afastamento (DataAfastamento, DiasAfastamento, DataRetornoAfastamento, TipoAfastamento)."""
     try:
         dados = carregar_dados()
         hoje = datetime.now().date()
@@ -3005,8 +3029,12 @@ def verificar_retorno_afastamentos_automatico():
             try:
                 retorno_date = datetime.strptime(retorno_str, "%d/%m/%Y").date()
                 if retorno_date < hoje:
-                    # Já passou a data de retorno, volta para Ativo
+                    # Já passou a data de retorno, volta para Ativo e LIMPA campos
                     base.at[idx, "Situacao"] = "Ativo"
+                    base.at[idx, "DataAfastamento"] = ""
+                    base.at[idx, "DiasAfastamento"] = ""
+                    base.at[idx, "DataRetornoAfastamento"] = ""
+                    base.at[idx, "TipoAfastamento"] = "Nenhum"
                     alterados.append({
                         "Matricula": row.get("Matricula", ""),
                         "Nome": row.get("Nome", ""),
@@ -3041,14 +3069,82 @@ def verificar_retorno_afastamentos_automatico():
     except Exception:
         pass
 
+def verificar_retorno_licenca_automatico():
+    """Verifica funcionários em Licença que já deveriam ter retornado e atualiza para Ativo.
+    Também LIMPA os campos de licença (DataLicenca, DiasLicenca, DataTerminoLicenca) no cadastro."""
+    try:
+        dados = carregar_dados()
+        hoje = datetime.now().date()
+        base = dados["Base_Dados"]
+        alterados = []
+        for idx, row in base.iterrows():
+            if str(row.get("Situacao", "")).strip() != "Licença":
+                continue
+            termino_str = str(row.get("DataTerminoLicenca", "")).strip()
+            if not termino_str:
+                # Se não tem data de término, tenta calcular a partir de DataLicenca + DiasLicenca
+                dt_lic_str = str(row.get("DataLicenca", "")).strip()
+                dias_lic_str = str(row.get("DiasLicenca", "")).strip()
+                if dt_lic_str and dias_lic_str and dias_lic_str.isdigit():
+                    try:
+                        dt_lic = datetime.strptime(dt_lic_str, "%d/%m/%Y").date()
+                        termino_date = dt_lic + timedelta(days=int(dias_lic_str) - 1)
+                        termino_str = termino_date.strftime("%d/%m/%Y")
+                    except Exception:
+                        continue
+                else:
+                    continue
+            try:
+                termino_date = datetime.strptime(termino_str, "%d/%m/%Y").date()
+                if termino_date < hoje:
+                    # Já passou a data de término, volta para Ativo e LIMPA campos
+                    base.at[idx, "Situacao"] = "Ativo"
+                    base.at[idx, "DataLicenca"] = ""
+                    base.at[idx, "DiasLicenca"] = ""
+                    base.at[idx, "DataTerminoLicenca"] = ""
+                    alterados.append({
+                        "Matricula": row.get("Matricula", ""),
+                        "Nome": row.get("Nome", ""),
+                        "DataTermino": termino_str
+                    })
+            except Exception:
+                continue
+        if alterados:
+            if not salvar_dados(dados):
+                st.error("❌ Erro ao salvar retorno automático de licença. Verifique se o arquivo Excel não está aberto.")
+            # Adiciona ao histórico
+            for alt in alterados:
+                registro = {
+                    "DataEvento": datetime.now().strftime("%d/%m/%Y"),
+                    "TipoEvento": "Retorno Automático de Licença",
+                    "Detalhes": f"Funcionário retornou de licença em {alt['DataTermino']}. Situação alterada para Ativo automaticamente."
+                }
+                rf = base[base["Matricula"] == alt["Matricula"]]
+                if not rf.empty:
+                    registro.update(rf.iloc[0].to_dict())
+                ih = dados["Historico"].index[dados["Historico"]["Matricula"] == alt["Matricula"]].tolist()
+                if ih:
+                    idx_linha = ih[0]
+                    for coluna, valor in registro.items():
+                        dados["Historico"].at[idx_linha, coluna] = valor
+                else:
+                    dados["Historico"] = pd.concat([dados["Historico"], pd.DataFrame([registro])], ignore_index=True)
+            if not salvar_dados(dados):
+                st.error("❌ Erro ao salvar histórico de licença. Verifique se o arquivo Excel não está aberto.")
+    except Exception:
+        pass
+
 # ====================== INTERFACE PRINCIPAL ======================
 st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
 st.title("📋 SISTEMA RH COMPLETO")
 
-# Verifica retorno automático de férias e afastamentos no início da sessão (apenas 1x)
+# Verifica retorno automático de férias, licença e afastamentos no início da sessão (apenas 1x)
 if "ferias_verificado" not in st.session_state:
     verificar_retorno_ferias_automatico()
     st.session_state["ferias_verificado"] = True
+if "licenca_verificado" not in st.session_state:
+    verificar_retorno_licenca_automatico()
+    st.session_state["licenca_verificado"] = True
 if "afastamentos_verificado" not in st.session_state:
     verificar_retorno_afastamentos_automatico()
     st.session_state["afastamentos_verificado"] = True
@@ -3332,6 +3428,63 @@ with aba1:
                 "situacao": situacao_val
             })
             _situacao_auto = _sit_rt["situacao"]
+
+            # ── Limpeza de campos de eventos temporários vencidos ──
+            # Se calcular_e_atualizar detectou que férias/licença/afastamento venceu,
+            # atualiza o Excel imediatamente (limpa campos + muda Situação) e
+            # depois deleta session_state keys + rerun para refletir na tela.
+            # Isso evita loop infinito, pois na rerun val_campo lerá do Excel já limpo.
+            _need_rerun = False
+            _campos_limpar = []  # (col_excel, ss_key) pares
+            if _sit_rt.get("_fer_venceu"):
+                _campos_limpar += [
+                    ("DataFeriasInicio", f"input_dt_fer_{mat_sel}"),
+                    ("DiasFerias", f"input_dias_fer_{mat_sel}"),
+                    ("DataRetornoFerias", None),  # campo calculado, sem widget direto
+                ]
+            if _sit_rt.get("_lic_venceu"):
+                _campos_limpar += [
+                    ("DataLicenca", f"input_dt_lic_{mat_sel}"),
+                    ("DiasLicenca", f"input_dias_lic_{mat_sel}"),
+                    ("DataTerminoLicenca", None),  # campo calculado
+                ]
+            if _sit_rt.get("_af_venceu"):
+                _campos_limpar += [
+                    ("DataAfastamento", f"input_dt_af_{mat_sel}"),
+                    ("DiasAfastamento", f"input_dias_af_{mat_sel}"),
+                    ("DataRetornoAfastamento", None),  # campo calculado
+                    ("TipoAfastamento", f"sel_tipo_af_{mat_sel}"),
+                ]
+            if _campos_limpar:
+                # Salva no Excel os campos limpos + situação atualizada
+                try:
+                    _dados_limpeza = carregar_dados()
+                    _base_limpeza = _dados_limpeza["Base_Dados"]
+                    _idx_limpeza = _base_limpeza.index[_base_limpeza["Matricula"] == mat_sel].tolist()
+                    if _idx_limpeza:
+                        _i = _idx_limpeza[0]
+                        for _col, _ssk in _campos_limpar:
+                            if _col in _base_limpeza.columns:
+                                # TipoAfastamento volta para "Nenhum" (não vazio)
+                                _val_limpeza = "Nenhum" if _col == "TipoAfastamento" else ""
+                                _base_limpeza.at[_i, _col] = _val_limpeza
+                        if "Situacao" in _base_limpeza.columns:
+                            _base_limpeza.at[_i, "Situacao"] = _situacao_auto
+                        salvar_dados(_dados_limpeza)
+                except Exception:
+                    pass  # Se falhar ao salvar, segue sem limpar
+                # Deleta session_state keys dos widgets
+                for _col, _ssk in _campos_limpar:
+                    if _ssk and _ssk in st.session_state:
+                        del st.session_state[_ssk]
+                        _need_rerun = True
+                # Garante que a situação no session_state também esteja atualizada
+                _sit_key = f"sel_sit_{mat_sel}"
+                if _sit_key in st.session_state and st.session_state[_sit_key] != _situacao_auto and _situacao_auto in SITUACOES:
+                    st.session_state[_sit_key] = _situacao_auto
+                    _need_rerun = True
+                if _need_rerun:
+                    st.rerun()
 
             # Se a situação sugerida difere do session_state atual do selectbox,
             # atualiza ANTES de renderizar o widget (permitido pelo Streamlit)
