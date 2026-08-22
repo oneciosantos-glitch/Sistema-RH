@@ -3252,7 +3252,37 @@ with aba1:
     if sel_auto and " - " in sel_auto:
         mat_sel = sel_auto.split(" - ")[0].strip()
         st.success(f"✅ Colaborador selecionado: {sel_auto}")
-    
+
+    # ── Detectar mudança de funcionário e limpar keys antigas ──
+    # Quando o usuário troca de funcionário no autocomplete (ou desseleciona),
+    # as keys de widgets com o mat_sel ANTIGO ficam órfãs no session_state.
+    # Isso causa bugs: campos não atualizam, valor persiste, etc.
+    # Solução: detectar a mudança e deletar as keys antigas antes de recriar os widgets.
+    _mat_sel_anterior = st.session_state.get("_mat_sel_anterior", "")
+    if mat_sel != _mat_sel_anterior:
+        # Funcionário mudou — deletar todas as keys de widgets do formulário
+        # (tanto do funcionário anterior quanto de novo cadastro)
+        _prefixos_limpeza = [
+            "foto_", "chk_excluir_foto_", "chk_bloq_mat_", "input_matricula_",
+            "input_nome_", "input_cpf_", "input_rg_", "input_pis_",
+            "input_nasc_", "input_adm_", "input_tel_", "input_end_",
+            "sel_loja_", "sel_cargo_", "input_sal_", "sel_sit_",
+            "input_dt_aviso_", "input_dias_aviso_",
+            "input_dt_lic_", "input_dias_lic_",
+            "input_dt_fer_", "input_dias_fer_",
+            "input_dt_af_", "input_dias_af_", "sel_tipo_af_",
+            "input_dt_ped_", "input_dt_res_", "input_dt_aband_", "input_dt_desist_",
+            "input_dt_termcont_", "btn_salvar_cad_", "_auto_sit_forced_"
+        ]
+        # Deletar keys com QUALQUER sufixo (incluindo o mat_sel anterior e vazio)
+        _keys_para_remover = [k for k in list(st.session_state.keys()) if any(k.startswith(p) for p in _prefixos_limpeza)]
+        for k in _keys_para_remover:
+            del st.session_state[k]
+        # Registrar o novo mat_sel para comparação na próxima run
+        st.session_state["_mat_sel_anterior"] = mat_sel
+        # NÃO fazer st.rerun() aqui — os widgets serão criados logo abaixo
+        # com os values corretos, já que suas keys foram deletadas.
+
     # ---------- FILTROS ----------
     st.markdown("---")
     st.markdown("**📋 Filtros da Tabela**")
@@ -3339,6 +3369,8 @@ with aba1:
             del st.session_state["autocomplete_func"]
         st.session_state["_matricula_original_edicao"] = ""
         st.session_state.pop("confirmar_exclusao", None)
+        # Resetar rastreamento de funcionário para evitar conflitos
+        st.session_state["_mat_sel_anterior"] = ""
         # Limpar todas as keys dinâmicas dos widgets do cadastro
         _prefixos_keys = [
             "foto_", "chk_excluir_foto_", "chk_bloq_mat_", "input_matricula_",
@@ -3356,8 +3388,63 @@ with aba1:
         for k in _keys_para_remover:
             del st.session_state[k]
         st.rerun()
-    # ── Chave dinâmica para forçar re-render dos campos ao trocar funcionário ──
-    _chave_form = f"cad_{mat_sel if mat_sel.strip() else 'novo'}_{int(datetime.now().timestamp()) if not mat_sel.strip() else ''}"
+    # ── Inicializar session_state dos widgets de cadastro ──
+    # Quando mat_sel muda, _mat_sel_anterior já deleta as keys antigas.
+    # Aqui garantimos que cada key recebe o valor correto do Excel ANTES
+    # de o widget ser criado, evitando que value= seja ignorado (Bug 1).
+    _init_keys = {
+        f"input_matricula_{mat_sel}": matricula_original if modo_edicao else "",
+        f"input_nome_{mat_sel}": val_campo("Nome"),
+        f"input_cpf_{mat_sel}": val_campo("CPF"),
+        f"input_rg_{mat_sel}": val_campo("RG"),
+        f"input_pis_{mat_sel}": val_campo("PIS"),
+        f"input_nasc_{mat_sel}": val_campo("Nascimento"),
+        f"input_adm_{mat_sel}": val_campo("Admissao"),
+        f"input_tel_{mat_sel}": val_campo("Telefone"),
+        f"input_end_{mat_sel}": val_campo("Endereco"),
+        f"input_sal_{mat_sel}": val_campo("Salario"),
+        f"input_dt_aviso_{mat_sel}": val_campo("DataAvisoPrevio"),
+        f"input_dias_aviso_{mat_sel}": val_campo("DiasAvisoPrevio"),
+        f"input_dt_lic_{mat_sel}": val_campo("DataLicenca"),
+        f"input_dias_lic_{mat_sel}": val_campo("DiasLicenca"),
+        f"input_dt_fer_{mat_sel}": val_campo("DataFeriasInicio"),
+        f"input_dias_fer_{mat_sel}": val_campo("DiasFerias"),
+        f"input_dt_af_{mat_sel}": val_campo("DataAfastamento"),
+        f"input_dias_af_{mat_sel}": val_campo("DiasAfastamento"),
+        f"input_dt_ped_{mat_sel}": val_campo("DataPedidoConta"),
+        f"input_dt_res_{mat_sel}": val_campo("DataRescisao"),
+        f"input_dt_aband_{mat_sel}": val_campo("DataAbandono"),
+        f"input_dt_desist_{mat_sel}": val_campo("DataDesistencia"),
+        f"input_dt_termcont_{mat_sel}": val_campo("DataTerminoContrato"),
+    }
+    for _ik, _iv in _init_keys.items():
+        if _ik not in st.session_state:
+            st.session_state[_ik] = str(_iv) if _iv is not None else ""
+    # Selectbox keys (usadas mais abaixo)
+    _lojas_list = lista_lojas()
+    _loja_val = val_campo("Loja")
+    _loja_key = f"sel_loja_{mat_sel}"
+    if _loja_key not in st.session_state:
+        st.session_state[_loja_key] = _loja_val if _loja_val in _lojas_list else _lojas_list[0]
+    _cargos_list = lista_cargos()
+    _cargo_val = val_campo("Cargo")
+    _cargo_key = f"sel_cargo_{mat_sel}"
+    if _cargo_key not in st.session_state:
+        st.session_state[_cargo_key] = _cargo_val if _cargo_val in _cargos_list else _cargos_list[0]
+    _tipo_af_key = f"sel_tipo_af_{mat_sel}"
+    if _tipo_af_key not in st.session_state:
+        st.session_state[_tipo_af_key] = val_campo("TipoAfastamento") if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else "Nenhum"
+    # Situação key (selectbox renderizado mais abaixo)
+    _sit_key_pre = f"sel_sit_{mat_sel}"
+    if _sit_key_pre not in st.session_state:
+        st.session_state[_sit_key_pre] = situacao_val if situacao_val in SITUACOES else SITUACOES[0]
+    # Checkbox keys
+    _chk_bloq_key = f"chk_bloq_mat_{mat_sel}"
+    if _chk_bloq_key not in st.session_state:
+        st.session_state[_chk_bloq_key] = modo_edicao
+    _chk_excluir_foto_key = f"chk_excluir_foto_{mat_sel}"
+    if _chk_excluir_foto_key not in st.session_state:
+        st.session_state[_chk_excluir_foto_key] = False
 
     st.subheader("Dados Básicos")
     col_foto, col_dados = st.columns([1,3])
@@ -3370,16 +3457,15 @@ with aba1:
             st.info("Sem foto")
 
         nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
-        excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False, key=f"chk_excluir_foto_{mat_sel}")
+        excluir_foto = st.checkbox("🗑️ Excluir foto atual", key=f"chk_excluir_foto_{mat_sel}")
 
     with col_dados:
         c1,c2,c3 = st.columns(3)
         with c1:
             # ── Matrícula: editável com opção de bloquear ──
-            bloquear_mat = st.checkbox("🔒 Bloquear matrícula", value=modo_edicao, key=f"chk_bloq_mat_{mat_sel}")
+            bloquear_mat = st.checkbox("🔒 Bloquear matrícula", key=f"chk_bloq_mat_{mat_sel}")
             matricula = st.text_input(
                 "Matrícula * (igual planilha)",
-                value=matricula_original if modo_edicao else "",
                 disabled=bloquear_mat,
                 key=f"input_matricula_{mat_sel}"
             )
@@ -3387,25 +3473,23 @@ with aba1:
                 st.caption("🔒 Matrícula bloqueada — desmarque para alterar")
             elif modo_edicao and not bloquear_mat:
                 st.warning("⚠️ Ao alterar a matrícula, ela será renomeada em TODAS as abas (Base, Histórico, Docs).")
-            nome = st.text_input("Nome Completo", value=val_campo("Nome"), key=f"input_nome_{mat_sel}")
-            cpf = st.text_input("CPF", value=val_campo("CPF"), key=f"input_cpf_{mat_sel}")
-            rg = st.text_input("RG", value=val_campo("RG"), key=f"input_rg_{mat_sel}")
-            pis = st.text_input("PIS", value=val_campo("PIS"), key=f"input_pis_{mat_sel}")
+            nome = st.text_input("Nome Completo", key=f"input_nome_{mat_sel}")
+            cpf = st.text_input("CPF", key=f"input_cpf_{mat_sel}")
+            rg = st.text_input("RG", key=f"input_rg_{mat_sel}")
+            pis = st.text_input("PIS", key=f"input_pis_{mat_sel}")
         with c2:
-            nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"), key=f"input_nasc_{mat_sel}")
-            admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"), key=f"input_adm_{mat_sel}")
-            telefone = st.text_input("Telefone", value=val_campo("Telefone"), key=f"input_tel_{mat_sel}")
-            endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"), key=f"input_end_{mat_sel}")
+            nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", key=f"input_nasc_{mat_sel}")
+            admissao = st.text_input("Data Admissão (dd/mm/aaaa)", key=f"input_adm_{mat_sel}")
+            telefone = st.text_input("Telefone", key=f"input_tel_{mat_sel}")
+            endereco = st.text_input("Endereço Completo", key=f"input_end_{mat_sel}")
         with c3:
-            lojas = lista_lojas()
-            idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
-            loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key=f"sel_loja_{mat_sel}")
+            _idx_loja = _lojas_list.index(st.session_state.get(_loja_key, _lojas_list[0])) if st.session_state.get(_loja_key, _lojas_list[0]) in _lojas_list else 0
+            loja = st.selectbox("🏬 Loja", _lojas_list, index=_idx_loja, key=_loja_key)
 
-            cargos = lista_cargos()
-            idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
-            cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key=f"sel_cargo_{mat_sel}")
+            _idx_cargo = _cargos_list.index(st.session_state.get(_cargo_key, _cargos_list[0])) if st.session_state.get(_cargo_key, _cargos_list[0]) in _cargos_list else 0
+            cargo = st.selectbox("💼 Cargo", _cargos_list, index=_idx_cargo, key=_cargo_key)
 
-            salario = st.text_input("Salário", value=val_campo("Salario"), key=f"input_sal_{mat_sel}")
+            salario = st.text_input("Salário", key=f"input_sal_{mat_sel}")
 
             # ── Situação: selectbox movido para DEPOIS dos Eventos Trabalhistas ──
             # (ver seção "Eventos Trabalhistas" abaixo)
@@ -3434,8 +3518,8 @@ with aba1:
     av1,av2,av3 = st.columns(3)
     with av1:
         st.markdown("**Aviso Prévio**")
-        dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"), key=f"input_dt_aviso_{mat_sel}")
-        dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"), key=f"input_dias_aviso_{mat_sel}")
+        dt_aviso = st.text_input("Data Aviso", key=f"input_dt_aviso_{mat_sel}")
+        dias_aviso = st.text_input("Dias Aviso", key=f"input_dias_aviso_{mat_sel}")
         # Recalcula em tempo real usando o que o usuário acabou de digitar
         _term_aviso_rt = _calc_termino(
             _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
@@ -3445,8 +3529,8 @@ with aba1:
         st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Término Aviso:</b> {_term_aviso_rt or "—"}</div>', unsafe_allow_html=True)
     with av2:
         st.markdown("**Licença**")
-        dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"), key=f"input_dt_lic_{mat_sel}")
-        dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"), key=f"input_dias_lic_{mat_sel}")
+        dt_lic = st.text_input("Data Licença", key=f"input_dt_lic_{mat_sel}")
+        dias_lic = st.text_input("Dias Licença", key=f"input_dias_lic_{mat_sel}")
         _term_lic_rt = _calc_termino(
             _ss_val(f"input_dt_lic_{mat_sel}", dt_lic),
             _ss_val(f"input_dias_lic_{mat_sel}", dias_lic)
@@ -3455,8 +3539,8 @@ with aba1:
         st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Término Licença:</b> {_term_lic_rt or "—"}</div>', unsafe_allow_html=True)
     with av3:
         st.markdown("**Férias**")
-        dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"), key=f"input_dt_fer_{mat_sel}")
-        dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"), key=f"input_dias_fer_{mat_sel}")
+        dt_fer = st.text_input("Início Férias", key=f"input_dt_fer_{mat_sel}")
+        dias_fer = st.text_input("Dias Férias", key=f"input_dias_fer_{mat_sel}")
         _ret_fer_rt = _calc_termino(
             _ss_val(f"input_dt_fer_{mat_sel}", dt_fer),
             _ss_val(f"input_dias_fer_{mat_sel}", dias_fer)
@@ -3467,22 +3551,24 @@ with aba1:
     af1,af2 = st.columns(2)
     with af1:
         st.markdown("**Afastamento**")
-        dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"), key=f"input_dt_af_{mat_sel}")
-        dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"), key=f"input_dias_af_{mat_sel}")
+        dt_af = st.text_input("Data Afastamento", key=f"input_dt_af_{mat_sel}")
+        dias_af = st.text_input("Dias Afastamento", key=f"input_dias_af_{mat_sel}")
         _ret_af_rt = _calc_termino(
             _ss_val(f"input_dt_af_{mat_sel}", dt_af),
             _ss_val(f"input_dias_af_{mat_sel}", dias_af)
         )
         ret_af = _ret_af_rt
         st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Retorno Afastamento:</b> {_ret_af_rt or "—"}</div>', unsafe_allow_html=True)
-        tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=["Nenhum", "Doença", "Acidente", "Maternidade"].index(val_campo("TipoAfastamento")) if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0, key=f"sel_tipo_af_{mat_sel}")
+        _tipo_af_val = st.session_state.get(_tipo_af_key, "Nenhum")
+        _tipo_af_idx = ["Nenhum", "Doença", "Acidente", "Maternidade"].index(_tipo_af_val) if _tipo_af_val in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0
+        tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=_tipo_af_idx, key=_tipo_af_key)
     with af2:
         st.markdown("**Desligamento**")
-        dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"), key=f"input_dt_ped_{mat_sel}")
-        dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"), key=f"input_dt_res_{mat_sel}")
-        dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"), key=f"input_dt_aband_{mat_sel}")
-        dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"input_dt_desist_{mat_sel}")
-        dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"input_dt_termcont_{mat_sel}")
+        dt_ped = st.text_input("Data Pedido Conta", key=f"input_dt_ped_{mat_sel}")
+        dt_res = st.text_input("Data Rescisão", key=f"input_dt_res_{mat_sel}")
+        dt_aband = st.text_input("Data Abandono", key=f"input_dt_aband_{mat_sel}")
+        dt_desist = st.text_input("Data Desistência", key=f"input_dt_desist_{mat_sel}")
+        dt_termino_cont = st.text_input("📅 Data Término de Contrato", key=f"input_dt_termcont_{mat_sel}")
 
     # ── Situação automática em tempo real (DEPOIS dos widgets de eventos) ──
     # Agora que todos os widgets de eventos já foram renderizados e seus valores
@@ -3582,8 +3668,10 @@ with aba1:
 
     st.markdown("---")
     st.subheader("📊 Situação do Funcionário")
-    idx_sit = SITUACOES.index(_situacao_auto) if _situacao_auto in SITUACOES else (SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0)
-    situacao = st.selectbox("Situação", SITUACOES, index=idx_sit, key=f"sel_sit_{mat_sel}")
+    _sit_key = f"sel_sit_{mat_sel}"
+    _cur_sit_val = st.session_state.get(_sit_key, situacao_val)
+    _idx_sit = SITUACOES.index(_cur_sit_val) if _cur_sit_val in SITUACOES else 0
+    situacao = st.selectbox("Situação", SITUACOES, index=_idx_sit, key=_sit_key)
 
     # Badge informativo se o usuário alterar manualmente a situação diferente do automático
     if situacao != _situacao_auto:
