@@ -5816,7 +5816,7 @@ with aba11:
             if st.session_state["stt_ultimo_audio_bytes"] is None:
                 st.warning("⚠️ Grave ou envie um áudio primeiro.")
             else:
-                sr_disponivel = _auto_instalar_pacote("SpeechRecognition", "SpeechRecognition")
+                sr_disponivel = _auto_instalar_pacote("SpeechRecognition", "speech_recognition")
                 if not sr_disponivel:
                     st.error("❌ A biblioteca `SpeechRecognition` não está instalada e não foi possível instalar automaticamente.")
                     st.code("pip install SpeechRecognition", language="bash")
