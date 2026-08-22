@@ -5570,6 +5570,32 @@ IDIOMAS = {
     "Polonês": "pl",
 }
 
+
+def _auto_instalar_pacote(nome_pip: str, nome_import: str) -> bool:
+    """Tenta importar um pacote; se falhar, tenta instalar via pip e importar novamente.
+    Retorna True se o pacote ficou disponível, False caso contrário.
+    NÃO usa st.stop() para não interromper a renderização de outras abas."""
+    try:
+        __import__(nome_import)
+        return True
+    except ImportError:
+        pass
+    # Tenta auto-instalar
+    try:
+        import subprocess
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", nome_pip],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        # Tenta importar novamente após instalação
+        try:
+            __import__(nome_import)
+            return True
+        except ImportError:
+            return False
+    except Exception:
+        return False
+
 with aba11:
     st.subheader("🌐 TRADUTOR MULTILÍNGUE")
     st.info("Traduza textos, gere áudio a partir de textos e transcreva arquivos de áudio para texto.")
@@ -5663,55 +5689,60 @@ with aba11:
             if not texto_tts.strip():
                 st.warning("⚠️ Digite um texto para converter.")
             else:
-                try:
+                gtts_disponivel = _auto_instalar_pacote("gTTS", "gtts")
+                if not gtts_disponivel:
+                    st.error("❌ A biblioteca `gTTS` não está instalada e não foi possível instalar automaticamente.")
+                    st.code("pip install gTTS", language="bash")
+                    st.info("💡 Após instalar, reinicie o app com `streamlit run app_rh.py`")
+                else:
                     from gtts import gTTS
-                except ImportError:
-                    st.error("❌ A biblioteca `gTTS` não está instalada. Execute: `pip install gtts`")
-                    st.stop()
 
-                texto_final = texto_tts
-                cod_tts = IDIOMAS.get(idioma_destino_tts, "pt")
+                if not gtts_disponivel:
+                    st.warning("⚠️ Função de áudio desabilitada até instalar gTTS.")
+                else:
+                    texto_final = texto_tts
+                    cod_tts = IDIOMAS.get(idioma_destino_tts, "pt")
 
-                # Traduzir se necessário
-                if traduzir_antes:
-                    with st.spinner("Traduzindo texto..."):
-                        cod_origem = "auto" if idioma_origem_tts == "Auto-detectar" else IDIOMAS.get(idioma_origem_tts, "auto")
-                        texto_traduzido = traduzir_texto(texto_tts, origem=cod_origem, destino=cod_tts)
-                    if texto_traduzido:
-                        texto_final = texto_traduzido
-                        st.success(f"✅ Texto traduzido de {idioma_origem_tts} para {idioma_destino_tts}")
-                        st.text_area("Texto que será convertido em áudio", value=texto_final, height=100, disabled=True, key="tts_texto_convertido")
-                    else:
-                        st.warning("⚠️ Não foi possível traduzir. Usando texto original.")
-                        texto_final = texto_tts
+                    # Traduzir se necessário
+                    if traduzir_antes:
+                        with st.spinner("Traduzindo texto..."):
+                            cod_origem = "auto" if idioma_origem_tts == "Auto-detectar" else IDIOMAS.get(idioma_origem_tts, "auto")
+                            texto_traduzido = traduzir_texto(texto_tts, origem=cod_origem, destino=cod_tts)
+                        if texto_traduzido:
+                            texto_final = texto_traduzido
+                            st.success(f"✅ Texto traduzido de {idioma_origem_tts} para {idioma_destino_tts}")
+                            st.text_area("Texto que será convertido em áudio", value=texto_final, height=100, disabled=True, key="tts_texto_convertido")
+                        else:
+                            st.warning("⚠️ Não foi possível traduzir. Usando texto original.")
+                            texto_final = texto_tts
 
-                with st.spinner("Gerando áudio..."):
-                    try:
-                        tts = gTTS(text=texto_final, lang=cod_tts, slow=False)
-                        mp3_buffer = io.BytesIO()
-                        tts.write_to_fp(mp3_buffer)
-                        mp3_buffer.seek(0)
-                        st.success("✅ Áudio gerado com sucesso!")
-                        st.audio(mp3_buffer, format="audio/mp3")
-                        st.download_button(
-                            label="📥 Baixar Áudio (.mp3)",
-                            data=mp3_buffer.getvalue(),
-                            file_name=f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
-                            mime="audio/mpeg",
-                            key="tts_download_audio"
-                        )
-                        # Adiciona ao histórico
-                        st.session_state["tts_historico"].append({
-                            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                            "idioma_origem": idioma_origem_tts,
-                            "idioma_destino": idioma_destino_tts,
-                            "texto_original": texto_tts,
-                            "texto_convertido": texto_final,
-                            "audio_bytes": mp3_buffer.getvalue(),
-                        })
-                    except Exception as e_gtts:
-                        st.error(f"❌ Erro ao gerar áudio com gTTS.")
-                        st.info("ℹ️ O serviço Google TTS pode estar indisponível temporariamente ou o idioma selecionado pode não ser suportado no momento. Tente outro idioma ou tente novamente mais tarde.")
+                    with st.spinner("Gerando áudio..."):
+                        try:
+                            tts = gTTS(text=texto_final, lang=cod_tts, slow=False)
+                            mp3_buffer = io.BytesIO()
+                            tts.write_to_fp(mp3_buffer)
+                            mp3_buffer.seek(0)
+                            st.success("✅ Áudio gerado com sucesso!")
+                            st.audio(mp3_buffer, format="audio/mp3")
+                            st.download_button(
+                                label="📥 Baixar Áudio (.mp3)",
+                                data=mp3_buffer.getvalue(),
+                                file_name=f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
+                                mime="audio/mpeg",
+                                key="tts_download_audio"
+                            )
+                            # Adiciona ao histórico
+                            st.session_state["tts_historico"].append({
+                                "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                                "idioma_origem": idioma_origem_tts,
+                                "idioma_destino": idioma_destino_tts,
+                                "texto_original": texto_tts,
+                                "texto_convertido": texto_final,
+                                "audio_bytes": mp3_buffer.getvalue(),
+                            })
+                        except Exception as e_gtts:
+                            st.error("❌ Erro ao gerar áudio com gTTS.")
+                            st.info("ℹ️ O serviço Google TTS pode estar indisponível temporariamente ou o idioma selecionado pode não ser suportado no momento. Tente outro idioma ou tente novamente mais tarde.")
 
         # Exibe histórico de áudio gerado
         if st.session_state["tts_historico"]:
@@ -5785,80 +5816,90 @@ with aba11:
             if st.session_state["stt_ultimo_audio_bytes"] is None:
                 st.warning("⚠️ Grave ou envie um áudio primeiro.")
             else:
-                try:
+                sr_disponivel = _auto_instalar_pacote("SpeechRecognition", "SpeechRecognition")
+                if not sr_disponivel:
+                    st.error("❌ A biblioteca `SpeechRecognition` não está instalada e não foi possível instalar automaticamente.")
+                    st.code("pip install SpeechRecognition", language="bash")
+                    st.info("💡 Após instalar, reinicie o app com `streamlit run app_rh.py`")
+                else:
                     import speech_recognition as sr
-                except ImportError:
-                    st.error("❌ A biblioteca `SpeechRecognition` não está instalada. Execute: `pip install SpeechRecognition`")
-                    st.stop()
 
-                with st.spinner("Processando áudio..."):
-                    audio_bytes = st.session_state["stt_ultimo_audio_bytes"]
-                    ext = st.session_state["stt_ultimo_audio_ext"]
-                    tmp_path = f"/tmp/stt_audio_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
-                    with open(tmp_path, "wb") as f_audio:
-                        f_audio.write(audio_bytes)
+                if sr_disponivel:
+                    with st.spinner("Processando áudio..."):
+                        audio_bytes = st.session_state["stt_ultimo_audio_bytes"]
+                        ext = st.session_state["stt_ultimo_audio_ext"]
+                        tmp_path = f"/tmp/stt_audio_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+                        with open(tmp_path, "wb") as f_audio:
+                            f_audio.write(audio_bytes)
 
-                    # Converter para wav se necessário
-                    wav_path = tmp_path
-                    if ext != ".wav":
-                        try:
-                            from pydub import AudioSegment
-                            wav_path = tmp_path.replace(ext, ".wav")
-                            audio_seg = AudioSegment.from_file(tmp_path, format=ext.replace(".", ""))
-                            audio_seg.export(wav_path, format="wav")
-                        except ImportError:
-                            st.error("❌ Para arquivos MP3/OGG/FLAC é necessário instalar: `pip install pydub` (e ter ffmpeg instalado no sistema).")
-                            os.remove(tmp_path)
-                            st.stop()
-                        except Exception as e_conv:
-                            st.error(f"❌ Erro ao converter áudio: {e_conv}")
-                            if os.path.exists(tmp_path):
-                                os.remove(tmp_path)
-                            st.stop()
+                        # Converter para wav se necessário
+                        wav_path = tmp_path
+                        conversao_ok = True
+                        if ext != ".wav":
+                            pydub_disponivel = _auto_instalar_pacote("pydub", "pydub")
+                            if not pydub_disponivel:
+                                st.error("❌ Para arquivos MP3/OGG/FLAC é necessário instalar: `pip install pydub` (e ter ffmpeg instalado no sistema).")
+                                st.code("pip install pydub", language="bash")
+                                st.info("💡 Após instalar, reinicie o app.")
+                                conversao_ok = False
+                                if os.path.exists(tmp_path):
+                                    os.remove(tmp_path)
+                            else:
+                                from pydub import AudioSegment
+                                try:
+                                    wav_path = tmp_path.replace(ext, ".wav")
+                                    audio_seg = AudioSegment.from_file(tmp_path, format=ext.replace(".", ""))
+                                    audio_seg.export(wav_path, format="wav")
+                                except Exception as e_conv:
+                                    st.error(f"❌ Erro ao converter áudio: {e_conv}")
+                                    conversao_ok = False
+                                    if os.path.exists(tmp_path):
+                                        os.remove(tmp_path)
 
-                    recognizer = sr.Recognizer()
-                    try:
-                        with sr.AudioFile(wav_path) as source:
-                            audio_data = recognizer.record(source)
-                        cod_stt = IDIOMAS.get(idioma_audio, "pt")
-                        texto_transcrito = recognizer.recognize_google(audio_data, language=cod_stt)
+                        if conversao_ok:
+                            recognizer = sr.Recognizer()
+                            try:
+                                with sr.AudioFile(wav_path) as source:
+                                    audio_data = recognizer.record(source)
+                                cod_stt = IDIOMAS.get(idioma_audio, "pt")
+                                texto_transcrito = recognizer.recognize_google(audio_data, language=cod_stt)
 
-                        # Traduzir automaticamente
-                        cod_trad = IDIOMAS.get(idioma_trad, "pt")
-                        texto_traduzido = ""
-                        if texto_transcrito.strip():
-                            texto_traduzido = traduzir_texto(texto_transcrito, origem=cod_stt, destino=cod_trad)
-                            if texto_traduzido is None:
+                                # Traduzir automaticamente
+                                cod_trad = IDIOMAS.get(idioma_trad, "pt")
                                 texto_traduzido = ""
+                                if texto_transcrito.strip():
+                                    texto_traduzido = traduzir_texto(texto_transcrito, origem=cod_stt, destino=cod_trad)
+                                    if texto_traduzido is None:
+                                        texto_traduzido = ""
 
-                        # Guarda transcrição atual para re-traduzir depois
-                        st.session_state["stt_texto_transcrito_atual"] = texto_transcrito
-                        st.session_state["stt_cod_idioma_audio_atual"] = cod_stt
+                                # Guarda transcrição atual para re-traduzir depois
+                                st.session_state["stt_texto_transcrito_atual"] = texto_transcrito
+                                st.session_state["stt_cod_idioma_audio_atual"] = cod_stt
 
-                        # Adiciona ao histórico
-                        st.session_state["stt_historico"].append({
-                            "id": len(st.session_state["stt_historico"]),
-                            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                            "idioma_audio": idioma_audio,
-                            "cod_audio": cod_stt,
-                            "idioma_trad": idioma_trad,
-                            "cod_trad": cod_trad,
-                            "texto_transcrito": texto_transcrito,
-                            "texto_traduzido": texto_traduzido,
-                        })
-                        st.success("✅ Áudio transcrito e traduzido com sucesso!")
+                                # Adiciona ao histórico
+                                st.session_state["stt_historico"].append({
+                                    "id": len(st.session_state["stt_historico"]),
+                                    "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                                    "idioma_audio": idioma_audio,
+                                    "cod_audio": cod_stt,
+                                    "idioma_trad": idioma_trad,
+                                    "cod_trad": cod_trad,
+                                    "texto_transcrito": texto_transcrito,
+                                    "texto_traduzido": texto_traduzido,
+                                })
+                                st.success("✅ Áudio transcrito e traduzido com sucesso!")
 
-                    except sr.UnknownValueError:
-                        st.error("❌ Não foi possível entender o áudio. Verifique a qualidade do arquivo ou fale mais próximo do microfone.")
-                    except sr.RequestError as e_req:
-                        st.error(f"❌ Erro no serviço de reconhecimento: {e_req}")
-                    except Exception as e_all:
-                        st.error(f"❌ Erro ao processar áudio: {e_all}")
-                    finally:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-                        if os.path.exists(wav_path) and wav_path != tmp_path:
-                            os.remove(wav_path)
+                            except sr.UnknownValueError:
+                                st.error("❌ Não foi possível entender o áudio. Verifique a qualidade do arquivo ou fale mais próximo do microfone.")
+                            except sr.RequestError as e_req:
+                                st.error(f"❌ Erro no serviço de reconhecimento: {e_req}")
+                            except Exception as e_all:
+                                st.error(f"❌ Erro ao processar áudio: {e_all}")
+                            finally:
+                                if os.path.exists(tmp_path):
+                                    os.remove(tmp_path)
+                                if os.path.exists(wav_path) and wav_path != tmp_path:
+                                    os.remove(wav_path)
 
         # --- AÇÃO: TRADUZIR ÚLTIMO ÁUDIO PARA OUTRO IDIOMA ---
         if traduzir_novamente:
@@ -5920,37 +5961,40 @@ with aba11:
                             if not texto_ouvir.strip():
                                 st.warning("⚠️ Nenhuma tradução para ouvir.")
                             else:
-                                try:
+                                gtts_ok = _auto_instalar_pacote("gTTS", "gtts")
+                                if not gtts_ok:
+                                    st.error("❌ A biblioteca `gTTS` não está instalada e não foi possível instalar automaticamente.")
+                                    st.code("pip install gTTS", language="bash")
+                                else:
                                     from gtts import gTTS
-                                except ImportError:
-                                    st.error("❌ A biblioteca `gTTS` não está instalada. Execute: `pip install gtts`")
-                                    st.stop()
-                                with st.spinner("Gerando áudio..."):
-                                    cod_tts = item["cod_trad"]
-                                    try:
-                                        from gtts.lang import tts_langs
-                                        suportados = tts_langs()
-                                    except Exception:
-                                        suportados = {}
-                                    if not cod_tts or cod_tts not in suportados:
-                                        cod_tts = "pt"
-                                        st.info("ℹ️ Idioma não suportado para áudio. Usando Português.")
-                                    try:
-                                        tts = gTTS(text=texto_ouvir, lang=cod_tts, slow=False)
-                                        mp3_buffer = io.BytesIO()
-                                        tts.write_to_fp(mp3_buffer)
-                                        mp3_buffer.seek(0)
-                                        st.success("✅ Áudio gerado!")
-                                        st.audio(mp3_buffer, format="audio/mp3")
-                                        st.download_button(
-                                            label="📥 Baixar Áudio",
-                                            data=mp3_buffer.getvalue(),
-                                            file_name=f"traducao_audio_{item['timestamp'].replace('/', '').replace(' ', '_').replace(':', '')}.mp3",
-                                            mime="audio/mpeg",
-                                            key=f"stt_down_audio_{idx}"
-                                        )
-                                    except Exception as e_gtts:
-                                        st.error(f"❌ Erro ao gerar áudio com gTTS: {e_gtts}")
+
+                                if gtts_ok:
+                                    with st.spinner("Gerando áudio..."):
+                                            cod_tts = item["cod_trad"]
+                                            try:
+                                                from gtts.lang import tts_langs
+                                                suportados = tts_langs()
+                                            except Exception:
+                                                suportados = {}
+                                            if not cod_tts or cod_tts not in suportados:
+                                                cod_tts = "pt"
+                                                st.info("ℹ️ Idioma não suportado para áudio. Usando Português.")
+                                            try:
+                                                tts = gTTS(text=texto_ouvir, lang=cod_tts, slow=False)
+                                                mp3_buffer = io.BytesIO()
+                                                tts.write_to_fp(mp3_buffer)
+                                                mp3_buffer.seek(0)
+                                                st.success("✅ Áudio gerado!")
+                                                st.audio(mp3_buffer, format="audio/mp3")
+                                                st.download_button(
+                                                    label="📥 Baixar Áudio",
+                                                    data=mp3_buffer.getvalue(),
+                                                    file_name=f"traducao_audio_{item['timestamp'].replace('/', '').replace(' ', '_').replace(':', '')}.mp3",
+                                                    mime="audio/mpeg",
+                                                    key=f"stt_down_audio_{idx}"
+                                                )
+                                            except Exception as e_gtts:
+                                                st.error(f"❌ Erro ao gerar áudio com gTTS: {e_gtts}")
                     with col_b2:
                         if st.button("💾 Salvar Correção", use_container_width=True, key=f"stt_salvar_{idx}"):
                             item["texto_traduzido"] = texto_editado
