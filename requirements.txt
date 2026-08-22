@@ -12,3 +12,4 @@ reportlab>=4.0.0
 # Integração Google Sheets (opcional — só se for usar sincronização com Google Sheets)
 # gspread>=5.12.0
 # google-auth>=2.23.0
+SpeechRecognition
