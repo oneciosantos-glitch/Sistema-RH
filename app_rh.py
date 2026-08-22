@@ -4863,252 +4863,308 @@ with aba9:
                     lat2, lon2 = geocodificar(destino_str.strip())
                 if lat1 is None or lat2 is None:
                     st.error("❌ Não foi possível localizar um ou ambos os endereços. Tente incluir a cidade mais próxima ou verificar a grafia.")
+                    if "rota_dados" in st.session_state:
+                        del st.session_state["rota_dados"]
                 else:
-                    st.success("✅ Pontos localizados com sucesso!")
-                    st.markdown("---")
                     cidade_origem = origem_str.split(",")[0].strip()
                     cidade_destino = destino_str.split(",")[0].strip()
-
-                    # ---- CARRO ----
                     if transporte == "Carro":
                         distancia, tempo, geometria = calcular_rota(lat1, lon1, lat2, lon2)
                         if distancia is None:
                             st.error("❌ Não foi possível calcular a rota de carro. Tente novamente mais tarde.")
+                            if "rota_dados" in st.session_state:
+                                del st.session_state["rota_dados"]
                         else:
-                            st.subheader("📊 RESUMO DA ROTA (CARRO)")
-                            c1, c2, c3 = st.columns(3)
-                            with c1:
-                                st.metric("📏 Distância", f"{distancia:.1f} km")
-                            with c2:
-                                horas = int(tempo // 60)
-                                mins = int(tempo % 60)
-                                st.metric("⏱️ Tempo Estimado", f"{horas}h {mins}min")
-                            with c3:
-                                st.metric("💰 Pedágio", "Consultar via app")
-
-                            # Combustível
-                            st.markdown("---")
-                            st.subheader("⛽ CUSTO ESTIMADO DE COMBUSTÍVEL")
-                            cc1, cc2 = st.columns(2)
-                            with cc1:
-                                preco_litro = st.number_input("Preço/Litro (R$)", min_value=0.0, value=5.89, step=0.01, format="%.2f", key="preco_carro")
-                            with cc2:
-                                consumo_km_l = st.number_input("Consumo (km/L)", min_value=0.1, value=10.0, step=0.1, format="%.1f", key="consumo_carro")
-                            if preco_litro > 0 and consumo_km_l > 0:
-                                litros = distancia / consumo_km_l
-                                custo_ida = litros * preco_litro
-                                custo_ida_volta = custo_ida * 2
-                                cb1, cb2 = st.columns(2)
-                                with cb1:
-                                    st.metric("⛽ Ida", f"R$ {custo_ida:,.2f}")
-                                with cb2:
-                                    st.metric("⛽ Ida + Volta", f"R$ {custo_ida_volta:,.2f}")
-                                st.info(f"💡 Litros necessários (ida): **{litros:.1f} L** | Preço/L: R$ {preco_litro:.2f} | Consumo: {consumo_km_l:.1f} km/L")
-
-                            # PDF
-                            st.markdown("---")
-                            pdf_bytes = gerar_pdf_rota(
-                                tipo="Carro",
-                                origem=origem_str,
-                                destino=destino_str,
-                                distancia=distancia,
-                                tempo_info=f"{horas}h {mins}min",
-                                custo_ida=custo_ida if (preco_litro > 0 and consumo_km_l > 0) else None,
-                                custo_volta=custo_ida_volta if (preco_litro > 0 and consumo_km_l > 0) else None,
-                                litros=litros if (preco_litro > 0 and consumo_km_l > 0) else None,
-                                preco_litro=preco_litro if (preco_litro > 0 and consumo_km_l > 0) else None,
-                                consumo=consumo_km_l if (preco_litro > 0 and consumo_km_l > 0) else None,
-                            )
-                            if pdf_bytes:
-                                st.download_button(
-                                    label="📄 BAIXAR RESUMO EM PDF",
-                                    data=pdf_bytes,
-                                    file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                                    mime="application/pdf"
-                                )
-                            else:
-                                st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
-
-                            # Mapa com linha
-                            st.markdown("---")
-                            st.subheader("🗺️ Visualização da Rota")
-                            try:
-                                import pydeck as pdk
-                                coords = geometria["coordinates"]
-                                path_coords = coords  # já é [lon, lat]
-                                mid_lat = (lat1 + lat2) / 2
-                                mid_lon = (lon1 + lon2) / 2
-                                zoom_lvl = calcular_zoom(distancia)
-
-                                path_layer = pdk.Layer(
-                                    "PathLayer",
-                                    data=[{"path": path_coords, "color": [255, 60, 0]}],
-                                    get_path="path",
-                                    get_color="color",
-                                    width_scale=20,
-                                    width_min_pixels=4,
-                                )
-                                scatter_layer = pdk.Layer(
-                                    "ScatterplotLayer",
-                                    data=[
-                                        {"position": [lon1, lat1], "color": [0, 200, 0]},
-                                        {"position": [lon2, lat2], "color": [255, 0, 0]},
-                                    ],
-                                    get_position="position",
-                                    get_color="color",
-                                    get_radius=20000,
-                                    radius_min_pixels=8,
-                                    radius_max_pixels=25,
-                                )
-                                text_layer = pdk.Layer(
-                                    "TextLayer",
-                                    data=[
-                                        {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
-                                        {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
-                                    ],
-                                    get_position="position",
-                                    get_text="text",
-                                    get_color="color",
-                                    get_size=18,
-                                    get_text_anchor="middle",
-                                    get_alignment_baseline="bottom",
-                                    size_units="pixels",
-                                )
-                                view_state = pdk.ViewState(
-                                    latitude=mid_lat, longitude=mid_lon,
-                                    zoom=zoom_lvl, pitch=0
-                                )
-                                st.pydeck_chart(pdk.Deck(
-                                    layers=[path_layer, scatter_layer, text_layer],
-                                    initial_view_state=view_state,
-                                    tooltip={"text": "Rota de carro"},
-                                    height=800,
-                                ))
-                                st.caption("🟢 Origem  |  🔴 Destino  |  🟠 Linha = rota por estrada")
-                            except Exception as e:
-                                st.warning(f"Não foi possível exibir o mapa: {e}")
-
-                            # Instruções passo a passo
-                            st.markdown("---")
-                            st.subheader("📝 Instruções de Rota (passo a passo)")
-                            try:
-                                url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
-                                params = {"overview": "false", "steps": "true"}
-                                resp = requests.get(url, params=params, timeout=20)
-                                dados_inst = resp.json()
-                                if dados_inst.get("routes"):
-                                    legs = dados_inst["routes"][0]["legs"][0]
-                                    passos = []
-                                    for step in legs.get("steps", []):
-                                        nome = step.get("name", "")
-                                        dist = step.get("distance", 0)
-                                        instr = step.get("maneuver", {}).get("type", "continue")
-                                        passos.append(f"• {instr.upper()}: siga em **{nome}** por `{dist/1000:.1f} km`")
-                                    if passos:
-                                        for p in passos[:25]:
-                                            st.markdown(p)
-                                        if len(passos) > 25:
-                                            st.info(f"... e mais {len(passos)-25} instruções.")
-                                    else:
-                                        st.info("Nenhuma instrução detalhada disponível.")
-                                else:
-                                    st.info("Instruções não disponíveis.")
-                            except Exception as e:
-                                st.info(f"Instruções não disponíveis: {e}")
-
-                    # ---- AVIÃO ----
+                            horas = int(tempo // 60)
+                            mins = int(tempo % 60)
+                            st.session_state["rota_dados"] = {
+                                "tipo": "Carro",
+                                "lat1": lat1, "lon1": lon1,
+                                "lat2": lat2, "lon2": lon2,
+                                "cidade_origem": cidade_origem,
+                                "cidade_destino": cidade_destino,
+                                "origem_str": origem_str,
+                                "destino_str": destino_str,
+                                "distancia": distancia,
+                                "tempo": tempo,
+                                "horas": horas,
+                                "mins": mins,
+                                "geometria": geometria,
+                            }
                     else:
                         distancia = haversine(lat1, lon1, lat2, lon2)
-                        tempo_voo_min = (distancia / 850) * 60  # 850 km/h média
-                        tempo_total_min = tempo_voo_min + 90   # +1h30 taxi
-                        st.subheader("📊 RESUMO DA ROTA (AVIÃO)")
-                        a1, a2, a3 = st.columns(3)
-                        with a1:
-                            st.metric("📏 Distância (linha reta)", f"{distancia:.1f} km")
-                        with a2:
-                            horas_v = int(tempo_total_min // 60)
-                            mins_v = int(tempo_total_min % 60)
-                            st.metric("⏱️ Tempo Estimado", f"{horas_v}h {mins_v}min")
-                        with a3:
-                            st.metric("✈️ Veloc. Média", "~850 km/h")
-                        st.info("💡 O tempo inclui aproximadamente 1h30 de taxi, decolagem e pouso.")
+                        tempo_voo_min = (distancia / 850) * 60
+                        tempo_total_min = tempo_voo_min + 90
+                        horas_v = int(tempo_total_min // 60)
+                        mins_v = int(tempo_total_min % 60)
+                        st.session_state["rota_dados"] = {
+                            "tipo": "Avião",
+                            "lat1": lat1, "lon1": lon1,
+                            "lat2": lat2, "lon2": lon2,
+                            "cidade_origem": cidade_origem,
+                            "cidade_destino": cidade_destino,
+                            "origem_str": origem_str,
+                            "destino_str": destino_str,
+                            "distancia": distancia,
+                            "tempo_voo_min": tempo_voo_min,
+                            "tempo_total_min": tempo_total_min,
+                            "horas_v": horas_v,
+                            "mins_v": mins_v,
+                        }
 
-                        # PDF
-                        st.markdown("---")
-                        pdf_bytes = gerar_pdf_rota(
-                            tipo="Avião",
-                            origem=origem_str,
-                            destino=destino_str,
-                            distancia=distancia,
-                            tempo_info=f"{horas_v}h {mins_v}min",
-                        )
-                        if pdf_bytes:
-                            st.download_button(
-                                label="📄 BAIXAR RESUMO EM PDF",
-                                data=pdf_bytes,
-                                file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                                mime="application/pdf"
-                            )
+        # ---- EXIBIR RESULTADOS DA ROTA (fora do botão, sobrevive a reruns) ----
+        if "rota_dados" in st.session_state and st.session_state["rota_dados"]["tipo"] == transporte:
+            dados = st.session_state["rota_dados"]
+
+            if dados["tipo"] == "Carro":
+                distancia = dados["distancia"]
+                tempo = dados["tempo"]
+                horas = dados["horas"]
+                mins = dados["mins"]
+                geometria = dados["geometria"]
+                lat1, lon1 = dados["lat1"], dados["lon1"]
+                lat2, lon2 = dados["lat2"], dados["lon2"]
+                cidade_origem = dados["cidade_origem"]
+                cidade_destino = dados["cidade_destino"]
+                origem_str = dados["origem_str"]
+                destino_str = dados["destino_str"]
+
+                st.subheader("📊 RESUMO DA ROTA (CARRO)")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("📏 Distância", f"{distancia:.1f} km")
+                with c2:
+                    st.metric("⏱️ Tempo Estimado", f"{horas}h {mins}min")
+                with c3:
+                    st.metric("💰 Pedágio", "Consultar via app")
+
+                # Combustível
+                st.markdown("---")
+                st.subheader("⛽ CUSTO ESTIMADO DE COMBUSTÍVEL")
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    preco_litro = st.number_input("Preço/Litro (R$)", min_value=0.0, value=5.89, step=0.01, format="%.2f", key="preco_carro")
+                with cc2:
+                    consumo_km_l = st.number_input("Consumo (km/L)", min_value=0.1, value=10.0, step=0.1, format="%.1f", key="consumo_carro")
+                if preco_litro > 0 and consumo_km_l > 0:
+                    litros = distancia / consumo_km_l
+                    custo_ida = litros * preco_litro
+                    custo_ida_volta = custo_ida * 2
+                    cb1, cb2 = st.columns(2)
+                    with cb1:
+                        st.metric("⛽ Ida", f"R$ {custo_ida:,.2f}")
+                    with cb2:
+                        st.metric("⛽ Ida + Volta", f"R$ {custo_ida_volta:,.2f}")
+                    st.info(f"💡 Litros necessários (ida): **{litros:.1f} L** | Preço/L: R$ {preco_litro:.2f} | Consumo: {consumo_km_l:.1f} km/L")
+
+                # PDF
+                st.markdown("---")
+                pdf_bytes = gerar_pdf_rota(
+                    tipo="Carro",
+                    origem=origem_str,
+                    destino=destino_str,
+                    distancia=distancia,
+                    tempo_info=f"{horas}h {mins}min",
+                    custo_ida=custo_ida if (preco_litro > 0 and consumo_km_l > 0) else None,
+                    custo_volta=custo_ida_volta if (preco_litro > 0 and consumo_km_l > 0) else None,
+                    litros=litros if (preco_litro > 0 and consumo_km_l > 0) else None,
+                    preco_litro=preco_litro if (preco_litro > 0 and consumo_km_l > 0) else None,
+                    consumo=consumo_km_l if (preco_litro > 0 and consumo_km_l > 0) else None,
+                )
+                if pdf_bytes:
+                    st.download_button(
+                        label="📄 BAIXAR RESUMO EM PDF",
+                        data=pdf_bytes,
+                        file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                        mime="application/pdf"
+                    )
+                else:
+                    st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
+
+                # Mapa com linha
+                st.markdown("---")
+                st.subheader("🗺️ Visualização da Rota")
+                try:
+                    import pydeck as pdk
+                    coords = geometria["coordinates"]
+                    path_coords = coords  # já é [lon, lat]
+                    mid_lat = (lat1 + lat2) / 2
+                    mid_lon = (lon1 + lon2) / 2
+                    zoom_lvl = calcular_zoom(distancia)
+
+                    path_layer = pdk.Layer(
+                        "PathLayer",
+                        data=[{"path": path_coords, "color": [255, 60, 0]}],
+                        get_path="path",
+                        get_color="color",
+                        width_scale=20,
+                        width_min_pixels=4,
+                    )
+                    scatter_layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=[
+                            {"position": [lon1, lat1], "color": [0, 200, 0]},
+                            {"position": [lon2, lat2], "color": [255, 0, 0]},
+                        ],
+                        get_position="position",
+                        get_color="color",
+                        get_radius=20000,
+                        radius_min_pixels=8,
+                        radius_max_pixels=25,
+                    )
+                    text_layer = pdk.Layer(
+                        "TextLayer",
+                        data=[
+                            {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
+                            {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
+                        ],
+                        get_position="position",
+                        get_text="text",
+                        get_color="color",
+                        get_size=18,
+                        get_text_anchor="middle",
+                        get_alignment_baseline="bottom",
+                        size_units="pixels",
+                    )
+                    view_state = pdk.ViewState(
+                        latitude=mid_lat, longitude=mid_lon,
+                        zoom=zoom_lvl, pitch=0
+                    )
+                    st.pydeck_chart(pdk.Deck(
+                        layers=[path_layer, scatter_layer, text_layer],
+                        initial_view_state=view_state,
+                        tooltip={"text": "Rota de carro"},
+                        height=800,
+                    ))
+                    st.caption("🟢 Origem  |  🔴 Destino  |  🟠 Linha = rota por estrada")
+                except Exception as e:
+                    st.warning(f"Não foi possível exibir o mapa: {e}")
+
+                # Instruções passo a passo
+                st.markdown("---")
+                st.subheader("📝 Instruções de Rota (passo a passo)")
+                try:
+                    url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+                    params = {"overview": "false", "steps": "true"}
+                    resp = requests.get(url, params=params, timeout=20)
+                    dados_inst = resp.json()
+                    if dados_inst.get("routes"):
+                        legs = dados_inst["routes"][0]["legs"][0]
+                        passos = []
+                        for step in legs.get("steps", []):
+                            nome = step.get("name", "")
+                            dist = step.get("distance", 0)
+                            instr = step.get("maneuver", {}).get("type", "continue")
+                            passos.append(f"• {instr.upper()}: siga em **{nome}** por `{dist/1000:.1f} km`")
+                        if passos:
+                            for p in passos[:25]:
+                                st.markdown(p)
+                            if len(passos) > 25:
+                                st.info(f"... e mais {len(passos)-25} instruções.")
                         else:
-                            st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
+                            st.info("Nenhuma instrução detalhada disponível.")
+                    else:
+                        st.info("Instruções não disponíveis.")
+                except Exception as e:
+                    st.info(f"Instruções não disponíveis: {e}")
 
-                        # Mapa com linha reta
-                        st.markdown("---")
-                        st.subheader("🗺️ Visualização da Rota")
-                        try:
-                            import pydeck as pdk
-                            path_coords = [[lon1, lat1], [lon2, lat2]]
-                            mid_lat = (lat1 + lat2) / 2
-                            mid_lon = (lon1 + lon2) / 2
-                            zoom_lvl = calcular_zoom(distancia)
+            elif dados["tipo"] == "Avião":
+                distancia = dados["distancia"]
+                horas_v = dados["horas_v"]
+                mins_v = dados["mins_v"]
+                lat1, lon1 = dados["lat1"], dados["lon1"]
+                lat2, lon2 = dados["lat2"], dados["lon2"]
+                cidade_origem = dados["cidade_origem"]
+                cidade_destino = dados["cidade_destino"]
+                origem_str = dados["origem_str"]
+                destino_str = dados["destino_str"]
 
-                            path_layer = pdk.Layer(
-                                "PathLayer",
-                                data=[{"path": path_coords, "color": [0, 100, 255]}],
-                                get_path="path",
-                                get_color="color",
-                                width_scale=20,
-                                width_min_pixels=4,
-                            )
-                            scatter_layer = pdk.Layer(
-                                "ScatterplotLayer",
-                                data=[
-                                    {"position": [lon1, lat1], "color": [0, 200, 0]},
-                                    {"position": [lon2, lat2], "color": [255, 0, 0]},
-                                ],
-                                get_position="position",
-                                get_color="color",
-                                get_radius=20000,
-                                radius_min_pixels=8,
-                                radius_max_pixels=25,
-                            )
-                            text_layer = pdk.Layer(
-                                "TextLayer",
-                                data=[
-                                    {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
-                                    {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
-                                ],
-                                get_position="position",
-                                get_text="text",
-                                get_color="color",
-                                get_size=18,
-                                get_text_anchor="middle",
-                                get_alignment_baseline="bottom",
-                                size_units="pixels",
-                            )
-                            view_state = pdk.ViewState(
-                                latitude=mid_lat, longitude=mid_lon,
-                                zoom=zoom_lvl, pitch=0
-                            )
-                            st.pydeck_chart(pdk.Deck(
-                                layers=[path_layer, scatter_layer, text_layer],
-                                initial_view_state=view_state,
-                                tooltip={"text": "Rota aérea (linha reta)"},
-                                height=800,
-                            ))
-                            st.caption("🟢 Origem  |  🔴 Destino  |  🔵 Linha = trajeto aéreo aproximado")
-                        except Exception as e:
-                            st.warning(f"Não foi possível exibir o mapa: {e}")
+                st.subheader("📊 RESUMO DA ROTA (AVIÃO)")
+                a1, a2, a3 = st.columns(3)
+                with a1:
+                    st.metric("📏 Distância (linha reta)", f"{distancia:.1f} km")
+                with a2:
+                    st.metric("⏱️ Tempo Estimado", f"{horas_v}h {mins_v}min")
+                with a3:
+                    st.metric("✈️ Veloc. Média", "~850 km/h")
+                st.info("💡 O tempo inclui aproximadamente 1h30 de taxi, decolagem e pouso.")
+
+                # PDF
+                st.markdown("---")
+                pdf_bytes = gerar_pdf_rota(
+                    tipo="Avião",
+                    origem=origem_str,
+                    destino=destino_str,
+                    distancia=distancia,
+                    tempo_info=f"{horas_v}h {mins_v}min",
+                )
+                if pdf_bytes:
+                    st.download_button(
+                        label="📄 BAIXAR RESUMO EM PDF",
+                        data=pdf_bytes,
+                        file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                        mime="application/pdf"
+                    )
+                else:
+                    st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
+
+                # Mapa com linha reta
+                st.markdown("---")
+                st.subheader("🗺️ Visualização da Rota")
+                try:
+                    import pydeck as pdk
+                    path_coords = [[lon1, lat1], [lon2, lat2]]
+                    mid_lat = (lat1 + lat2) / 2
+                    mid_lon = (lon1 + lon2) / 2
+                    zoom_lvl = calcular_zoom(distancia)
+
+                    path_layer = pdk.Layer(
+                        "PathLayer",
+                        data=[{"path": path_coords, "color": [0, 100, 255]}],
+                        get_path="path",
+                        get_color="color",
+                        width_scale=20,
+                        width_min_pixels=4,
+                    )
+                    scatter_layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=[
+                            {"position": [lon1, lat1], "color": [0, 200, 0]},
+                            {"position": [lon2, lat2], "color": [255, 0, 0]},
+                        ],
+                        get_position="position",
+                        get_color="color",
+                        get_radius=20000,
+                        radius_min_pixels=8,
+                        radius_max_pixels=25,
+                    )
+                    text_layer = pdk.Layer(
+                        "TextLayer",
+                        data=[
+                            {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
+                            {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
+                        ],
+                        get_position="position",
+                        get_text="text",
+                        get_color="color",
+                        get_size=18,
+                        get_text_anchor="middle",
+                        get_alignment_baseline="bottom",
+                        size_units="pixels",
+                    )
+                    view_state = pdk.ViewState(
+                        latitude=mid_lat, longitude=mid_lon,
+                        zoom=zoom_lvl, pitch=0
+                    )
+                    st.pydeck_chart(pdk.Deck(
+                        layers=[path_layer, scatter_layer, text_layer],
+                        initial_view_state=view_state,
+                        tooltip={"text": "Rota aérea (linha reta)"},
+                        height=800,
+                    ))
+                    st.caption("🟢 Origem  |  🔴 Destino  |  🔵 Linha = trajeto aéreo aproximado")
+                except Exception as e:
+                    st.warning(f"Não foi possível exibir o mapa: {e}")
 
 
     with sub_aba_viagens:
