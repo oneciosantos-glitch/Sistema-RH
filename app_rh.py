@@ -5525,7 +5525,7 @@ with aba9:
                                         font=dict(size=11, color="#c8c8d0")),
                         )
 
-                    # ── 1) Donut – Distribuição por Status ──
+                    # ── 1) 🥧 Pizza – Distribuição por Status ──
                     g1, g2 = st.columns(2)
                     with g1:
                         status_counts = df_v_num["STATUS"].value_counts()
@@ -5533,36 +5533,70 @@ with aba9:
                             df_pie = status_counts.reset_index()
                             df_pie.columns = ["Status", "Quantidade"]
                             color_map = {"Planejada": "#5dade2", "Em Andamento": "#f5b041", "Concluída": "#58d68d", "Cancelada": "#ec7063"}
-                            df_pie["Cor"] = df_pie["Status"].map(color_map).fillna("#aab7b8")
                             fig1 = px.pie(
                                 df_pie, names="Status", values="Quantidade",
-                                hole=0.52,
+                                hole=0,
                                 color="Status",
                                 color_discrete_map=color_map,
                             )
                             fig1.update_traces(
                                 textposition="inside",
-                                textinfo="percent+label",
+                                textinfo="percent+label+value",
                                 hovertemplate="<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}",
                                 marker=dict(line=dict(color="rgba(30,30,42,0.7)", width=2.5)),
                                 textfont=dict(size=13, color="#fff"),
+                                rotation=90,
+                                pull=[0.04 if s == status_counts.idxmax() else 0 for s in df_pie["Status"]],
                             )
-                            fig1.update_layout(**_base_layout("🎯 Distribuição por Status"))
+                            fig1.update_layout(**_base_layout("🥧 Pizza – Distribuição por Status"))
                             fig1.update_layout(showlegend=True)
                             st.plotly_chart(fig1, use_container_width=True)
 
-                    # ── 2) Barras Horizontais – Top 10 Colaboradores (gasto) ──
+                    # ── 2) 🍩 Rosca – Status (com detalhes no centro) ──
                     with g2:
+                        status_counts2 = df_v_num["STATUS"].value_counts()
+                        if not status_counts2.empty:
+                            df_rosca = status_counts2.reset_index()
+                            df_rosca.columns = ["Status", "Quantidade"]
+                            fig2 = px.pie(
+                                df_rosca, names="Status", values="Quantidade",
+                                hole=0.55,
+                                color="Status",
+                                color_discrete_map=color_map,
+                            )
+                            total_viagens = int(df_rosca["Quantidade"].sum())
+                            fig2.update_traces(
+                                textposition="inside",
+                                textinfo="percent+label",
+                                hovertemplate="<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}",
+                                marker=dict(line=dict(color="rgba(30,30,42,0.7)", width=2.5)),
+                                textfont=dict(size=12, color="#fff"),
+                            )
+                            fig2.update_layout(**_base_layout("🍩 Rosca – Status por Quantidade"))
+                            fig2.update_layout(
+                                showlegend=True,
+                                annotations=[dict(
+                                    text=f"<b>{total_viagens}</b><br>viagens",
+                                    x=0.5, y=0.5,
+                                    font_size=18, font_color="#f5b041",
+                                    showarrow=False,
+                                )],
+                            )
+                            st.plotly_chart(fig2, use_container_width=True)
+
+                    # ── 3) Barras Horizontais – Top 10 Colaboradores (gasto) ──
+                    g3, g4 = st.columns(2)
+                    with g3:
                         top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
                         if not top_colab.empty and top_colab.sum() > 0:
                             df_barh = top_colab.reset_index()
                             df_barh.columns = ["Colaborador", "Total Gasto (R$)"]
-                            fig2 = px.bar(
+                            fig3 = px.bar(
                                 df_barh, x="Total Gasto (R$)", y="Colaborador", orientation="h",
                                 color="Total Gasto (R$)",
                                 color_continuous_scale=["#1a5276", "#2e86c1", "#5dade2"],
                             )
-                            fig2.update_traces(
+                            fig3.update_traces(
                                 texttemplate="R$ %{x:,.2f}",
                                 textposition="outside",
                                 textfont=dict(size=10, color="#aed6f1"),
@@ -5570,25 +5604,24 @@ with aba9:
                                 marker_line=dict(color="#2e86c1", width=0.8),
                                 marker=dict(cornerradius=6),
                             )
-                            fig2.update_layout(**_base_layout("💰 Top 10 Colaboradores – Gasto"))
-                            fig2.update_layout(coloraxis_showscale=False, yaxis=dict(tickfont=dict(size=11)))
-                            st.plotly_chart(fig2, use_container_width=True)
+                            fig3.update_layout(**_base_layout("💰 Top 10 Colaboradores – Gasto"))
+                            fig3.update_layout(coloraxis_showscale=False, yaxis=dict(tickfont=dict(size=11)))
+                            st.plotly_chart(fig3, use_container_width=True)
                         else:
                             st.info("ℹ️ Nenhuma viagem com gasto registrado para exibir este gráfico.")
 
-                    # ── 3) Barras Verticais – Top 10 Lojas (gasto) ──
-                    g3, g4 = st.columns(2)
-                    with g3:
+                    # ── 4) Barras Verticais – Top 10 Lojas (gasto) ──
+                    with g4:
                         loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
                         if not loja_gasto.empty and loja_gasto.sum() > 0:
                             df_barv = loja_gasto.reset_index()
                             df_barv.columns = ["Loja", "Total Gasto (R$)"]
-                            fig3 = px.bar(
+                            fig4 = px.bar(
                                 df_barv, x="Loja", y="Total Gasto (R$)",
                                 color="Total Gasto (R$)",
                                 color_continuous_scale=["#154360", "#1a5276", "#2980b9"],
                             )
-                            fig3.update_traces(
+                            fig4.update_traces(
                                 texttemplate="R$ %{y:,.2f}",
                                 textposition="outside",
                                 textfont=dict(size=9, color="#aed6f1"),
@@ -5596,17 +5629,18 @@ with aba9:
                                 marker_line=dict(color="#2980b9", width=0.8),
                                 marker=dict(cornerradius=6),
                             )
-                            fig3.update_layout(**_base_layout("🏪 Top 10 Lojas – Gasto"))
-                            fig3.update_layout(
+                            fig4.update_layout(**_base_layout("🏪 Top 10 Lojas – Gasto"))
+                            fig4.update_layout(
                                 coloraxis_showscale=False,
                                 xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
                             )
-                            st.plotly_chart(fig3, use_container_width=True)
+                            st.plotly_chart(fig4, use_container_width=True)
                         else:
                             st.info("ℹ️ Nenhuma viagem com gasto registrado para exibir este gráfico.")
 
-                    # ── 4) Linha temporal – Viagens por Mês ──
-                    with g4:
+                    # ── 5) Linha temporal – Viagens por Mês ──
+                    g5, _ = st.columns([3, 1])
+                    with g5:
                         try:
                             df_v_num["MES_RAW"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce")
                             df_v_num["MES"] = df_v_num["MES_RAW"].dt.to_period("M").astype(str)
@@ -5615,8 +5649,8 @@ with aba9:
                             mes_grp = df_v_num.groupby("MES").agg(Viagens=("MES", "size"), Label=("MES_LABEL", "first")).reset_index()
                             mes_grp = mes_grp.sort_values("MES").tail(12)
                             if not mes_grp.empty:
-                                fig4 = go.Figure()
-                                fig4.add_trace(go.Scatter(
+                                fig5 = go.Figure()
+                                fig5.add_trace(go.Scatter(
                                     x=mes_grp["Label"],
                                     y=mes_grp["Viagens"],
                                     mode="lines+markers+text",
@@ -5630,18 +5664,18 @@ with aba9:
                                     hovertemplate="<b>%{x}</b><br>Viagens: %{y}",
                                     name="Viagens",
                                 ))
-                                fig4.update_layout(**_base_layout("📅 Viagens por Mês (últimos 12)"))
-                                fig4.update_layout(
+                                fig5.update_layout(**_base_layout("📅 Viagens por Mês (últimos 12)"))
+                                fig5.update_layout(
                                     xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
                                     yaxis=dict(dtick=1, title=dict(text="Quantidade", font=dict(size=11))),
                                 )
-                                st.plotly_chart(fig4, use_container_width=True)
+                                st.plotly_chart(fig5, use_container_width=True)
                         except Exception:
                             pass
 
-                    # ── 5) Barras Agrupadas – Liberado vs Gasto por Status ──
-                    g5, _ = st.columns([3, 1])
-                    with g5:
+                    # ── 6) Barras Agrupadas – Liberado vs Gasto por Status ──
+                    g6, _ = st.columns([3, 1])
+                    with g6:
                         try:
                             agg_status = df_v_num.groupby("STATUS").agg(
                                 Liberado=("TOTAL_LIBERADO", "sum"),
@@ -5649,8 +5683,8 @@ with aba9:
                             ).reset_index()
                             agg_status = agg_status[agg_status["Liberado"] + agg_status["Gasto"] > 0]
                             if not agg_status.empty:
-                                fig5 = go.Figure()
-                                fig5.add_trace(go.Bar(
+                                fig6 = go.Figure()
+                                fig6.add_trace(go.Bar(
                                     x=agg_status["STATUS"],
                                     y=agg_status["Liberado"],
                                     name="Liberado",
@@ -5660,7 +5694,7 @@ with aba9:
                                     textfont=dict(size=10, color="#82e0aa"),
                                     hovertemplate="<b>%{x}</b><br>Liberado: R$ %{y:,.2f}",
                                 ))
-                                fig5.add_trace(go.Bar(
+                                fig6.add_trace(go.Bar(
                                     x=agg_status["STATUS"],
                                     y=agg_status["Gasto"],
                                     name="Gasto",
@@ -5670,14 +5704,14 @@ with aba9:
                                     textfont=dict(size=10, color="#f1948a"),
                                     hovertemplate="<b>%{x}</b><br>Gasto: R$ %{y:,.2f}",
                                 ))
-                                fig5.update_layout(**_base_layout("📊 Liberado vs Gasto por Status"))
-                                fig5.update_layout(
+                                fig6.update_layout(**_base_layout("📊 Liberado vs Gasto por Status"))
+                                fig6.update_layout(
                                     barmode="group",
                                     bargap=0.25,
                                     xaxis=dict(tickfont=dict(size=12)),
                                     yaxis=dict(title=dict(text="R$", font=dict(size=11))),
                                 )
-                                st.plotly_chart(fig5, use_container_width=True)
+                                st.plotly_chart(fig6, use_container_width=True)
                             else:
                                 st.info("ℹ️ Nenhuma viagem com valores financeiros para exibir Liberado vs Gasto.")
                         except Exception:
