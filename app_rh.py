@@ -2627,7 +2627,13 @@ def _salvar_comprovante_viagem(num_viagem, arquivo_upload):
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     nome_seguro = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.splitext(arquivo_upload.name)[0])
     nome_arquivo = f"{nome_seguro}_{ts}{ext}"
+    # Evitar colisão de nome se arquivo já existir
+    contador = 1
     caminho = os.path.join(pasta, nome_arquivo)
+    while os.path.exists(caminho):
+        nome_arquivo = f"{nome_seguro}_{ts}_{contador}{ext}"
+        caminho = os.path.join(pasta, nome_arquivo)
+        contador += 1
     with open(caminho, "wb") as f:
         f.write(arquivo_upload.read())
     return caminho
@@ -5456,20 +5462,35 @@ with aba9:
                 else:
                     st.info("Nenhum comprovante anexado para esta viagem.")
 
-                # Upload de novo comprovante
-                novo_comp = st.file_uploader(
-                    "📤 Anexar comprovante (PDF, JPG, PNG)",
+                # Upload de comprovantes (múltiplos)
+                novos_comps = st.file_uploader(
+                    "📤 Anexar comprovantes (PDF, JPG, PNG) – você pode selecionar vários",
                     type=["pdf", "jpg", "jpeg", "png"],
+                    accept_multiple_files=True,
                     key=f"upload_prestacao_{viagem_sel_pc}",
                 )
-                if novo_comp:
-                    if st.button("📤 ENVIAR COMPROVANTE", type="primary", key=f"btn_enviar_prestacao_{viagem_sel_pc}"):
-                        caminho_salvo = _salvar_comprovante_viagem(viagem_sel_pc, novo_comp)
-                        if caminho_salvo:
-                            st.success(f"✅ Comprovante anexado à viagem {viagem_sel_pc}!")
+                if novos_comps:
+                    # Mostra prévia dos arquivos selecionados
+                    nomes_sel = [f.name for f in novos_comps]
+                    preview = f"**{len(novos_comps)} arquivo(s) selecionado(s):**  " + "  ".join([f"\n• {n}" for n in nomes_sel])
+                    st.markdown(preview)
+                    if st.button("📤 ENVIAR COMPROVANTE(S)", type="primary", key=f"btn_enviar_prestacao_{viagem_sel_pc}"):
+                        salvos = 0
+                        erros = 0
+                        for arq in novos_comps:
+                            caminho_salvo = _salvar_comprovante_viagem(viagem_sel_pc, arq)
+                            if caminho_salvo:
+                                salvos += 1
+                            else:
+                                erros += 1
+                        if salvos > 0:
+                            msg = f"✅ {salvos} comprovante(s) anexado(s) à viagem {viagem_sel_pc}!"
+                            if erros > 0:
+                                msg += f"  ⚠️ {erros} falha(s)."
+                            st.success(msg)
                             st.rerun()
                         else:
-                            st.error("Erro ao salvar comprovante.")
+                            st.error("Erro ao salvar os comprovantes.")
             else:
                 st.info("Nenhuma viagem disponível para anexar comprovantes.")
 
