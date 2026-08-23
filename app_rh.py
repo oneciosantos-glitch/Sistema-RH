@@ -5,6 +5,13 @@ try:
     MATPLOT = True
 except ImportError:
     MATPLOT = False
+
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY = True
+except ImportError:
+    PLOTLY = False
 import pandas as pd
 import os
 import sys
@@ -1469,10 +1476,12 @@ PASTA_DOCS = os.path.join(BASE_DIR, "Documentos_Lojas")
 PASTA_DOCS_FUNC = os.path.join(BASE_DIR, "Documentos_Funcionarios")
 PASTA_FOTOS = os.path.join(BASE_DIR, "Fotos_Funcionarios")
 PASTA_COMPROVANTES = os.path.join(BASE_DIR, "Comprovantes_Diarias")
+PASTA_PRESTACAO_VIAGEM = os.path.join(BASE_DIR, "Prestacao_Contas_Viagens")
 os.makedirs(PASTA_DOCS, exist_ok=True)
 os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 os.makedirs(PASTA_FOTOS, exist_ok=True)
 os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
+os.makedirs(PASTA_PRESTACAO_VIAGEM, exist_ok=True)
 
 # ====================== SISTEMA DE BACKUP AUTOMÁTICO ======================
 PASTA_BACKUPS = os.path.join(BASE_DIR, "Backups_Auto")
@@ -1538,7 +1547,7 @@ def criar_backup_automatico():
             arquivos_backupeados.append(os.path.basename(arq))
     
     # Também faz backup das pastas de documentos (fotos, comprovantes, docs)
-    for pasta_origem in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
+    for pasta_origem in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES, PASTA_PRESTACAO_VIAGEM]:
         if os.path.exists(pasta_origem):
             nome_pasta = os.path.basename(pasta_origem)
             pasta_destino = os.path.join(pasta_backup, nome_pasta)
@@ -2592,6 +2601,49 @@ def salvar_viagens(df_viagens):
         pass
     st.cache_data.clear()
 
+# ====================== PRESTAÇÃO DE CONTAS — VIAGENS ======================
+def _pasta_viagem(num_viagem):
+    """Retorna o caminho da subpasta de prestação de contas de uma viagem."""
+    subpasta = os.path.join(PASTA_PRESTACAO_VIAGEM, str(num_viagem).strip().replace("/", "-").replace("\\", "-"))
+    os.makedirs(subpasta, exist_ok=True)
+    return subpasta
+
+
+def _listar_comprovantes_viagem(num_viagem):
+    """Lista os arquivos de prestação de contas de uma viagem."""
+    pasta = _pasta_viagem(num_viagem)
+    arquivos = []
+    for f in os.listdir(pasta):
+        cam = os.path.join(pasta, f)
+        if os.path.isfile(cam):
+            arquivos.append({"nome": f, "caminho": cam, "tamanho": os.path.getsize(cam)})
+    return arquivos
+
+
+def _salvar_comprovante_viagem(num_viagem, arquivo_upload):
+    """Salva um arquivo de prestação de contas para a viagem."""
+    pasta = _pasta_viagem(num_viagem)
+    ext = os.path.splitext(arquivo_upload.name)[1].lower()
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    nome_seguro = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.splitext(arquivo_upload.name)[0])
+    nome_arquivo = f"{nome_seguro}_{ts}{ext}"
+    caminho = os.path.join(pasta, nome_arquivo)
+    with open(caminho, "wb") as f:
+        f.write(arquivo_upload.read())
+    return caminho
+
+
+def _excluir_comprovante_viagem(caminho_arquivo):
+    """Exclui um arquivo de prestação de contas."""
+    try:
+        if os.path.exists(caminho_arquivo):
+            os.remove(caminho_arquivo)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # ====================== BACKUP / RESTORE ======================
 import zipfile
 import io
@@ -2605,7 +2657,7 @@ def criar_backup_zip():
             if os.path.exists(arq):
                 zf.write(arq, os.path.basename(arq))
         # Pastas de documentos, fotos e comprovantes (caminho relativo ao BASE_DIR)
-        for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
+        for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES, PASTA_PRESTACAO_VIAGEM]:
             if os.path.exists(pasta):
                 for root, dirs, files in os.walk(pasta):
                     for file in files:
@@ -5358,6 +5410,69 @@ with aba9:
             with col_ev:
                 st.markdown("**🗑️ Para excluir:** delete as linhas na tabela (tecla Delete) e clique em SALVAR ALTERAÇÕES.")
 
+            # --- PRESTAÇÃO DE CONTAS POR VIAGEM ---
+            st.markdown("---")
+            st.markdown("### 📎 PRESTAÇÃO DE CONTAS — ANEXAR COMPROVANTES")
+            st.caption("Anexe comprovantes (PDF, JPG, PNG) por viagem específica.")
+
+            viagens_disponiveis_pc = df_v_filt["NUMERO_VIAGEM"].unique().tolist()
+            if viagens_disponiveis_pc:
+                viagem_sel_pc = st.selectbox(
+                    "Selecione a Viagem (Nº)",
+                    options=viagens_disponiveis_pc,
+                    key="sel_prestacao_viagem",
+                )
+
+                # Listar comprovantes já anexados
+                comps_existentes = _listar_comprovantes_viagem(viagem_sel_pc)
+                if comps_existentes:
+                    st.markdown(f"**📄 Comprovantes anexados ({len(comps_existentes)}):**")
+                    for comp in comps_existentes:
+                        comp_cols = st.columns([6, 3, 1])
+                        with comp_cols[0]:
+                            st.text(comp["nome"])
+                        with comp_cols[1]:
+                            tam_kb = comp["tamanho"] / 1024
+                            try:
+                                with open(comp["caminho"], "rb") as f_comp:
+                                    ext = os.path.splitext(comp["nome"])[1].lower()
+                                    mime = "application/pdf" if ext == ".pdf" else "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+                                    st.download_button(
+                                        label="⬇️ Baixar",
+                                        data=f_comp.read(),
+                                        file_name=comp["nome"],
+                                        mime=mime,
+                                        key=f"dl_comp_{comp['nome']}",
+                                    )
+                            except Exception:
+                                st.warning("Erro ao ler arquivo.")
+                        with comp_cols[2]:
+                            if st.button("🗑️", key=f"del_comp_{comp['nome']}", help="Excluir este comprovante"):
+                                if _excluir_comprovante_viagem(comp["caminho"]):
+                                    st.success("Comprovante excluído!")
+                                    st.rerun()
+                                else:
+                                    st.error("Erro ao excluir comprovante.")
+                else:
+                    st.info("Nenhum comprovante anexado para esta viagem.")
+
+                # Upload de novo comprovante
+                novo_comp = st.file_uploader(
+                    "📤 Anexar comprovante (PDF, JPG, PNG)",
+                    type=["pdf", "jpg", "jpeg", "png"],
+                    key=f"upload_prestacao_{viagem_sel_pc}",
+                )
+                if novo_comp:
+                    if st.button("📤 ENVIAR COMPROVANTE", type="primary", key=f"btn_enviar_prestacao_{viagem_sel_pc}"):
+                        caminho_salvo = _salvar_comprovante_viagem(viagem_sel_pc, novo_comp)
+                        if caminho_salvo:
+                            st.success(f"✅ Comprovante anexado à viagem {viagem_sel_pc}!")
+                            st.rerun()
+                        else:
+                            st.error("Erro ao salvar comprovante.")
+            else:
+                st.info("Nenhuma viagem disponível para anexar comprovantes.")
+
 
         # --- RESUMO, GRÁFICOS E EXPORTAÇÃO ---
         st.markdown("---")
@@ -5392,58 +5507,169 @@ with aba9:
                 st.markdown("---")
                 st.markdown("#### 📈 Gráficos")
 
-                g1, g2 = st.columns(2)
-                with g1:
-                    status_counts = df_v_num["STATUS"].value_counts()
-                    if not status_counts.empty:
-                        fig1, ax1 = plt.subplots(figsize=(4.5, 3.5))
-                        colors = {"Planejada": "#3498db", "Em Andamento": "#f1c40f", "Concluída": "#2ecc71", "Cancelada": "#e74c3c"}
-                        pie_colors = [colors.get(s, "#95a5a6") for s in status_counts.index]
-                        ax1.pie(status_counts.values, labels=status_counts.index, autopct="%1.1f%%", colors=pie_colors, startangle=90)
-                        ax1.set_title("Distribuição por Status", fontsize=10, fontweight="bold")
-                        plt.tight_layout()
-                        st.pyplot(fig1)
-                        plt.close(fig1)
+                # --- Gráficos Plotly (interativos e bonitos) ---
+                if PLOTLY:
+                    g1, g2 = st.columns(2)
+                    with g1:
+                        status_counts = df_v_num["STATUS"].value_counts()
+                        if not status_counts.empty:
+                            df_pie = status_counts.reset_index()
+                            df_pie.columns = ["Status", "Quantidade"]
+                            color_map = {"Planejada": "#3498db", "Em Andamento": "#f1c40f", "Concluída": "#2ecc71", "Cancelada": "#e74c3c"}
+                            df_pie["Cor"] = df_pie["Status"].map(color_map).fillna("#95a5a6")
+                            fig1 = px.pie(
+                                df_pie, names="Status", values="Quantidade",
+                                hole=0.45,
+                                color="Status",
+                                color_discrete_map=color_map,
+                                title="Distribuição por Status",
+                            )
+                            fig1.update_traces(
+                                textposition="inside", textinfo="percent+label",
+                                hovertemplate="<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}",
+                                marker=dict(line=dict(color="#fff", width=2)),
+                            )
+                            fig1.update_layout(
+                                font=dict(size=13),
+                                showlegend=True,
+                                legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
+                                margin=dict(t=50, b=30, l=10, r=10),
+                                height=380,
+                            )
+                            st.plotly_chart(fig1, use_container_width=True)
 
-                with g2:
-                    top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
-                    if not top_colab.empty:
-                        fig2, ax2 = plt.subplots(figsize=(4.5, 3.5))
-                        top_colab.plot(kind="barh", ax=ax2, color="#2ecc71")
-                        ax2.set_title("Top 10 Colaboradores - Total Gasto", fontsize=10, fontweight="bold")
-                        ax2.set_xlabel("R$", fontsize=8)
-                        plt.tight_layout()
-                        st.pyplot(fig2)
-                        plt.close(fig2)
+                    with g2:
+                        top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
+                        if not top_colab.empty:
+                            df_barh = top_colab.reset_index()
+                            df_barh.columns = ["Colaborador", "Total Gasto (R$)"]
+                            fig2 = px.bar(
+                                df_barh, x="Total Gasto (R$)", y="Colaborador", orientation="h",
+                                color="Total Gasto (R$)",
+                                color_continuous_scale="Greens",
+                                title="Top 10 Colaboradores - Total Gasto",
+                            )
+                            fig2.update_traces(
+                                hovertemplate="<b>%{y}</b><br>Gasto: R$ %{x:,.2f}",
+                                marker_line=dict(color="#1a9e4a", width=1),
+                            )
+                            fig2.update_layout(
+                                font=dict(size=12),
+                                yaxis=dict(tickfont=dict(size=11)),
+                                coloraxis_showscale=False,
+                                margin=dict(t=50, b=20, l=10, r=10),
+                                height=380,
+                            )
+                            st.plotly_chart(fig2, use_container_width=True)
 
-                g3, g4 = st.columns(2)
-                with g3:
-                    loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
-                    if not loja_gasto.empty:
-                        fig3, ax3 = plt.subplots(figsize=(4.5, 3.5))
-                        loja_gasto.plot(kind="bar", ax=ax3, color="#3498db")
-                        ax3.set_title("Top 10 Lojas - Total Gasto", fontsize=10, fontweight="bold")
-                        ax3.set_ylabel("R$", fontsize=8)
-                        ax3.tick_params(axis="x", rotation=45, labelsize=7)
-                        plt.tight_layout()
-                        st.pyplot(fig3)
-                        plt.close(fig3)
+                    g3, g4 = st.columns(2)
+                    with g3:
+                        loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
+                        if not loja_gasto.empty:
+                            df_barv = loja_gasto.reset_index()
+                            df_barv.columns = ["Loja", "Total Gasto (R$)"]
+                            fig3 = px.bar(
+                                df_barv, x="Loja", y="Total Gasto (R$)",
+                                color="Total Gasto (R$)",
+                                color_continuous_scale="Blues",
+                                title="Top 10 Lojas - Total Gasto",
+                            )
+                            fig3.update_traces(
+                                hovertemplate="<b>%{x}</b><br>Gasto: R$ %{y:,.2f}",
+                                marker_line=dict(color="#1a6fa8", width=1),
+                            )
+                            fig3.update_layout(
+                                font=dict(size=12),
+                                xaxis=dict(tickangle=-35, tickfont=dict(size=10)),
+                                coloraxis_showscale=False,
+                                margin=dict(t=50, b=60, l=10, r=10),
+                                height=380,
+                            )
+                            st.plotly_chart(fig3, use_container_width=True)
 
-                with g4:
-                    try:
-                        df_v_num["MES"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce").dt.to_period("M").astype(str)
-                        mes_counts = df_v_num["MES"].value_counts().sort_index().tail(12)
-                        if not mes_counts.empty:
-                            fig4, ax4 = plt.subplots(figsize=(4.5, 3.5))
-                            mes_counts.plot(kind="line", ax=ax4, marker="o", color="#e74c3c")
-                            ax4.set_title("Viagens por Mês (últimos 12)", fontsize=10, fontweight="bold")
-                            ax4.set_ylabel("Quantidade", fontsize=8)
-                            ax4.tick_params(axis="x", rotation=45, labelsize=7)
+                    with g4:
+                        try:
+                            df_v_num["MES"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce").dt.to_period("M").astype(str)
+                            mes_counts = df_v_num["MES"].value_counts().sort_index().tail(12)
+                            if not mes_counts.empty:
+                                df_mes = mes_counts.reset_index()
+                                df_mes.columns = ["Mês", "Viagens"]
+                                fig4 = px.area(
+                                    df_mes, x="Mês", y="Viagens",
+                                    title="Viagens por Mês (últimos 12)",
+                                    markers=True,
+                                    color_discrete_sequence=["#e74c3c"],
+                                )
+                                fig4.update_traces(
+                                    hovertemplate="<b>%{x}</b><br>Viagens: %{y}",
+                                    fill="tozeroy",
+                                    fillcolor="rgba(231, 76, 60, 0.15)",
+                                    line=dict(width=3, color="#e74c3c"),
+                                )
+                                fig4.update_layout(
+                                    font=dict(size=12),
+                                    xaxis=dict(tickangle=-35, tickfont=dict(size=10)),
+                                    margin=dict(t=50, b=60, l=10, r=10),
+                                    height=380,
+                                )
+                                st.plotly_chart(fig4, use_container_width=True)
+                        except Exception:
+                            pass
+
+                else:
+                    # Fallback matplotlib se Plotly não estiver disponível
+                    g1, g2 = st.columns(2)
+                    with g1:
+                        status_counts = df_v_num["STATUS"].value_counts()
+                        if not status_counts.empty and MATPLOT:
+                            fig1, ax1 = plt.subplots(figsize=(4.5, 3.5))
+                            colors = {"Planejada": "#3498db", "Em Andamento": "#f1c40f", "Concluída": "#2ecc71", "Cancelada": "#e74c3c"}
+                            pie_colors = [colors.get(s, "#95a5a6") for s in status_counts.index]
+                            ax1.pie(status_counts.values, labels=status_counts.index, autopct="%1.1f%%", colors=pie_colors, startangle=90)
+                            ax1.set_title("Distribuição por Status", fontsize=10, fontweight="bold")
                             plt.tight_layout()
-                            st.pyplot(fig4)
-                            plt.close(fig4)
-                    except Exception:
-                        pass
+                            st.pyplot(fig1)
+                            plt.close(fig1)
+
+                    with g2:
+                        top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
+                        if not top_colab.empty and MATPLOT:
+                            fig2, ax2 = plt.subplots(figsize=(4.5, 3.5))
+                            top_colab.plot(kind="barh", ax=ax2, color="#2ecc71")
+                            ax2.set_title("Top 10 Colaboradores - Total Gasto", fontsize=10, fontweight="bold")
+                            ax2.set_xlabel("R$", fontsize=8)
+                            plt.tight_layout()
+                            st.pyplot(fig2)
+                            plt.close(fig2)
+
+                    g3, g4 = st.columns(2)
+                    with g3:
+                        loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
+                        if not loja_gasto.empty and MATPLOT:
+                            fig3, ax3 = plt.subplots(figsize=(4.5, 3.5))
+                            loja_gasto.plot(kind="bar", ax=ax3, color="#3498db")
+                            ax3.set_title("Top 10 Lojas - Total Gasto", fontsize=10, fontweight="bold")
+                            ax3.set_ylabel("R$", fontsize=8)
+                            ax3.tick_params(axis="x", rotation=45, labelsize=7)
+                            plt.tight_layout()
+                            st.pyplot(fig3)
+                            plt.close(fig3)
+
+                    with g4:
+                        try:
+                            df_v_num["MES"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce").dt.to_period("M").astype(str)
+                            mes_counts = df_v_num["MES"].value_counts().sort_index().tail(12)
+                            if not mes_counts.empty and MATPLOT:
+                                fig4, ax4 = plt.subplots(figsize=(4.5, 3.5))
+                                mes_counts.plot(kind="line", ax=ax4, marker="o", color="#e74c3c")
+                                ax4.set_title("Viagens por Mês (últimos 12)", fontsize=10, fontweight="bold")
+                                ax4.set_ylabel("Quantidade", fontsize=8)
+                                ax4.tick_params(axis="x", rotation=45, labelsize=7)
+                                plt.tight_layout()
+                                st.pyplot(fig4)
+                                plt.close(fig4)
+                        except Exception:
+                            pass
 
                 st.markdown("---")
                 st.markdown("#### 📥 EXPORTAR DADOS")
@@ -5570,7 +5796,7 @@ with aba10:
 
     st.markdown("---")
     st.markdown("### 📂 Arquivos Atuais no Sistema")
-    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+    col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
     with col_b1:
         st.metric("📎 Docs Lojas", len(os.listdir(PASTA_DOCS)) if os.path.exists(PASTA_DOCS) else 0)
     with col_b2:
@@ -5579,6 +5805,9 @@ with aba10:
         st.metric("🖼️ Fotos", len(os.listdir(PASTA_FOTOS)) if os.path.exists(PASTA_FOTOS) else 0)
     with col_b4:
         st.metric("📎 Comprovantes", len(os.listdir(PASTA_COMPROVANTES)) if os.path.exists(PASTA_COMPROVANTES) else 0)
+    with col_b5:
+        _total_pcv = sum(len(files) for _, _, files in os.walk(PASTA_PRESTACAO_VIAGEM)) if os.path.exists(PASTA_PRESTACAO_VIAGEM) else 0
+        st.metric("🧾 Prest. Contas Viag.", _total_pcv)
 
     st.markdown("---")
     st.caption("Dica: Faça backup periodicamente ou sempre antes de atualizar o código no Streamlit Cloud.")
