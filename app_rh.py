@@ -3421,21 +3421,29 @@ with aba8:
         ⚠️ **Atenção:** ao carregar uma planilha, os dados anteriores serão substituídos pelos dados do arquivo. Faça backup se necessário.
         """)
     
-    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
+    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx ou .csv)", type=["xlsx", "csv"], key="upload_diarias")
     if arq_diarias is not None:
         # Salva temporariamente para validar
-        temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
+        _ext = ".csv" if arq_diarias.name.lower().endswith(".csv") else ".xlsx"
+        temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), f"_temp_diarias{_ext}")
         with open(temp_path, "wb") as f:
             f.write(arq_diarias.read())
         
         # Valida se o arquivo tem dados legíveis
         try:
-            df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
+            if _ext == ".csv":
+                df_test = pd.read_csv(temp_path, dtype=str, keep_default_na=False)
+            else:
+                df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
             if df_test.empty or df_test.shape[0] < 1:
                 st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
             else:
-                # Move o arquivo temporário para o definitivo
-                shutil.move(temp_path, ARQUIVO_DIARIAS)
+                # Se veio CSV, converte para XLSX (formato nativo do app)
+                if _ext == ".csv":
+                    df_test.to_excel(ARQUIVO_DIARIAS, index=False, engine="openpyxl")
+                    if os.path.exists(temp_path): os.remove(temp_path)
+                else:
+                    shutil.move(temp_path, ARQUIVO_DIARIAS)
                 st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
                 st.info("🔄 A página será atualizada em instantes...")
                 st.rerun()
