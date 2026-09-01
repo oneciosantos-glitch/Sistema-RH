@@ -3326,7 +3326,10 @@ with aba6:
     else:
         for i,d in filt.iterrows():
             with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
-                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                if os.path.isfile(d["Caminho"]):
+                    with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                else:
+                    st.caption("⚠️ Arquivo não encontrado no disco")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
                     os.remove(d["Caminho"])
                     dados["Docs_Lojas"].drop(i,inplace=True)
