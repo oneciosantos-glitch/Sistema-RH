@@ -5,21 +5,14 @@ try:
     MATPLOT = True
 except ImportError:
     MATPLOT = False
-
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    PLOTLY = True
-except ImportError:
-    PLOTLY = False
 import pandas as pd
 import os
-import sys
 import shutil
 import time
 import io
 import json
 import hashlib
+import sqlite3
 import requests
 from datetime import datetime, timedelta
 from PIL import Image
@@ -97,10 +90,9 @@ except AttributeError:
 
 
 # ========== DADOS ==========
-# Fallback estático (usado apenas quando Auxiliares não tem dados de Cliente/Loja)
-CLIENTES_FALLBACK = ["Smart Fit", "Self Fit", "Assaí Atacadista"]
+CLIENTES = ["Smart Fit", "Self Fit", "Assaí Atacadista"]
 
-LOJAS_POR_CLIENTE_FALLBACK = {
+LOJAS_POR_CLIENTE = {
     "Smart Fit": [
         "Smart Fit Shopping Manoa", "Smart Fit Shopping Cidade Leste", "Smart Fit Macapá Shopping",
         "Smart Fit Shopping Grande Circular", "Smart Fit Shopping Via Norte", "Smart Fit Cidade Nova",
@@ -119,7 +111,7 @@ LOJAS_POR_CLIENTE_FALLBACK = {
     ]
 }
 
-MATERIAIS_POR_CLIENTE_FALLBACK = {
+MATERIAIS_POR_CLIENTE = {
     "Smart Fit": [
         "ÁGUA SANITÁRIA", "ASPIRADOR SEMI-INDUSTRIAL 23L", "BALDE 15L", "BALDE 6L",
         "BALDE ESPREMEDOR COMPLETO", "CABO DE ALUMINIO SEM ROSCA", "DISCO VERMELHO 510",
@@ -149,7 +141,7 @@ MATERIAIS_POR_CLIENTE_FALLBACK = {
     ]
 }
 
-EPIS_POR_CLIENTE_FALLBACK = {
+EPIS_POR_CLIENTE = {
     "Smart Fit": [
         "Luva látex", "Óculos de proteção", "Luva de Vinil", "Máscara de Proteção",
         "Protetor auricular plug", "Protetor tipo concha", "Luva para jardineiro", "Avental de raspa",
@@ -251,13 +243,20 @@ def formatar_moeda(v):
 def init_session_state():
     if "compras_solicitacoes" not in st.session_state:
         sols, ents = [], []
-        # Tenta carregar do Google Sheets
-        if GS_ENABLED and GS_ID_COMPRAS:
-            try:
-                sols, ents = _carregar_compras_gs()
-            except Exception:
-                sols, ents = [], []
-        # Se não conseguiu do GS, carrega do arquivo local (com cache)
+        # 1) Tenta carregar do SQLite (primário)
+        try:
+            sols = _sqlite_list("compras_solicitacoes", "data DESC")
+            ents = _sqlite_list("compras_entregas", "data DESC")
+        except Exception:
+            sols, ents = [], []
+        # 2) Se SQLite vazio, tenta Google Sheets
+        if not sols and not ents:
+            if GS_ENABLED and GS_ID_COMPRAS:
+                try:
+                    sols, ents = _carregar_compras_gs()
+                except Exception:
+                    sols, ents = [], []
+        # 3) Se ainda vazio, carrega do arquivo local JSON (com cache)
         if not sols and not ents:
             mtime = os.path.getmtime(ARQUIVO_COMPRAS) if os.path.exists(ARQUIVO_COMPRAS) else 0.0
             sols, ents = _cached_carregar_compras_local(ARQUIVO_COMPRAS, mtime)
@@ -268,6 +267,12 @@ def init_session_state():
                         dados = json.load(f)
                     sols = dados.get("solicitacoes", [])
                     ents = dados.get("entregas", [])
+                except Exception:
+                    pass
+            # Se carregou do JSON e não do SQLite, popula o SQLite
+            if sols or ents:
+                try:
+                    _sqlite_salvar_tudo_compras(sols, ents)
                 except Exception:
                     pass
         st.session_state["compras_solicitacoes"] = sols
@@ -585,12 +590,6 @@ def _salvar_compras_local(solicitacoes, entregas):
         hash_antigo = st.session_state.get(chave_cache, "")
         if hash_novo == hash_antigo:
             return  # sem mudanças, ignora
-        
-        # BACKUP AUTOMÁTICO antes de salvar
-        try:
-            pasta_bkp, arqs = criar_backup_automatico()
-        except Exception:
-            pass
         # Protecao: nao salvar dados vazios por cima de arquivo existente com dados
         if not solicitacoes and not entregas and os.path.exists(ARQUIVO_COMPRAS) and os.path.getsize(ARQUIVO_COMPRAS) > 10:
             try:
@@ -619,63 +618,30 @@ def _carregar_compras_local():
             conteudo = f.read()
         if not conteudo.strip():
             st.warning(f"⚠️ Arquivo de compras vazio: {caminho}")
-            # Tentar restaurar do backup
-            sols, ents = _tentar_restaurar_compras()
-            if sols or ents:
-                st.toast("🛡️ Compras recuperadas automaticamente do backup!")
-                return sols, ents
             return [], []
         dados = json.loads(conteudo)
         sols = dados.get("solicitacoes", [])
         ents = dados.get("entregas", [])
-        # PROTEÇÃO CONTRA DADOS VAZIOS: tentar restaurar do último backup se os dados foram perdidos
-        if _compras_estao_vazias(sols, ents):
-            sols_bkp, ents_bkp = _tentar_restaurar_compras()
-            if sols_bkp or ents_bkp:
-                st.toast("🛡️ Compras recuperadas automaticamente do backup!")
-                return sols_bkp, ents_bkp
         st.toast(f"📂 Compras carregadas do arquivo ({len(sols)} solicitações, {len(ents)} entregas)")
         return sols, ents
     except Exception as e:
         st.error(f"❌ Erro ao carregar compras do arquivo {caminho}: {e}")
-        # Tentar restaurar do backup em caso de erro
-        sols, ents = _tentar_restaurar_compras()
-        if sols or ents:
-            st.toast("🛡️ Compras recuperadas automaticamente do backup!")
-            return sols, ents
-        return [], []
-
-
-def _tentar_restaurar_compras():
-    """Tenta restaurar compras do último backup válido."""
-    try:
-        backups = listar_backups_automaticos()
-        if not backups:
-            return [], []
-        for _, _, bkp_path in backups:
-            try:
-                with zipfile.ZipFile(bkp_path, "r") as zf:
-                    if os.path.basename(ARQUIVO_COMPRAS) in zf.namelist():
-                        conteudo = zf.read(os.path.basename(ARQUIVO_COMPRAS)).decode("utf-8")
-                        dados = json.loads(conteudo)
-                        sols = dados.get("solicitacoes", [])
-                        ents = dados.get("entregas", [])
-                        if sols or ents:
-                            return sols, ents
-            except Exception:
-                continue
-        return [], []
-    except Exception:
         return [], []
 
 
 def _salvar_compras_automatico():
-    """Salva automaticamente o estado atual do módulo de compras no Google Sheets e localmente."""
+    """Salva automaticamente o estado atual do módulo de compras: SQLite → JSON → GS(bg)."""
     import sys, threading
     sols = st.session_state.get("compras_solicitacoes", [])
     ents = st.session_state.get("compras_entregas", [])
-    # Sempre salva localmente para garantir persistência (com cache de hash)
+    # 1) Salva no SQLite primeiro (mais robusto)
+    try:
+        _sqlite_salvar_tudo_compras(sols, ents)
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar no SQLite: {e}", file=sys.stderr)
+    # 2) Salva localmente em JSON (backup)
     _salvar_compras_local(sols, ents)
+    # 3) Salva no Google Sheets em background
     if not GS_ENABLED or not GS_ID_COMPRAS:
         return
 
@@ -703,9 +669,9 @@ def page_solicitacoes():
         with c2:
             fstatus = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, key="sol_fstatus")
         with c3:
-            floja = st.selectbox("Loja", ["Todas"] + sorted(list(set(l for c in lista_lojas_por_cliente().values() for l in c))), key="sol_floja")
+            floja = st.selectbox("Loja", ["Todas"] + sorted(list(set(l for c in LOJAS_POR_CLIENTE.values() for l in c))), key="sol_floja")
         with c4:
-            fcliente = st.selectbox("Cliente", ["Todos"] + lista_clientes(), key="sol_fcliente")
+            fcliente = st.selectbox("Cliente", ["Todos"] + CLIENTES, key="sol_fcliente")
         with c5:
             fdi_txt = st.text_input("Data Início (DD/MM/AAAA)", value="", key="sol_fdi")
             fdi = _parse_data_br(fdi_txt) if fdi_txt.strip() else None
@@ -814,7 +780,7 @@ def page_nova_solicitacao():
 
     # ── INICIALIZA VALORES PADRÃO NO SESSION_STATE ──
     if "nova_cliente" not in st.session_state:
-        st.session_state["nova_cliente"] = edit_sol["cliente"] if edit_sol and edit_sol.get("cliente") in lista_clientes() else lista_clientes()[0]
+        st.session_state["nova_cliente"] = edit_sol["cliente"] if edit_sol and edit_sol.get("cliente") in CLIENTES else CLIENTES[0]
     if "nova_loja" not in st.session_state:
         st.session_state["nova_loja"] = edit_sol["loja"] if edit_sol and edit_sol.get("loja") else ""
     if "nova_tipo" not in st.session_state:
@@ -850,9 +816,9 @@ def page_nova_solicitacao():
     # ── WIDGETS COM KEY (sem st.form) ──
     col_sel1, col_sel2, col_sel3 = st.columns(3)
     with col_sel1:
-        st.selectbox("Cliente *", lista_clientes(), key="nova_cliente")
+        st.selectbox("Cliente *", CLIENTES, key="nova_cliente")
     with col_sel2:
-        lojas = lista_lojas_por_cliente(st.session_state["nova_cliente"])
+        lojas = LOJAS_POR_CLIENTE.get(st.session_state["nova_cliente"], [])
         if st.session_state["nova_loja"] not in lojas:
             st.session_state["nova_loja"] = lojas[0] if lojas else ""
         st.selectbox("Loja *", lojas, key="nova_loja")
@@ -883,7 +849,7 @@ def page_nova_solicitacao():
         st.text_input("Data Última Bota (DD/MM/AAAA)", key="nova_data_bota")
 
     # ── VALORES FINAIS DO CABEÇALHO ──
-    cliente = st.session_state.get("nova_cliente", lista_clientes()[0])
+    cliente = st.session_state.get("nova_cliente", CLIENTES[0])
     loja = st.session_state.get("nova_loja", "")
     tipo = st.session_state.get("nova_tipo", TIPOS_SOLICITACAO[0])
     solicitante = st.session_state.get("nova_solicitante", "")
@@ -920,7 +886,7 @@ def page_nova_solicitacao():
 
     if tipo == "Material":
         st.markdown("**Materiais**")
-        materiais = lista_materiais_por_cliente(cliente)
+        materiais = MATERIAIS_POR_CLIENTE.get(cliente, [])
         itens_mat = st.session_state.get("compras_nova_itens_material", [])
 
         if itens_mat:
@@ -954,7 +920,7 @@ def page_nova_solicitacao():
 
     elif tipo == "EPI":
         st.markdown("**EPIs**")
-        epis = lista_epis_por_cliente(cliente) or lista_epis_por_cliente("Smart Fit")
+        epis = EPIS_POR_CLIENTE.get(cliente, EPIS_POR_CLIENTE.get("Smart Fit", []))
         itens_epi = st.session_state.get("compras_nova_itens_epi", [])
 
         if itens_epi:
@@ -1231,9 +1197,9 @@ def page_materiais():
     tab_mat, tab_epi, tab_cad = st.tabs(["📦 Materiais", "👷 EPIs", "➕ Cadastrar Novo"])
 
     with tab_mat:
-        fcliente = st.selectbox("Filtrar por Cliente", ["Todos"] + lista_clientes(), key="mat_fcliente_tab")
+        fcliente = st.selectbox("Filtrar por Cliente", ["Todos"] + CLIENTES, key="mat_fcliente_tab")
         dados = []
-        for cliente, lista in lista_materiais_por_cliente().items():
+        for cliente, lista in MATERIAIS_POR_CLIENTE.items():
             if fcliente != "Todos" and cliente != fcliente:
                 continue
             for idx, nome in enumerate(lista, 1):
@@ -1245,9 +1211,9 @@ def page_materiais():
             st.info("Nenhum material encontrado.")
 
     with tab_epi:
-        fcliente_epi = st.selectbox("Filtrar por Cliente", ["Todos"] + lista_clientes(), key="epi_fcliente_tab")
+        fcliente_epi = st.selectbox("Filtrar por Cliente", ["Todos"] + CLIENTES, key="epi_fcliente_tab")
         dados_epi = []
-        for cliente, lista in lista_epis_por_cliente().items():
+        for cliente, lista in EPIS_POR_CLIENTE.items():
             if fcliente_epi != "Todos" and cliente != fcliente_epi:
                 continue
             for idx, nome in enumerate(lista, 1):
@@ -1261,42 +1227,26 @@ def page_materiais():
     with tab_cad:
         st.markdown("#### ➕ Cadastrar Novo Item")
         tipo_cad = st.selectbox("Tipo", ["Material", "EPI"], key="cad_tipo")
-        cliente_cad = st.selectbox("Cliente", lista_clientes(), key="cad_cliente")
+        cliente_cad = st.selectbox("Cliente", CLIENTES, key="cad_cliente")
         nome_cad = st.text_input("Nome do Item *", key="cad_nome")
         if st.button("💾 Salvar Item", type="primary", key="cad_salvar"):
             if not nome_cad.strip():
                 st.error("Informe o nome do item.")
             else:
                 if tipo_cad == "Material":
-                    mats_existentes = lista_materiais_por_cliente(cliente_cad)
-                    if nome_cad.strip() not in mats_existentes:
-                        dados_salvar = carregar_dados()
-                        nova_linha = {"Loja": "", "Cargo": "", "Cliente": cliente_cad, "Material": nome_cad.strip(), "EPI": ""}
-                        # Garantir colunas existam
-                        for col in ["Cliente", "Material", "EPI"]:
-                            if col not in dados_salvar["Auxiliares"].columns:
-                                dados_salvar["Auxiliares"][col] = ""
-                        dados_salvar["Auxiliares"] = pd.concat([dados_salvar["Auxiliares"], pd.DataFrame([nova_linha])], ignore_index=True)
-                        if salvar_dados(dados_salvar):
-                            st.success(f"Material '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-                        else:
-                            st.error("❌ Não foi possível salvar os dados.")
+                    if nome_cad.strip() not in MATERIAIS_POR_CLIENTE.get(cliente_cad, []):
+                        MATERIAIS_POR_CLIENTE.setdefault(cliente_cad, [])
+                        MATERIAIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
+                        st.success(f"Material '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
+            # Fragmento reexecuta automaticamente
                     else:
                         st.warning("Este material já está cadastrado para este cliente.")
                 else:
-                    epis_existentes = lista_epis_por_cliente(cliente_cad)
-                    if nome_cad.strip() not in epis_existentes:
-                        dados_salvar = carregar_dados()
-                        nova_linha = {"Loja": "", "Cargo": "", "Cliente": cliente_cad, "Material": "", "EPI": nome_cad.strip()}
-                        # Garantir colunas existam
-                        for col in ["Cliente", "Material", "EPI"]:
-                            if col not in dados_salvar["Auxiliares"].columns:
-                                dados_salvar["Auxiliares"][col] = ""
-                        dados_salvar["Auxiliares"] = pd.concat([dados_salvar["Auxiliares"], pd.DataFrame([nova_linha])], ignore_index=True)
-                        if salvar_dados(dados_salvar):
-                            st.success(f"EPI '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
-                        else:
-                            st.error("❌ Não foi possível salvar os dados.")
+                    if nome_cad.strip() not in EPIS_POR_CLIENTE.get(cliente_cad, []):
+                        EPIS_POR_CLIENTE.setdefault(cliente_cad, [])
+                        EPIS_POR_CLIENTE[cliente_cad].append(nome_cad.strip())
+                        st.success(f"EPI '{nome_cad.strip()}' cadastrado para {cliente_cad}!")
+            # Fragmento reexecuta automaticamente
                     else:
                         st.warning("Este EPI já está cadastrado para este cliente.")
 
@@ -1304,40 +1254,17 @@ def page_materiais():
 def page_lojas():
     st.markdown("### 🏬 Lojas e Clientes")
 
-    tab1, tab2, tab3 = st.tabs(["Lojas", "Clientes", "➕ Adicionar Cliente"])
+    tab1, tab2 = st.tabs(["Lojas", "Clientes"])
     with tab1:
         dados = []
-        for cliente in lista_clientes():
-            for loja in lista_lojas_por_cliente(cliente):
+        for cliente, lista in LOJAS_POR_CLIENTE.items():
+            for loja in lista:
                 dados.append({"Loja": loja, "Cliente": cliente})
-        df = pd.DataFrame(dados) if dados else pd.DataFrame(columns=["Loja", "Cliente"])
+        df = pd.DataFrame(dados)
         st.dataframe(df, use_container_width=True, hide_index=True)
     with tab2:
-        clientes_atuais = lista_clientes()
-        df = pd.DataFrame([{"Cliente": c, "Qtd Lojas": len(lista_lojas_por_cliente(c)), "Qtd Materiais": len(lista_materiais_por_cliente(c)), "Qtd EPIs": len(lista_epis_por_cliente(c))} for c in clientes_atuais])
+        df = pd.DataFrame([{"Cliente": c, "Qtd Lojas": len(LOJAS_POR_CLIENTE.get(c, [])), "Qtd Materiais": len(MATERIAIS_POR_CLIENTE.get(c, [])), "Qtd EPIs": len(EPIS_POR_CLIENTE.get(c, []))} for c in CLIENTES])
         st.dataframe(df, use_container_width=True, hide_index=True)
-    with tab3:
-        st.markdown("#### ➕ Adicionar Novo Cliente")
-        novo_cliente = st.text_input("Nome do novo cliente:", key="novo_cliente_input")
-        if st.button("💾 Cadastrar Cliente", key="btn_cad_cliente"):
-            if novo_cliente.strip():
-                clientes_existentes = lista_clientes()
-                if novo_cliente.strip() not in clientes_existentes:
-                    dados_salvar = carregar_dados()
-                    nova_linha = {"Loja": "", "Cargo": "", "Cliente": novo_cliente.strip(), "Material": "", "EPI": ""}
-                    for col in ["Cliente", "Material", "EPI"]:
-                        if col not in dados_salvar["Auxiliares"].columns:
-                            dados_salvar["Auxiliares"][col] = ""
-                    dados_salvar["Auxiliares"] = pd.concat([dados_salvar["Auxiliares"], pd.DataFrame([nova_linha])], ignore_index=True)
-                    if salvar_dados(dados_salvar):
-                        st.success(f"Cliente '{novo_cliente.strip()}' cadastrado com sucesso!")
-                        st.rerun()
-                    else:
-                        st.error("Não foi possível salvar os dados.")
-                else:
-                    st.warning("Este cliente já está cadastrado.")
-            else:
-                st.warning("Digite um nome válido para o cliente.")
 
 
 def page_relatorios():
@@ -1465,6 +1392,7 @@ def render_compras():
 # Diretório base fixo onde o script está (garante persistência entre reinícios)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Log de diagnóstico no stderr para debug de persistência
+import sys
 print(f"[DEBUG] BASE_DIR={BASE_DIR}", file=sys.stderr)
 print(f"[DEBUG] ARQUIVO_COMPRAS={os.path.join(BASE_DIR, 'dados_compras.json')}", file=sys.stderr)
 
@@ -1476,198 +1404,154 @@ PASTA_DOCS = os.path.join(BASE_DIR, "Documentos_Lojas")
 PASTA_DOCS_FUNC = os.path.join(BASE_DIR, "Documentos_Funcionarios")
 PASTA_FOTOS = os.path.join(BASE_DIR, "Fotos_Funcionarios")
 PASTA_COMPROVANTES = os.path.join(BASE_DIR, "Comprovantes_Diarias")
-PASTA_PRESTACAO_VIAGEM = os.path.join(BASE_DIR, "Prestacao_Contas_Viagens")
 os.makedirs(PASTA_DOCS, exist_ok=True)
 os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 os.makedirs(PASTA_FOTOS, exist_ok=True)
 os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
-os.makedirs(PASTA_PRESTACAO_VIAGEM, exist_ok=True)
 
-# ====================== SISTEMA DE BACKUP AUTOMÁTICO ======================
-PASTA_BACKUPS = os.path.join(BASE_DIR, "Backups_Auto")
-os.makedirs(PASTA_BACKUPS, exist_ok=True)
-MAX_BACKUPS = 50  # Mantém os últimos 50 backups
-INTERVALO_BACKUP_MINUTOS = 30  # Faz backup automático a cada 30 minutos
+# ====================== SQLITE PERSISTÊNCIA ======================
+DB_PATH = os.path.join(BASE_DIR, "rh_app.db")
 
-ARQUIVOS_CRITICOS = [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS]
+def _get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
+def init_db():
+    conn = _get_conn()
+    c = conn.cursor()
+    c.executescript('''
+        CREATE TABLE IF NOT EXISTS compras_solicitacoes (
+            id TEXT PRIMARY KEY,
+            data TEXT, item TEXT, quantidade TEXT, unidade TEXT,
+            justificativa TEXT, setor TEXT, status TEXT, urgencia TEXT,
+            link TEXT, observacao TEXT, data_edicao TEXT, editado_por TEXT
+        );
+        CREATE TABLE IF NOT EXISTS compras_entregas (
+            id TEXT PRIMARY KEY,
+            solicitacao_id TEXT, data TEXT, fornecedor TEXT, quantidade TEXT,
+            nf TEXT, observacao TEXT, data_registro TEXT
+        );
+        CREATE TABLE IF NOT EXISTS traducoes_historico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, origem TEXT, destino TEXT, texto_original TEXT, texto_traduzido TEXT
+        );
+        CREATE TABLE IF NOT EXISTS tts_historico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, idioma_origem TEXT, idioma_destino TEXT, texto_original TEXT, texto_convertido TEXT, audio_bytes BLOB
+        );
+        CREATE TABLE IF NOT EXISTS stt_historico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, idioma_audio TEXT, cod_audio TEXT, idioma_trad TEXT, cod_trad TEXT, texto_transcrito TEXT, texto_traduzido TEXT, audio_bytes BLOB
+        );
+    ''')
+    conn.commit()
+    conn.close()
 
-def _dados_estao_vazios(dados):
-    """Verifica se os dados carregados estão vazios ou corrompidos.
-    Checa tanto o total geral quanto a Base_Dados especificamente —
-    se a Base_Dados estiver vazia mas outras abas tiverem dados,
-    isso indica corrupção parcial e também retorna True.
-    """
-    if not dados or not isinstance(dados, dict):
-        return True
-    # Verifica se Base_Dados (aba crítica) está vazia
-    base = dados.get("Base_Dados")
-    if base is None or not isinstance(base, pd.DataFrame) or len(base) == 0:
-        return True
-    # Verifica se TODAS as abas estão vazias
-    total_registros = 0
-    for aba, df in dados.items():
-        if isinstance(df, pd.DataFrame):
-            total_registros += len(df)
-    return total_registros == 0
+init_db()
 
+def _sqlite_list(table, order_by="id"):
+    conn = _get_conn()
+    rows = conn.execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
-def _diarias_estao_vazias(df):
-    """Verifica se o DataFrame de diárias está vazio."""
-    if df is None or not isinstance(df, pd.DataFrame):
-        return True
-    return len(df) == 0
+def _sqlite_upsert_solicitacao(s):
+    conn = _get_conn()
+    conn.execute('''INSERT OR REPLACE INTO compras_solicitacoes
+        (id,data,item,quantidade,unidade,justificativa,setor,status,urgencia,link,observacao,data_edicao,editado_por)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (s.get('id',''), s.get('data',''), s.get('item',''), s.get('quantidade',''),
+         s.get('unidade',''), s.get('justificativa',''), s.get('setor',''),
+         s.get('status',''), s.get('urgencia',''), s.get('link',''),
+         s.get('observacao',''), s.get('data_edicao',''), s.get('editado_por','')))
+    conn.commit()
+    conn.close()
 
+def _sqlite_upsert_entrega(e):
+    conn = _get_conn()
+    conn.execute('''INSERT OR REPLACE INTO compras_entregas
+        (id,solicitacao_id,data,fornecedor,quantidade,nf,observacao,data_registro)
+        VALUES(?,?,?,?,?,?,?,?)''',
+        (e.get('id',''), e.get('solicitacao_id',''), e.get('data',''),
+         e.get('fornecedor',''), e.get('quantidade',''), e.get('nf',''),
+         e.get('observacao',''), e.get('data_registro','')))
+    conn.commit()
+    conn.close()
 
-def _viagens_estao_vazias(df):
-    """Verifica se o DataFrame de viagens está vazio."""
-    if df is None or not isinstance(df, pd.DataFrame):
-        return True
-    return len(df) == 0
+def _sqlite_delete_solicitacao(sid):
+    conn = _get_conn()
+    conn.execute("DELETE FROM compras_solicitacoes WHERE id=?", (sid,))
+    conn.execute("DELETE FROM compras_entregas WHERE solicitacao_id=?", (sid,))
+    conn.commit()
+    conn.close()
 
+def _sqlite_delete_entrega(eid):
+    conn = _get_conn()
+    conn.execute("DELETE FROM compras_entregas WHERE id=?", (eid,))
+    conn.commit()
+    conn.close()
 
-def _compras_estao_vazias(solicitacoes, entregas):
-    """Verifica se os dados de compras estão vazios."""
-    sol_vazio = not solicitacoes or len(solicitacoes) == 0
-    ent_vazio = not entregas or len(entregas) == 0
-    return sol_vazio and ent_vazio
+def _sqlite_salvar_tudo_compras(solicitacoes, entregas):
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM compras_solicitacoes")
+    c.execute("DELETE FROM compras_entregas")
+    for s in solicitacoes:
+        c.execute('''INSERT OR REPLACE INTO compras_solicitacoes
+            (id,data,item,quantidade,unidade,justificativa,setor,status,urgencia,link,observacao,data_edicao,editado_por)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (s.get('id',''), s.get('data',''), s.get('item',''), s.get('quantidade',''),
+             s.get('unidade',''), s.get('justificativa',''), s.get('setor',''),
+             s.get('status',''), s.get('urgencia',''), s.get('link',''),
+             s.get('observacao',''), s.get('data_edicao',''), s.get('editado_por','')))
+    for e in entregas:
+        c.execute('''INSERT OR REPLACE INTO compras_entregas
+            (id,solicitacao_id,data,fornecedor,quantidade,nf,observacao,data_registro)
+            VALUES(?,?,?,?,?,?,?,?)''',
+            (e.get('id',''), e.get('solicitacao_id',''), e.get('data',''),
+             e.get('fornecedor',''), e.get('quantidade',''), e.get('nf',''),
+             e.get('observacao',''), e.get('data_registro','')))
+    conn.commit()
+    conn.close()
 
+def _sqlite_add_traducao(entry):
+    conn = _get_conn()
+    conn.execute('''INSERT INTO traducoes_historico (timestamp,origem,destino,texto_original,texto_traduzido)
+        VALUES(?,?,?,?,?)''',
+        (entry.get('timestamp',''), entry.get('origem',''), entry.get('destino',''),
+         entry.get('texto_original',''), entry.get('texto_traduzido','')))
+    conn.commit()
+    conn.close()
 
-def criar_backup_automatico():
-    """Cria um backup com timestamp de todos os arquivos críticos."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pasta_backup = os.path.join(PASTA_BACKUPS, f"backup_{timestamp}")
-    os.makedirs(pasta_backup, exist_ok=True)
-    
-    arquivos_backupeados = []
-    for arq in ARQUIVOS_CRITICOS:
-        if os.path.exists(arq) and os.path.getsize(arq) > 0:
-            destino = os.path.join(pasta_backup, os.path.basename(arq))
-            shutil.copy2(arq, destino)
-            arquivos_backupeados.append(os.path.basename(arq))
-    
-    # Também faz backup das pastas de documentos (fotos, comprovantes, docs)
-    for pasta_origem in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES, PASTA_PRESTACAO_VIAGEM]:
-        if os.path.exists(pasta_origem):
-            nome_pasta = os.path.basename(pasta_origem)
-            pasta_destino = os.path.join(pasta_backup, nome_pasta)
-            os.makedirs(pasta_destino, exist_ok=True)
-            for root, dirs, files in os.walk(pasta_origem):
-                for file in files:
-                    src = os.path.join(root, file)
-                    rel = os.path.relpath(src, pasta_origem)
-                    dst = os.path.join(pasta_destino, rel)
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copy2(src, dst)
-    
-    # Limpa backups antigos (mantém apenas os MAX_BACKUPS mais recentes)
-    try:
-        backups = sorted([d for d in os.listdir(PASTA_BACKUPS) if d.startswith("backup_")])
-        while len(backups) > MAX_BACKUPS:
-            pasta_antiga = os.path.join(PASTA_BACKUPS, backups.pop(0))
-            shutil.rmtree(pasta_antiga, ignore_errors=True)
-    except Exception:
-        pass
-    
-    return pasta_backup, arquivos_backupeados
+def _sqlite_add_tts(entry):
+    conn = _get_conn()
+    conn.execute('''INSERT INTO tts_historico (timestamp,idioma_origem,idioma_destino,texto_original,texto_convertido,audio_bytes)
+        VALUES(?,?,?,?,?,?)''',
+        (entry.get('timestamp',''), entry.get('idioma_origem',''), entry.get('idioma_destino',''),
+         entry.get('texto_original',''), entry.get('texto_convertido',''), entry.get('audio_bytes','')))
+    conn.commit()
+    conn.close()
 
+def _sqlite_add_stt(entry):
+    conn = _get_conn()
+    conn.execute('''INSERT INTO stt_historico (timestamp,idioma_audio,cod_audio,idioma_trad,cod_trad,texto_transcrito,texto_traduzido,audio_bytes)
+        VALUES(?,?,?,?,?,?,?,?)''',
+        (entry.get('timestamp',''), entry.get('idioma_audio',''), entry.get('cod_audio',''),
+         entry.get('idioma_trad',''), entry.get('cod_trad',''),
+         entry.get('texto_transcrito',''), entry.get('texto_traduzido',''), entry.get('audio_bytes','')))
+    conn.commit()
+    conn.close()
 
-def listar_backups_automaticos():
-    """Retorna lista de backups automáticos ordenados do mais recente ao mais antigo."""
-    if not os.path.exists(PASTA_BACKUPS):
-        return []
-    backups = [d for d in os.listdir(PASTA_BACKUPS) if d.startswith("backup_")]
-    backups.sort(reverse=True)
-    return backups
+def _sqlite_clear_table(table):
+    conn = _get_conn()
+    conn.execute(f"DELETE FROM {table}")
+    conn.commit()
+    conn.close()
 
-
-def restaurar_backup_automatico(nome_backup):
-    """Restaura todos os arquivos críticos a partir de um backup automático."""
-    pasta_backup = os.path.join(PASTA_BACKUPS, nome_backup)
-    if not os.path.exists(pasta_backup):
-        return False, "Pasta de backup não encontrada."
-    
-    restaurados = []
-    erros = []
-    
-    # Restaura arquivos principais
-    for arq in ARQUIVOS_CRITICOS:
-        nome = os.path.basename(arq)
-        src = os.path.join(pasta_backup, nome)
-        if os.path.exists(src):
-            try:
-                shutil.copy2(src, arq)
-                restaurados.append(nome)
-            except Exception as e:
-                erros.append(f"{nome}: {e}")
-    
-    # Restaura pastas de documentos
-    for pasta_nome in ["Documentos_Lojas", "Documentos_Funcionarios", "Fotos_Funcionarios", "Comprovantes_Diarias"]:
-        src_pasta = os.path.join(pasta_backup, pasta_nome)
-        if os.path.exists(src_pasta):
-            dst_pasta = os.path.join(BASE_DIR, pasta_nome)
-            os.makedirs(dst_pasta, exist_ok=True)
-            for root, dirs, files in os.walk(src_pasta):
-                for file in files:
-                    src = os.path.join(root, file)
-                    rel = os.path.relpath(src, src_pasta)
-                    dst = os.path.join(dst_pasta, rel)
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    try:
-                        shutil.copy2(src, dst)
-                    except Exception as e:
-                        erros.append(f"{pasta_nome}/{rel}: {e}")
-            if pasta_nome not in restaurados:
-                restaurados.append(pasta_nome)
-    
-    if restaurados:
-        st.cache_data.clear()
-        return True, f"Restaurado: {', '.join(restaurados)}"
-    else:
-        return False, "Nenhum arquivo restaurado."
-
-
-def backup_automatico_periodico():
-    """Verifica se já passou o intervalo desde o último backup e cria um novo se necessário."""
-    try:
-        agora = datetime.now()
-        chave_ultimo_backup = "_ultimo_backup_periodico"
-        chave_ultimo_notificado = "_ultimo_backup_notificado"
-        ultimo_backup = st.session_state.get(chave_ultimo_backup)
-        
-        if ultimo_backup is not None:
-            # Verifica se já passou o intervalo
-            minutos_desde_ultimo = (agora - ultimo_backup).total_seconds() / 60.0
-            if minutos_desde_ultimo < INTERVALO_BACKUP_MINUTOS:
-                return  # Ainda não passou o tempo, não faz nada
-        
-        # Cria o backup e atualiza o timestamp
-        pasta_bkp, arqs = criar_backup_automatico()
-        st.session_state[chave_ultimo_backup] = agora
-        
-        # Notifica o usuário apenas se este backup ainda não foi notificado
-        ultimo_notificado = st.session_state.get(chave_ultimo_notificado)
-        if ultimo_notificado != pasta_bkp:
-            st.toast(f"🛡️ Backup automático criado! ({len(arqs)} arquivos protegidos)", icon="💾")
-            st.session_state[chave_ultimo_notificado] = pasta_bkp
-        
-        # Mostra no log também
-        print(f"[BACKUP PERIÓDICO] Backup criado em: {pasta_bkp} | Arquivos: {arqs}")
-    except Exception as e:
-        print(f"[BACKUP PERIÓDICO] Erro ao criar backup: {e}")
-
-
-def _tentar_restaurar_dados_vazios():
-    """Tenta restaurar dados automaticamente de um backup se detectar dados vazios."""
-    backups = listar_backups_automaticos()
-    if not backups:
-        return False
-    for nome_backup in backups:
-        sucesso, msg = restaurar_backup_automatico(nome_backup)
-        if sucesso:
-            return True
-    return False
-
+# Fim do módulo SQLite
 
 MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
 
@@ -1705,8 +1589,7 @@ SITUACOES_DIARIA = ["Todas", "FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
 SITUACOES = [
-    "Ativo", "Pré-cadastro", "Aviso Prévio", "Licença", "Abandono", "Desistente",
-    "Término de Contrato",
+    "Ativo", "Pré-cadastro", "Abandono", "Desistente", "Término de Contrato",
     "Demitido S/JC", "Demitido C/JC", "Pedido de Conta",
     "Rescisão Indireta", "Férias", "Doença", "Acidente", "Maternidade"
 ]
@@ -1999,7 +1882,7 @@ if GS_ENABLED:
                 "DataLicenca","DiasLicenca","DataTerminoLicenca",
                 "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
             ],
-            "Auxiliares": ["Loja", "Cargo", "Cliente", "Material", "EPI"],
+            "Auxiliares": ["Loja", "Cargo"],
             "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
             "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
         }
@@ -2013,16 +1896,8 @@ if GS_ENABLED:
         pass
 
 # ====================== BANCO DE DADOS ======================
-
-# Guarda último carregamento válido em memória (proteção contra leitura falha)
-_ultimo_dados_validos = None
-
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
-    global _ultimo_dados_validos
-    dados = {}
-    erro_leitura = None
-    
     # Tenta carregar do Google Sheets primeiro
     if GS_ENABLED:
         try:
@@ -2038,43 +1913,13 @@ def carregar_dados():
             st.warning(f"⚠️ Erro ao carregar do Google Sheets: {e}. Usando arquivo local.")
             try:
                 dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-            except Exception as ex:
-                erro_leitura = str(ex)
+            except:
                 dados = {}
     else:
         try:
             dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-        except Exception as ex:
-            erro_leitura = str(ex)
+        except:
             dados = {}
-    
-    # PROTEÇÃO CONTRA LEITURA FALHA: Se pd.read_excel falhou, NÃO usar dict vazio.
-    # Em vez disso, tentar restaurar do backup ou usar dados em memória.
-    if _dados_estao_vazios(dados):
-        # Se houve erro de leitura explícito, loga
-        if erro_leitura:
-            print(f"[CRÍTICO] Erro ao ler {ARQUIVO}: {erro_leitura}. Tentando backup...", file=sys.stderr)
-        
-        # 1ª tentativa: restaurar do backup automático
-        restaurado = False
-        if _tentar_restaurar_dados_vazios():
-            try:
-                dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-                if not _dados_estao_vazios(dados):
-                    st.success("✅ Dados restaurados automaticamente do backup mais recente!")
-                    restaurado = True
-            except Exception:
-                pass
-        
-        # 2ª tentativa: usar dados em memória do último carregamento válido
-        if not restaurado and _ultimo_dados_validos is not None:
-            dados = _ultimo_dados_validos
-            st.warning("⚠️ Arquivo não pôde ser lido. Usando dados da última sessão válida em memória. "
-                       "NÃO faça alterações até restaurar o backup manualmente.")
-            restaurado = True
-        
-        if not restaurado:
-            st.error("❌ Não foi possível restaurar automaticamente. Verifique a aba 'BACKUP / RESTAURAÇÃO' para restaurar manualmente.")
     
     padrao = {
         "Base_Dados": [
@@ -2086,7 +1931,7 @@ def carregar_dados():
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-            "TipoAfastamento","CaminhoFoto"
+            "CaminhoFoto"
         ],
         "Historico": [
             "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -2098,7 +1943,7 @@ def carregar_dados():
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
         ],
-        "Auxiliares": ["Loja", "Cargo", "Cliente", "Material", "EPI"],
+        "Auxiliares": ["Loja", "Cargo"],
         "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
         "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
     }
@@ -2114,43 +1959,6 @@ def carregar_dados():
                 dados[aba]["Matricula"] = dados[aba]["Matricula"].astype(str).str.strip()
             if "Situacao" in dados[aba].columns:
                 dados[aba]["Situacao"] = dados[aba]["Situacao"].astype(str).str.strip()
-    
-    # SEED: Popular colunas Cliente/Material/EPI do Auxiliares com dados dos fallbacks
-    # APENAS se estiverem todas vazias E arquivo não existir (primeira execução)
-    # NÃO concatena duplicatas — verifica se os dados de fallback já existem antes de semear
-    if "Auxiliares" in dados:
-        aux = dados["Auxiliares"]
-        precisa_seed = False
-        for col in ["Cliente", "Material", "EPI"]:
-            if col in aux.columns:
-                if aux[col].astype(str).str.strip().replace("", None).dropna().empty:
-                    precisa_seed = True
-                    break
-            else:
-                precisa_seed = True
-                break
-        if precisa_seed and not os.path.exists(ARQUIVO):
-            # Só semeia se o arquivo NÃO existe (primeira execução real)
-            linhas_seed = []
-            for cliente in CLIENTES_FALLBACK:
-                linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": "", "EPI": ""})
-                for loja in LOJAS_POR_CLIENTE_FALLBACK.get(cliente, []):
-                    linhas_seed.append({"Loja": loja, "Cargo": "", "Cliente": cliente, "Material": "", "EPI": ""})
-                for mat in MATERIAIS_POR_CLIENTE_FALLBACK.get(cliente, []):
-                    linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": mat, "EPI": ""})
-                for epi in EPIS_POR_CLIENTE_FALLBACK.get(cliente, []):
-                    linhas_seed.append({"Loja": "", "Cargo": "", "Cliente": cliente, "Material": "", "EPI": epi})
-            if linhas_seed:
-                df_seed = pd.DataFrame(linhas_seed)
-                for col in ["Cliente", "Material", "EPI"]:
-                    if col not in aux.columns:
-                        aux[col] = ""
-                dados["Auxiliares"] = pd.concat([aux, df_seed], ignore_index=True)
-    
-    # Guarda dados válidos em memória como fallback para futuras leituras falhas
-    if not _dados_estao_vazios(dados):
-        _ultimo_dados_validos = dados
-    
     return dados
 
 @st.cache_data(ttl=0, show_spinner=False)
@@ -2256,181 +2064,36 @@ def carregar_diarias():
 
     # Garante ordem correta das colunas
     df = df[[c for c in cols_padrao if c in df.columns]]
-    
-    # PROTEÇÃO: Se diárias estiverem vazias/corrompidas, tenta restaurar do backup automático
-    if _diarias_estao_vazias(df):
-        st.warning("⚠️ Dados de diárias parecem vazios ou corrompidos. Tentando restaurar do backup automático...")
-        if _tentar_restaurar_dados_vazios():
-            try:
-                df_restaurado = pd.read_excel(ARQUIVO_DIARIAS, header=0, dtype=str, keep_default_na=False)
-                colunas_encontradas = [c for c in cols_padrao if c in df_restaurado.columns]
-                if len(colunas_encontradas) >= 3:
-                    df = df_restaurado
-                    for c in cols_padrao:
-                        if c not in df.columns:
-                            df[c] = ""
-                    st.success("✅ Diárias restauradas automaticamente do backup mais recente!")
-            except Exception:
-                pass
-    
     return df
 
-def _contar_registros_base_arquivo():
-    """Conta registros na Base_Dados do arquivo atual em disco (sem usar cache)."""
-    try:
-        df_base = pd.read_excel(ARQUIVO, sheet_name="Base_Dados", dtype=str, keep_default_na=False)
-        return len(df_base)
-    except Exception:
-        return -1  # Não conseguiu ler — não bloqueia o salvamento
-
 def salvar_dados(dados):
-    # ========== WRITE GUARD: Proteção anti-perda de dados ==========
-    # Antes de salvar, verificar se a Base_Dados está íntegra.
-    # Se o novo salvamento tiver MUITO menos registros que o arquivo atual,
-    # abortar para evitar sobrescrever dados bons com dados vazios.
-    base_nova = dados.get("Base_Dados")
-    if base_nova is not None and isinstance(base_nova, pd.DataFrame):
-        registros_novos = len(base_nova)
-        registros_arquivo = _contar_registros_base_arquivo()
-        
-        # Se arquivo tem registros mas o novo salvamento tem drasticamente menos
-        if registros_arquivo > 0 and registros_novos < registros_arquivo * 0.5:
-            # Perda de mais de 50% dos registros — ABORTAR
-            st.error(
-                f"🚨 PROTEÇÃO ANTI-PERDA ATIVADA!\n"
-                f"O arquivo atual tem **{registros_arquivo}** registros na Base_Dados, "
-                f"mas a tentativa de salvar tem apenas **{registros_novos}**.\n"
-                f"O salvamento foi BLOQUEADO para evitar perda de dados.\n"
-                f"Isso geralmente ocorre quando o arquivo não pôde ser lido corretamente. "
-                f"Verifique a aba '💾 Backup' para restaurar se necessário."
-            )
-            print(f"[WRITE GUARD] BLOQUEADO: arquivo={registros_arquivo} registros, nova={registros_novos} registros", file=sys.stderr)
-            return False
-        
-        # Se Base_Dados está VAZIA mas arquivo tem registros — também bloquear
-        if registros_novos == 0 and registros_arquivo > 0:
-            st.error(
-                f"🚨 PROTEÇÃO ANTI-PERDA ATIVADA!\n"
-                f"A Base_Dados está vazia (0 registros) mas o arquivo tem **{registros_arquivo}** registros.\n"
-                f"O salvamento foi BLOQUEADO. Verifique a aba '💾 Backup' para restaurar."
-            )
-            print(f"[WRITE GUARD] BLOQUEADO: Base_Dados vazia, arquivo tem {registros_arquivo} registros", file=sys.stderr)
-            return False
-    elif base_nova is None or (isinstance(base_nova, pd.DataFrame) and len(base_nova) == 0):
-        # Base_Dados completamente ausente ou vazia no dict
-        registros_arquivo = _contar_registros_base_arquivo()
-        if registros_arquivo > 0:
-            st.error(
-                f"🚨 PROTEÇÃO ANTI-PERDA ATIVADA!\n"
-                f"Base_Dados ausente/vazia mas o arquivo tem **{registros_arquivo}** registros.\n"
-                f"Salvamento BLOQUEADO."
-            )
-            return False
-    
-    # BACKUP AUTOMÁTICO antes de salvar
-    try:
-        pasta_bkp, arqs = criar_backup_automatico()
-    except Exception:
-        pass
-    
     sucesso = False
-    # ========== ATOMIC WRITE: salva em arquivo temporário primeiro ==========
-    arquivo_temp = ARQUIVO + ".saving.xlsx"
+    # Sempre salva localmente como fallback
     try:
-        with pd.ExcelWriter(arquivo_temp, engine="openpyxl", mode="w") as f:
+        with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
             for aba, df in dados.items():
                 df.to_excel(f, sheet_name=aba, index=False)
-        # Só renomeia para o arquivo real após escrita confirmada
-        if os.path.exists(ARQUIVO):
-            # Em Windows, precisa remover o destino antes de renomear
-            try:
-                os.replace(arquivo_temp, ARQUIVO)
-            except Exception:
-                os.remove(ARQUIVO)
-                os.rename(arquivo_temp, ARQUIVO)
-        else:
-            os.rename(arquivo_temp, ARQUIVO)
         sucesso = True
     except Exception as e:
         st.error(f"❌ Erro ao salvar arquivo local: {e}")
-        # Limpa arquivo temporário se falhou
-        if os.path.exists(arquivo_temp):
-            try:
-                os.remove(arquivo_temp)
-            except Exception:
-                pass
     
     # Se Google Sheets ativo, salva na nuvem também
-    if GS_ENABLED and sucesso:
+    if GS_ENABLED:
         try:
             _salvar_dados_gs(dados)
         except Exception as e:
             st.warning(f"⚠️ Erro ao salvar no Google Sheets: {e}")
     
-    # Limpa cache de dados (apenas funções de carregamento, não tudo)
-    # NOTA: st.cache_data.clear() limpa TUDO — incluindo caches de traduções, compras etc.
-    # Ideal seria limpar apenas a cache de carregar_dados, mas Streamlit não suporta
-    # clear seletivo. Como workaround, limpamos tudo mesmo, mas DEPOIS do salvamento.
-    if sucesso:
-        st.cache_data.clear()
-    
+    st.cache_data.clear()
     return sucesso
 
-def _contar_diarias_arquivo():
-    """Conta registros de diárias no arquivo atual em disco."""
-    try:
-        df = pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False)
-        return len(df)
-    except Exception:
-        return -1
-
 def salvar_diarias(df_diarias):
-    # ========== WRITE GUARD: Proteção anti-perda de diárias ==========
-    registros_novos = len(df_diarias)
-    registros_arquivo = _contar_diarias_arquivo()
-    
-    if registros_arquivo > 0 and registros_novos < registros_arquivo * 0.5:
-        st.error(
-            f"🚨 PROTEÇÃO ANTI-PERDA (Diárias)! O arquivo tem **{registros_arquivo}** registros, "
-            f"mas a tentativa de salvar tem apenas **{registros_novos}**. "
-            f"Salvamento BLOQUEADO."
-        )
-        return False
-    
-    if registros_novos == 0 and registros_arquivo > 0:
-        st.error(
-            f"🚨 PROTEÇÃO ANTI-PERDA (Diárias)! Diárias vazias (0) mas arquivo tem **{registros_arquivo}** registros. "
-            f"Salvamento BLOQUEADO."
-        )
-        return False
-    
-    # BACKUP AUTOMÁTICO antes de salvar
+    # Sempre salva localmente como fallback
     try:
-        pasta_bkp, arqs = criar_backup_automatico()
+        with pd.ExcelWriter(ARQUIVO_DIARIAS, engine="openpyxl", mode="w") as f:
+            df_diarias.to_excel(f, sheet_name="Diarias", index=False)
     except Exception:
         pass
-    
-    # ========== ATOMIC WRITE ==========
-    arquivo_temp = ARQUIVO_DIARIAS + ".saving.xlsx"
-    try:
-        with pd.ExcelWriter(arquivo_temp, engine="openpyxl", mode="w") as f:
-            df_diarias.to_excel(f, sheet_name="Diarias", index=False)
-        if os.path.exists(ARQUIVO_DIARIAS):
-            try:
-                os.replace(arquivo_temp, ARQUIVO_DIARIAS)
-            except Exception:
-                os.remove(ARQUIVO_DIARIAS)
-                os.rename(arquivo_temp, ARQUIVO_DIARIAS)
-        else:
-            os.rename(arquivo_temp, ARQUIVO_DIARIAS)
-    except Exception as e:
-        st.error(f"❌ Erro ao salvar diárias: {e}")
-        if os.path.exists(arquivo_temp):
-            try:
-                os.remove(arquivo_temp)
-            except Exception:
-                pass
-        return False
     
     # Se Google Sheets ativo, salva na nuvem também
     if GS_ENABLED:
@@ -2440,7 +2103,6 @@ def salvar_diarias(df_diarias):
             st.warning(f"⚠️ Erro ao salvar diárias no Google Sheets: {e}")
     
     st.cache_data.clear()
-    return True
 
 def exportar_diarias_formatado(df, caminho):
     """Exporta DataFrame de diárias para Excel com a mesma formatação da planilha padrão."""
@@ -2575,80 +2237,17 @@ def carregar_viagens():
     for col in ["VALOR_LIBERADO", "TOTAL_GASTO", "RESTANTE"]:
         df[col] = df[col].astype(str).str.strip()
         df[col] = df[col].replace("", "0.00")
-    
-    # PROTEÇÃO CONTRA DADOS VAZIOS: tentar restaurar do último backup se a planilha foi corrompida
-    if _viagens_estao_vazias(df):
-        df_restaurado = _tentar_restaurar_dados("viagens", cols_padrao)
-        if df_restaurado is not None:
-            st.toast("🛡️ Viagens recuperadas automaticamente do backup!")
-            return df_restaurado
-    
     return df[cols_padrao]
 
 
 def salvar_viagens(df_viagens):
     """Salva o registro de viagens no arquivo Excel."""
-    # BACKUP AUTOMÁTICO antes de salvar
-    try:
-        pasta_bkp, arqs = criar_backup_automatico()
-    except Exception:
-        pass
-    
     try:
         with pd.ExcelWriter(ARQUIVO_VIAGENS, engine="openpyxl", mode="w") as f:
             df_viagens.to_excel(f, sheet_name="Viagens", index=False)
     except Exception:
         pass
     st.cache_data.clear()
-
-# ====================== PRESTAÇÃO DE CONTAS — VIAGENS ======================
-def _pasta_viagem(num_viagem):
-    """Retorna o caminho da subpasta de prestação de contas de uma viagem."""
-    subpasta = os.path.join(PASTA_PRESTACAO_VIAGEM, str(num_viagem).strip().replace("/", "-").replace("\\", "-"))
-    os.makedirs(subpasta, exist_ok=True)
-    return subpasta
-
-
-def _listar_comprovantes_viagem(num_viagem):
-    """Lista os arquivos de prestação de contas de uma viagem."""
-    pasta = _pasta_viagem(num_viagem)
-    arquivos = []
-    for f in os.listdir(pasta):
-        cam = os.path.join(pasta, f)
-        if os.path.isfile(cam):
-            arquivos.append({"nome": f, "caminho": cam, "tamanho": os.path.getsize(cam)})
-    return arquivos
-
-
-def _salvar_comprovante_viagem(num_viagem, arquivo_upload):
-    """Salva um arquivo de prestação de contas para a viagem."""
-    pasta = _pasta_viagem(num_viagem)
-    ext = os.path.splitext(arquivo_upload.name)[1].lower()
-    ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    nome_seguro = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.splitext(arquivo_upload.name)[0])
-    nome_arquivo = f"{nome_seguro}_{ts}{ext}"
-    # Evitar colisão de nome se arquivo já existir
-    contador = 1
-    caminho = os.path.join(pasta, nome_arquivo)
-    while os.path.exists(caminho):
-        nome_arquivo = f"{nome_seguro}_{ts}_{contador}{ext}"
-        caminho = os.path.join(pasta, nome_arquivo)
-        contador += 1
-    with open(caminho, "wb") as f:
-        f.write(arquivo_upload.read())
-    return caminho
-
-
-def _excluir_comprovante_viagem(caminho_arquivo):
-    """Exclui um arquivo de prestação de contas."""
-    try:
-        if os.path.exists(caminho_arquivo):
-            os.remove(caminho_arquivo)
-            return True
-    except Exception:
-        pass
-    return False
-
 
 # ====================== BACKUP / RESTORE ======================
 import zipfile
@@ -2662,8 +2261,11 @@ def criar_backup_zip():
         for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS]:
             if os.path.exists(arq):
                 zf.write(arq, os.path.basename(arq))
+        # Banco SQLite
+        if os.path.exists(DB_PATH):
+            zf.write(DB_PATH, os.path.basename(DB_PATH))
         # Pastas de documentos, fotos e comprovantes (caminho relativo ao BASE_DIR)
-        for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES, PASTA_PRESTACAO_VIAGEM]:
+        for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
             if os.path.exists(pasta):
                 for root, dirs, files in os.walk(pasta):
                     for file in files:
@@ -2687,15 +2289,46 @@ def restaurar_backup_zip(zip_file):
             with open(destino, "wb") as f_out:
                 f_out.write(zf.read(item))
             arquivos_extraidos.append(item)
+    # Se o backup incluía o DB SQLite, re-inicializa para garantir schema
+    if os.path.exists(DB_PATH):
+        try:
+            init_db()
+        except Exception:
+            pass
     return arquivos_extraidos
 
 def lista_lojas():
-    d = carregar_dados()
-    todas = sorted(set(
-        [str(l).strip() for l in d["Base_Dados"]["Loja"] if str(l).strip() != ""] +
-        [str(l).strip() for l in d["Auxiliares"]["Loja"] if str(l).strip() != ""]
-    ))
-    return todas if todas else ["Sem Loja"]
+    return [
+        "Assaí Atacadista Batista Campos",
+        "Assaí Atacadista Almirante Barroso",
+        "Assaí Atacadista Castanhal",
+        "Assaí Atacadista Ananindeua",
+        "Assaí Atacadista Augusto Monte Negro",
+        "Assaí Atacadista Boa Vista",
+        "Assaí Atacadista Manaus",
+        "Assaí Atacadista Macapá",
+        "Assaí Atacadista Belém",
+        "Smart Fit Shopping Manoa",
+        "Smart Fit Shopping Cidade Leste",
+        "Smart Fit Macapá Shopping",
+        "Smart Fit Shopping Grande Circular",
+        "Smart Fit Shopping Via Norte",
+        "Smart Fit Cidade Nova",
+        "Smart Fit Parque Mosaico",
+        "Smart Fit Cachoeirinha",
+        "Smart Fit Flores",
+        "Smart Fit Ponta Negra",
+        "Smart Fit Nova Porto Velho",
+        "Smart Fit Porto Velho Flodoaldo",
+        "Smart Fit Alvorada",
+        "Smart Fit Novo Aleixo",
+        "Smart Fit São José do Operário",
+        "Smart Fit Santana Macapá",
+        "Smart Fit Toequato Tapajós",
+        "Self Fit Hiper DB Ponta Negra",
+        "Self Fit Manaus Plaza Shopping",
+        "Self Fit Vieira Alves",
+    ]
 
 def lista_cargos():
     d = carregar_dados()
@@ -2705,125 +2338,16 @@ def lista_cargos():
     ))
     return todas if todas else ["Sem Cargo"]
 
-def lista_clientes():
-    """Retorna lista dinâmica de clientes lendo da aba Auxiliares."""
-    d = carregar_dados()
-    if "Cliente" in d["Auxiliares"].columns:
-        clientes = sorted(set(
-            [str(c).strip() for c in d["Auxiliares"]["Cliente"] if str(c).strip() != ""]
-        ))
-        if clientes:
-            return clientes
-    # Fallback para dados estáticos
-    return list(CLIENTES_FALLBACK)
-
-def lista_lojas_por_cliente(cliente=None):
-    """Retorna dict {cliente: [lojas]} ou lista de lojas de um cliente específico."""
-    d = carregar_dados()
-    if "Cliente" in d["Auxiliares"].columns and "Loja" in d["Auxiliares"].columns:
-        df_cli = d["Auxiliares"][d["Auxiliares"]["Cliente"].str.strip() != ""]
-        if not df_cli.empty:
-            resultado = {}
-            for cli in df_cli["Cliente"].unique():
-                cli_str = str(cli).strip()
-                lojas = sorted(set(
-                    [str(l).strip() for l in df_cli[df_cli["Cliente"].str.strip() == cli_str]["Loja"] if str(l).strip() != ""]
-                ))
-                if lojas:
-                    resultado[cli_str] = lojas
-            if resultado:
-                if cliente:
-                    return resultado.get(cliente, [])
-                return resultado
-    # Fallback para dados estáticos
-    if cliente:
-        return LOJAS_POR_CLIENTE_FALLBACK.get(cliente, [])
-    return dict(LOJAS_POR_CLIENTE_FALLBACK)
-
-def lista_materiais_por_cliente(cliente=None):
-    """Retorna dict {cliente: [materiais]} ou lista de materiais de um cliente específico."""
-    d = carregar_dados()
-    if "Cliente" in d["Auxiliares"].columns and "Material" in d["Auxiliares"].columns:
-        df_mat = d["Auxiliares"][d["Auxiliares"]["Material"].str.strip() != ""]
-        if not df_mat.empty:
-            resultado = {}
-            for cli in df_mat["Cliente"].unique():
-                cli_str = str(cli).strip()
-                mats = sorted(set(
-                    [str(m).strip() for m in df_mat[df_mat["Cliente"].str.strip() == cli_str]["Material"] if str(m).strip() != ""]
-                ))
-                if mats:
-                    resultado[cli_str] = mats
-            if resultado:
-                if cliente:
-                    return resultado.get(cliente, [])
-                return resultado
-    # Fallback para dados estáticos
-    if cliente:
-        return MATERIAIS_POR_CLIENTE_FALLBACK.get(cliente, [])
-    return dict(MATERIAIS_POR_CLIENTE_FALLBACK)
-
-def lista_epis_por_cliente(cliente=None):
-    """Retorna dict {cliente: [epis]} ou lista de epis de um cliente específico."""
-    d = carregar_dados()
-    if "Cliente" in d["Auxiliares"].columns and "EPI" in d["Auxiliares"].columns:
-        df_epi = d["Auxiliares"][d["Auxiliares"]["EPI"].str.strip() != ""]
-        if not df_epi.empty:
-            resultado = {}
-            for cli in df_epi["Cliente"].unique():
-                cli_str = str(cli).strip()
-                epis = sorted(set(
-                    [str(e).strip() for e in df_epi[df_epi["Cliente"].str.strip() == cli_str]["EPI"] if str(e).strip() != ""]
-                ))
-                if epis:
-                    resultado[cli_str] = epis
-            if resultado:
-                if cliente:
-                    return resultado.get(cliente, [])
-                return resultado
-    # Fallback para dados estáticos
-    if cliente:
-        return EPIS_POR_CLIENTE_FALLBACK.get(cliente, [])
-    return dict(EPIS_POR_CLIENTE_FALLBACK)
-
-def _calc_termino(dt_str, dias_str):
-    """Calcula data término/retorno a partir de data início + dias. Retorna string dd/mm/aaaa ou vazio."""
-    if not dt_str or not dt_str.strip() or not dias_str or not str(dias_str).strip():
-        return ""
-    if not str(dias_str).strip().isdigit():
-        return ""
-    try:
-        dt = datetime.strptime(dt_str.strip(), "%d/%m/%Y")
-        return (dt + timedelta(days=int(dias_str) - 1)).strftime("%d/%m/%Y")
-    except (ValueError, TypeError):
-        return ""
-
 def calcular_e_atualizar(form):
-    """Calcula campos derivados (término/retorno) e define situação automática.
-    
-    IMPORTANTE: Quando um evento temporário VENCE (data de término/retorno < hoje),
-    os campos de data/dias desse evento são LIMPADOS no form para não ficar
-    informação obsoleta preenchida na tela. Eventos definitivos (Pedido de Conta,
-    Rescisão, Abandono, etc.) NÃO são limpos pois são registros permanentes.
-    
-    Hierarquia de prioridade (maior → menor):
-    1. Eventos definitivos (Término Contrato > Pedido Conta > Rescisão > Abandono > Desistente)
-    2. Aviso Prévio (em andamento → 'Aviso Prévio'; vencido → 'Demitido S/JC')
-    3. Afastamentos temporários em andamento (Doença/Acidente/Maternidade)
-    4. Licença em andamento
-    5. Férias em andamento
-    6. Se nenhum evento ativo → 'Ativo'
-    """
     hoje = datetime.now().date()
 
-    # ── Aviso Prévio ──
+    # Aviso Prévio
     if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_aviso"], "%d/%m/%Y")
             form["termino_aviso"] = (dt + timedelta(days=int(form["dias_aviso"]) - 1)).strftime("%d/%m/%Y")
             termino_aviso_date = datetime.strptime(form["termino_aviso"], "%d/%m/%Y").date()
-            # Se o aviso prévio venceu e não tem evento definitivo, muda para Demitido S/JC
-            # NÃO limpa os campos do aviso — é registro definitivo para histórico
+            # Se o aviso prévio venceu e não tem outro evento, muda para Demitido S/JC
             if termino_aviso_date < hoje and not any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
@@ -2839,89 +2363,86 @@ def calcular_e_atualizar(form):
         except: form["termino_aviso"] = ""
     else: form["termino_aviso"] = ""
 
-    # ── Licença (evento temporário) ──
+    # Licença
     if form.get("dt_lic") and form.get("dias_lic") and str(form["dias_lic"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_lic"], "%d/%m/%Y")
             form["termino_lic"] = (dt + timedelta(days=int(form["dias_lic"]) - 1)).strftime("%d/%m/%Y")
             termino_lic_date = datetime.strptime(form["termino_lic"], "%d/%m/%Y").date()
-            # Se a licença venceu e não tem outro evento ativo, volta para Ativo
-            # e LIMPA os campos da licença (evento temporário concluído)
-            _outros_eventos_ativos = any([
+            # Se a licença venceu e não tem outro evento, volta para Ativo
+            if termino_lic_date < hoje and not any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
                 form.get("dt_termino_cont","").strip(),
                 form.get("dt_aviso","").strip(), form.get("dt_fer","").strip(),
                 form.get("dt_af","").strip()
-            ])
-            if termino_lic_date < hoje and not _outros_eventos_ativos:
+            ]):
                 form["situacao"] = "Ativo"
-                # Limpa campos da licença vencida
-                form["dt_lic"] = ""
-                form["dias_lic"] = ""
-                form["termino_lic"] = ""
-                form["_lic_venceu"] = True  # flag para limpar session_state
-            elif termino_lic_date >= hoje and not _outros_eventos_ativos:
+            elif termino_lic_date >= hoje and not any([
+                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
+                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
+                form.get("dt_termino_cont","").strip(),
+                form.get("dt_aviso","").strip(), form.get("dt_fer","").strip(),
+                form.get("dt_af","").strip()
+            ]):
                 form["situacao"] = "Licença"
         except: form["termino_lic"] = ""
     else: form["termino_lic"] = ""
 
-    # ── Férias (evento temporário) ──
+    # Férias
     if form.get("dt_fer") and form.get("dias_fer") and str(form["dias_fer"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
             form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]) - 1)).strftime("%d/%m/%Y")
             retorno_date = datetime.strptime(form["retorno_fer"], "%d/%m/%Y").date()
-            _outros_eventos_ativos = any([
+            if retorno_date < hoje and not any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
                 form.get("dt_termino_cont","").strip(),
                 form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
                 form.get("dt_af","").strip()
-            ])
-            if retorno_date < hoje and not _outros_eventos_ativos:
+            ]):
                 form["situacao"] = "Ativo"
-                # Limpa campos das férias vencidas
-                form["dt_fer"] = ""
-                form["dias_fer"] = ""
-                form["retorno_fer"] = ""
-                form["_fer_venceu"] = True  # flag para limpar session_state
-            elif retorno_date >= hoje and not _outros_eventos_ativos:
+            elif retorno_date >= hoje and not any([
+                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
+                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
+                form.get("dt_termino_cont","").strip(),
+                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
+                form.get("dt_af","").strip()
+            ]):
                 form["situacao"] = "Férias"
         except:
             form["retorno_fer"] = ""
     else:
         form["retorno_fer"] = ""
 
-    # ── Afastamento (evento temporário: Doença, Acidente, Maternidade) ──
+    # Afastamento
     if form.get("dt_af") and form.get("dias_af") and str(form["dias_af"]).isdigit():
         try:
             dt = datetime.strptime(form["dt_af"], "%d/%m/%Y")
             form["retorno_af"] = (dt + timedelta(days=int(form["dias_af"]) - 1)).strftime("%d/%m/%Y")
             retorno_af_date = datetime.strptime(form["retorno_af"], "%d/%m/%Y").date()
             tipo_af = form.get("tipo_af", "Nenhum")
-            _outros_eventos_ativos = any([
+            if tipo_af != "Nenhum" and retorno_af_date < hoje and not any([
                 form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
                 form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
                 form.get("dt_termino_cont","").strip(),
                 form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
                 form.get("dt_fer","").strip()
-            ])
-            if tipo_af != "Nenhum" and retorno_af_date < hoje and not _outros_eventos_ativos:
+            ]):
                 form["situacao"] = "Ativo"
-                # Limpa campos do afastamento vencido
-                form["dt_af"] = ""
-                form["dias_af"] = ""
-                form["retorno_af"] = ""
-                form["tipo_af"] = "Nenhum"
-                form["_af_venceu"] = True  # flag para limpar session_state
-            elif tipo_af != "Nenhum" and retorno_af_date >= hoje and not _outros_eventos_ativos:
+            elif tipo_af != "Nenhum" and retorno_af_date >= hoje and not any([
+                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
+                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
+                form.get("dt_termino_cont","").strip(),
+                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
+                form.get("dt_fer","").strip()
+            ]):
                 form["situacao"] = tipo_af
         except: form["retorno_af"] = ""
     else: form["retorno_af"] = ""
 
-    # ── Eventos definitivos (prioridade máxima — SEMPRE alteram a situação) ──
-    # Estes NÃO são limpos pois são registros permanentes de desligamento
+    # Eventos definitivos (mantêm prioridade)
     if form.get("dt_termino_cont") and form.get("dt_termino_cont").strip():
         form["situacao"] = "Término de Contrato"
     elif form.get("dt_pedido") and form.get("dt_pedido").strip():
@@ -3015,8 +2536,7 @@ def gerar_ficha_individual(fd, fh, mr):
     return nome_arq
 
 def verificar_retorno_ferias_automatico():
-    """Verifica funcionários em férias que já deveriam ter retornado e atualiza para Ativo.
-    Também LIMPA os campos de férias (DataFeriasInicio, DiasFerias, DataRetornoFerias) no cadastro."""
+    """Verifica funcionários em férias que já deveriam ter retornado e atualiza para Ativo."""
     try:
         dados = carregar_dados()
         hoje = datetime.now().date()
@@ -3031,11 +2551,8 @@ def verificar_retorno_ferias_automatico():
             try:
                 retorno_date = datetime.strptime(retorno_str, "%d/%m/%Y").date()
                 if retorno_date < hoje:
-                    # Já passou a data de retorno, volta para Ativo e LIMPA campos
+                    # Já passou a data de retorno, volta para Ativo
                     base.at[idx, "Situacao"] = "Ativo"
-                    base.at[idx, "DataFeriasInicio"] = ""
-                    base.at[idx, "DiasFerias"] = ""
-                    base.at[idx, "DataRetornoFerias"] = ""
                     alterados.append({
                         "Matricula": row.get("Matricula", ""),
                         "Nome": row.get("Nome", ""),
@@ -3070,8 +2587,7 @@ def verificar_retorno_ferias_automatico():
         pass
 
 def verificar_retorno_afastamentos_automatico():
-    """Verifica funcionários em afastamento (Doença, Acidente, Maternidade) que já deveriam ter retornado.
-    Atualiza para Ativo e LIMPA os campos de afastamento (DataAfastamento, DiasAfastamento, DataRetornoAfastamento, TipoAfastamento)."""
+    """Verifica funcionários em afastamento (Doença, Acidente, Maternidade) que já deveriam ter retornado e atualiza para Ativo."""
     try:
         dados = carregar_dados()
         hoje = datetime.now().date()
@@ -3087,12 +2603,8 @@ def verificar_retorno_afastamentos_automatico():
             try:
                 retorno_date = datetime.strptime(retorno_str, "%d/%m/%Y").date()
                 if retorno_date < hoje:
-                    # Já passou a data de retorno, volta para Ativo e LIMPA campos
+                    # Já passou a data de retorno, volta para Ativo
                     base.at[idx, "Situacao"] = "Ativo"
-                    base.at[idx, "DataAfastamento"] = ""
-                    base.at[idx, "DiasAfastamento"] = ""
-                    base.at[idx, "DataRetornoAfastamento"] = ""
-                    base.at[idx, "TipoAfastamento"] = "Nenhum"
                     alterados.append({
                         "Matricula": row.get("Matricula", ""),
                         "Nome": row.get("Nome", ""),
@@ -3127,88 +2639,17 @@ def verificar_retorno_afastamentos_automatico():
     except Exception:
         pass
 
-def verificar_retorno_licenca_automatico():
-    """Verifica funcionários em Licença que já deveriam ter retornado e atualiza para Ativo.
-    Também LIMPA os campos de licença (DataLicenca, DiasLicenca, DataTerminoLicenca) no cadastro."""
-    try:
-        dados = carregar_dados()
-        hoje = datetime.now().date()
-        base = dados["Base_Dados"]
-        alterados = []
-        for idx, row in base.iterrows():
-            if str(row.get("Situacao", "")).strip() != "Licença":
-                continue
-            termino_str = str(row.get("DataTerminoLicenca", "")).strip()
-            if not termino_str:
-                # Se não tem data de término, tenta calcular a partir de DataLicenca + DiasLicenca
-                dt_lic_str = str(row.get("DataLicenca", "")).strip()
-                dias_lic_str = str(row.get("DiasLicenca", "")).strip()
-                if dt_lic_str and dias_lic_str and dias_lic_str.isdigit():
-                    try:
-                        dt_lic = datetime.strptime(dt_lic_str, "%d/%m/%Y").date()
-                        termino_date = dt_lic + timedelta(days=int(dias_lic_str) - 1)
-                        termino_str = termino_date.strftime("%d/%m/%Y")
-                    except Exception:
-                        continue
-                else:
-                    continue
-            try:
-                termino_date = datetime.strptime(termino_str, "%d/%m/%Y").date()
-                if termino_date < hoje:
-                    # Já passou a data de término, volta para Ativo e LIMPA campos
-                    base.at[idx, "Situacao"] = "Ativo"
-                    base.at[idx, "DataLicenca"] = ""
-                    base.at[idx, "DiasLicenca"] = ""
-                    base.at[idx, "DataTerminoLicenca"] = ""
-                    alterados.append({
-                        "Matricula": row.get("Matricula", ""),
-                        "Nome": row.get("Nome", ""),
-                        "DataTermino": termino_str
-                    })
-            except Exception:
-                continue
-        if alterados:
-            if not salvar_dados(dados):
-                st.error("❌ Erro ao salvar retorno automático de licença. Verifique se o arquivo Excel não está aberto.")
-            # Adiciona ao histórico
-            for alt in alterados:
-                registro = {
-                    "DataEvento": datetime.now().strftime("%d/%m/%Y"),
-                    "TipoEvento": "Retorno Automático de Licença",
-                    "Detalhes": f"Funcionário retornou de licença em {alt['DataTermino']}. Situação alterada para Ativo automaticamente."
-                }
-                rf = base[base["Matricula"] == alt["Matricula"]]
-                if not rf.empty:
-                    registro.update(rf.iloc[0].to_dict())
-                ih = dados["Historico"].index[dados["Historico"]["Matricula"] == alt["Matricula"]].tolist()
-                if ih:
-                    idx_linha = ih[0]
-                    for coluna, valor in registro.items():
-                        dados["Historico"].at[idx_linha, coluna] = valor
-                else:
-                    dados["Historico"] = pd.concat([dados["Historico"], pd.DataFrame([registro])], ignore_index=True)
-            if not salvar_dados(dados):
-                st.error("❌ Erro ao salvar histórico de licença. Verifique se o arquivo Excel não está aberto.")
-    except Exception:
-        pass
-
 # ====================== INTERFACE PRINCIPAL ======================
 st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
 st.title("📋 SISTEMA RH COMPLETO")
 
-# Verifica retorno automático de férias, licença e afastamentos no início da sessão (apenas 1x)
+# Verifica retorno automático de férias e afastamentos no início da sessão (apenas 1x)
 if "ferias_verificado" not in st.session_state:
     verificar_retorno_ferias_automatico()
     st.session_state["ferias_verificado"] = True
-if "licenca_verificado" not in st.session_state:
-    verificar_retorno_licenca_automatico()
-    st.session_state["licenca_verificado"] = True
 if "afastamentos_verificado" not in st.session_state:
     verificar_retorno_afastamentos_automatico()
     st.session_state["afastamentos_verificado"] = True
-
-# Backup automático por intervalo de tempo (verifica a cada interação se já passou o tempo)
-backup_automatico_periodico()
 
 # ⚠️ LINHA OBRIGATÓRIA: CRIA TODAS AS ABAS ANTES DE USÁ-LAS
 aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8, aba9, aba10, aba11, aba12 = st.tabs([
@@ -3310,37 +2751,7 @@ with aba1:
     if sel_auto and " - " in sel_auto:
         mat_sel = sel_auto.split(" - ")[0].strip()
         st.success(f"✅ Colaborador selecionado: {sel_auto}")
-
-    # ── Detectar mudança de funcionário e limpar keys antigas ──
-    # Quando o usuário troca de funcionário no autocomplete (ou desseleciona),
-    # as keys de widgets com o mat_sel ANTIGO ficam órfãs no session_state.
-    # Isso causa bugs: campos não atualizam, valor persiste, etc.
-    # Solução: detectar a mudança e deletar as keys antigas antes de recriar os widgets.
-    _mat_sel_anterior = st.session_state.get("_mat_sel_anterior", "")
-    if mat_sel != _mat_sel_anterior:
-        # Funcionário mudou — deletar todas as keys de widgets do formulário
-        # (tanto do funcionário anterior quanto de novo cadastro)
-        _prefixos_limpeza = [
-            "foto_", "chk_excluir_foto_", "chk_bloq_mat_", "input_matricula_",
-            "input_nome_", "input_cpf_", "input_rg_", "input_pis_",
-            "input_nasc_", "input_adm_", "input_tel_", "input_end_",
-            "sel_loja_", "sel_cargo_", "input_sal_", "sel_sit_",
-            "input_dt_aviso_", "input_dias_aviso_",
-            "input_dt_lic_", "input_dias_lic_",
-            "input_dt_fer_", "input_dias_fer_",
-            "input_dt_af_", "input_dias_af_", "sel_tipo_af_",
-            "input_dt_ped_", "input_dt_res_", "input_dt_aband_", "input_dt_desist_",
-            "input_dt_termcont_", "btn_salvar_cad_", "_auto_sit_forced_"
-        ]
-        # Deletar keys com QUALQUER sufixo (incluindo o mat_sel anterior e vazio)
-        _keys_para_remover = [k for k in list(st.session_state.keys()) if any(k.startswith(p) for p in _prefixos_limpeza)]
-        for k in _keys_para_remover:
-            del st.session_state[k]
-        # Registrar o novo mat_sel para comparação na próxima run
-        st.session_state["_mat_sel_anterior"] = mat_sel
-        # NÃO fazer st.rerun() aqui — os widgets serão criados logo abaixo
-        # com os values corretos, já que suas keys foram deletadas.
-
+    
     # ---------- FILTROS ----------
     st.markdown("---")
     st.markdown("**📋 Filtros da Tabela**")
@@ -3375,7 +2786,7 @@ with aba1:
         mat_busca = str(mat_sel).strip()
         reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_busca]
 
-    val_campo = lambda nome: reg.iloc[0][nome] if (not reg.empty and nome in reg.columns) else ""
+    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
 
     prazos_exp = []
     if not reg.empty and val_campo("Admissao").strip():
@@ -3402,8 +2813,7 @@ with aba1:
             "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
             "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
             "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
-            "dt_abandono": val_campo("DataAbandono"), "dt_desistencia": val_campo("DataDesistencia"),
-            "dt_termino_cont": val_campo("DataTerminoContrato"),
+            "dt_abandono": val_campo("DataAbandono"), "dt_termino_cont": val_campo("DataTerminoContrato"),
             "situacao": val_campo("Situacao"), "caminho_foto": val_campo("CaminhoFoto")
         }
         temp = calcular_e_atualizar(temp)
@@ -3412,502 +2822,204 @@ with aba1:
         term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
         situacao_val = "Ativo"
 
-    # ---------- Controle de modo (novo vs edição) ----------
-    modo_edicao = bool(mat_sel.strip())
-    matricula_original = mat_sel.strip() if modo_edicao else ""
-
-    # Salva matrícula original no session_state para garantir consistência
-    if modo_edicao:
-        st.session_state["_matricula_original_edicao"] = matricula_original
-    elif "_matricula_original_edicao" not in st.session_state:
-        st.session_state["_matricula_original_edicao"] = ""
-
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
         if "autocomplete_func" in st.session_state:
             del st.session_state["autocomplete_func"]
-        st.session_state["_matricula_original_edicao"] = ""
-        st.session_state.pop("confirmar_exclusao", None)
-        # Resetar rastreamento de funcionário para evitar conflitos
-        st.session_state["_mat_sel_anterior"] = ""
-        # Limpar todas as keys dinâmicas dos widgets do cadastro
-        _prefixos_keys = [
-            "foto_", "chk_excluir_foto_", "chk_bloq_mat_", "input_matricula_",
-            "input_nome_", "input_cpf_", "input_rg_", "input_pis_",
-            "input_nasc_", "input_adm_", "input_tel_", "input_end_",
-            "sel_loja_", "sel_cargo_", "input_sal_", "sel_sit_",
-            "input_dt_aviso_", "input_dias_aviso_",
-            "input_dt_lic_", "input_dias_lic_",
-            "input_dt_fer_", "input_dias_fer_",
-            "input_dt_af_", "input_dias_af_", "sel_tipo_af_",
-            "input_dt_ped_", "input_dt_res_", "input_dt_aband_", "input_dt_desist_",
-            "input_dt_termcont_", "btn_salvar_cad_", "_auto_sit_forced_"
-        ]
-        _keys_para_remover = [k for k in st.session_state if any(k.startswith(p) for p in _prefixos_keys)]
-        for k in _keys_para_remover:
-            del st.session_state[k]
         st.rerun()
-    # ── Inicializar session_state dos widgets de cadastro ──
-    # Quando mat_sel muda, _mat_sel_anterior já deleta as keys antigas.
-    # Aqui garantimos que cada key recebe o valor correto do Excel ANTES
-    # de o widget ser criado, evitando que value= seja ignorado (Bug 1).
-    _init_keys = {
-        f"input_matricula_{mat_sel}": matricula_original if modo_edicao else "",
-        f"input_nome_{mat_sel}": val_campo("Nome"),
-        f"input_cpf_{mat_sel}": val_campo("CPF"),
-        f"input_rg_{mat_sel}": val_campo("RG"),
-        f"input_pis_{mat_sel}": val_campo("PIS"),
-        f"input_nasc_{mat_sel}": val_campo("Nascimento"),
-        f"input_adm_{mat_sel}": val_campo("Admissao"),
-        f"input_tel_{mat_sel}": val_campo("Telefone"),
-        f"input_end_{mat_sel}": val_campo("Endereco"),
-        f"input_sal_{mat_sel}": val_campo("Salario"),
-        f"input_dt_aviso_{mat_sel}": val_campo("DataAvisoPrevio"),
-        f"input_dias_aviso_{mat_sel}": val_campo("DiasAvisoPrevio"),
-        f"input_dt_lic_{mat_sel}": val_campo("DataLicenca"),
-        f"input_dias_lic_{mat_sel}": val_campo("DiasLicenca"),
-        f"input_dt_fer_{mat_sel}": val_campo("DataFeriasInicio"),
-        f"input_dias_fer_{mat_sel}": val_campo("DiasFerias"),
-        f"input_dt_af_{mat_sel}": val_campo("DataAfastamento"),
-        f"input_dias_af_{mat_sel}": val_campo("DiasAfastamento"),
-        f"input_dt_ped_{mat_sel}": val_campo("DataPedidoConta"),
-        f"input_dt_res_{mat_sel}": val_campo("DataRescisao"),
-        f"input_dt_aband_{mat_sel}": val_campo("DataAbandono"),
-        f"input_dt_desist_{mat_sel}": val_campo("DataDesistencia"),
-        f"input_dt_termcont_{mat_sel}": val_campo("DataTerminoContrato"),
-    }
-    for _ik, _iv in _init_keys.items():
-        if _ik not in st.session_state:
-            st.session_state[_ik] = str(_iv) if _iv is not None else ""
-    # Selectbox keys (usadas mais abaixo)
-    _lojas_list = lista_lojas()
-    _loja_val = val_campo("Loja")
-    _loja_key = f"sel_loja_{mat_sel}"
-    if _loja_key not in st.session_state:
-        st.session_state[_loja_key] = _loja_val if _loja_val in _lojas_list else _lojas_list[0]
-    _cargos_list = lista_cargos()
-    _cargo_val = val_campo("Cargo")
-    _cargo_key = f"sel_cargo_{mat_sel}"
-    if _cargo_key not in st.session_state:
-        st.session_state[_cargo_key] = _cargo_val if _cargo_val in _cargos_list else _cargos_list[0]
-    _tipo_af_key = f"sel_tipo_af_{mat_sel}"
-    if _tipo_af_key not in st.session_state:
-        st.session_state[_tipo_af_key] = val_campo("TipoAfastamento") if val_campo("TipoAfastamento") in ["Nenhum", "Doença", "Acidente", "Maternidade"] else "Nenhum"
-    # Situação key (selectbox renderizado mais abaixo)
-    _sit_key_pre = f"sel_sit_{mat_sel}"
-    if _sit_key_pre not in st.session_state:
-        st.session_state[_sit_key_pre] = situacao_val if situacao_val in SITUACOES else SITUACOES[0]
-    # Checkbox keys
-    _chk_bloq_key = f"chk_bloq_mat_{mat_sel}"
-    if _chk_bloq_key not in st.session_state:
-        st.session_state[_chk_bloq_key] = modo_edicao
-    _chk_excluir_foto_key = f"chk_excluir_foto_{mat_sel}"
-    if _chk_excluir_foto_key not in st.session_state:
-        st.session_state[_chk_excluir_foto_key] = False
+    with st.form("form_cadastro", clear_on_submit=False):
+        st.subheader("Dados Básicos")
+        col_foto, col_dados = st.columns([1,3])
+        
+        with col_foto:
+            st.markdown("**Foto do Funcionário**")
+            if caminho_foto_atual and os.path.exists(caminho_foto_atual):
+                st.image(caminho_foto_atual, width=180, caption="Foto atual")
+            else:
+                st.info("Sem foto")
+            
+            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
+            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
 
-    st.subheader("Dados Básicos")
-    col_foto, col_dados = st.columns([1,3])
+        with col_dados:
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
+                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
+                cpf = st.text_input("CPF", value=val_campo("CPF"))
+                rg = st.text_input("RG", value=val_campo("RG"))
+                pis = st.text_input("PIS", value=val_campo("PIS"))
+            with c2:
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
+                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
+                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
+            with c3:
+                lojas = lista_lojas()
+                idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
+                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
 
-    with col_foto:
-        st.markdown("**Foto do Funcionário**")
-        if caminho_foto_atual and os.path.exists(caminho_foto_atual):
-            st.image(caminho_foto_atual, width=180, caption="Foto atual")
-        else:
-            st.info("Sem foto")
+                cargos = lista_cargos()
+                idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
+                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
 
-        nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
-        excluir_foto = st.checkbox("🗑️ Excluir foto atual", key=f"chk_excluir_foto_{mat_sel}")
+                salario = st.text_input("Salário", value=val_campo("Salario"))
 
-    with col_dados:
-        c1,c2,c3 = st.columns(3)
-        with c1:
-            # ── Matrícula: editável com opção de bloquear ──
-            bloquear_mat = st.checkbox("🔒 Bloquear matrícula", key=f"chk_bloq_mat_{mat_sel}")
-            matricula = st.text_input(
-                "Matrícula * (igual planilha)",
-                disabled=bloquear_mat,
-                key=f"input_matricula_{mat_sel}"
+                idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
+
+        if prazos_exp:
+            st.markdown("---")
+            st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
+            st.dataframe(
+                pd.DataFrame(prazos_exp, columns=["Prazo", "Data Final", "Situação"]),
+                use_container_width=True, hide_index=True
             )
-            if modo_edicao and bloquear_mat:
-                st.caption("🔒 Matrícula bloqueada — desmarque para alterar")
-            elif modo_edicao and not bloquear_mat:
-                st.warning("⚠️ Ao alterar a matrícula, ela será renomeada em TODAS as abas (Base, Histórico, Docs).")
-            nome = st.text_input("Nome Completo", key=f"input_nome_{mat_sel}")
-            cpf = st.text_input("CPF", key=f"input_cpf_{mat_sel}")
-            rg = st.text_input("RG", key=f"input_rg_{mat_sel}")
-            pis = st.text_input("PIS", key=f"input_pis_{mat_sel}")
-        with c2:
-            nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", key=f"input_nasc_{mat_sel}")
-            admissao = st.text_input("Data Admissão (dd/mm/aaaa)", key=f"input_adm_{mat_sel}")
-            telefone = st.text_input("Telefone", key=f"input_tel_{mat_sel}")
-            endereco = st.text_input("Endereço Completo", key=f"input_end_{mat_sel}")
-        with c3:
-            _idx_loja = _lojas_list.index(st.session_state.get(_loja_key, _lojas_list[0])) if st.session_state.get(_loja_key, _lojas_list[0]) in _lojas_list else 0
-            loja = st.selectbox("🏬 Loja", _lojas_list, index=_idx_loja, key=_loja_key)
+        elif not reg.empty:
+            st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos.")
 
-            _idx_cargo = _cargos_list.index(st.session_state.get(_cargo_key, _cargos_list[0])) if st.session_state.get(_cargo_key, _cargos_list[0]) in _cargos_list else 0
-            cargo = st.selectbox("💼 Cargo", _cargos_list, index=_idx_cargo, key=_cargo_key)
-
-            salario = st.text_input("Salário", key=f"input_sal_{mat_sel}")
-
-            # ── Situação: selectbox movido para DEPOIS dos Eventos Trabalhistas ──
-            # (ver seção "Eventos Trabalhistas" abaixo)
-
-    if prazos_exp:
         st.markdown("---")
-        st.subheader("⏳ PRAZOS DE EXPERIÊNCIA")
-        st.dataframe(
-            pd.DataFrame(prazos_exp, columns=["Prazo", "Data Final", "Situação"]),
-            use_container_width=True, hide_index=True
-        )
-    elif not reg.empty:
-        st.info("ℹ️ Informe a Data de Admissão para visualizar os prazos.")
+        st.subheader("Eventos Trabalhistas")
+        av1,av2,av3 = st.columns(3)
+        with av1:
+            st.markdown("**Aviso Prévio**")
+            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"))
+            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"))
+            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True)
+        with av2:
+            st.markdown("**Licença**")
+            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"))
+            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"))
+            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True)
+        with av3:
+            st.markdown("**Férias**")
+            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"))
+            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"))
+            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True)
 
-    st.markdown("---")
-    st.subheader("Eventos Trabalhistas")
+        af1,af2 = st.columns(2)
+        with af1:
+            st.markdown("**Afastamento**")
+            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
+            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
+            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
+            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"])
+        with af2:
+            st.markdown("**Desligamento**")
+            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
+            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
+            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
+            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"))
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
 
-    # ── Cálculo em tempo real: usar valores atuais dos widgets (session_state) ──
-    # No Streamlit, após digitar e pressionar Enter/sair do campo, a página
-    # reroda e os widgets atualizam o session_state. Usamos isso para
-    # recalcular Término/Retorno imediatamente.
-    def _ss_val(key, fallback=""):
-        """Lê o valor atual do widget via session_state, ou fallback."""
-        return st.session_state.get(key, fallback)
-
-    av1,av2,av3 = st.columns(3)
-    with av1:
-        st.markdown("**Aviso Prévio**")
-        dt_aviso = st.text_input("Data Aviso", key=f"input_dt_aviso_{mat_sel}")
-        dias_aviso = st.text_input("Dias Aviso", key=f"input_dias_aviso_{mat_sel}")
-        # Recalcula em tempo real usando o que o usuário acabou de digitar
-        _term_aviso_rt = _calc_termino(
-            _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
-            _ss_val(f"input_dias_aviso_{mat_sel}", dias_aviso)
-        )
-        term_aviso = _term_aviso_rt
-        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Término Aviso:</b> {_term_aviso_rt or "—"}</div>', unsafe_allow_html=True)
-    with av2:
-        st.markdown("**Licença**")
-        dt_lic = st.text_input("Data Licença", key=f"input_dt_lic_{mat_sel}")
-        dias_lic = st.text_input("Dias Licença", key=f"input_dias_lic_{mat_sel}")
-        _term_lic_rt = _calc_termino(
-            _ss_val(f"input_dt_lic_{mat_sel}", dt_lic),
-            _ss_val(f"input_dias_lic_{mat_sel}", dias_lic)
-        )
-        term_lic = _term_lic_rt
-        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Término Licença:</b> {_term_lic_rt or "—"}</div>', unsafe_allow_html=True)
-    with av3:
-        st.markdown("**Férias**")
-        dt_fer = st.text_input("Início Férias", key=f"input_dt_fer_{mat_sel}")
-        dias_fer = st.text_input("Dias Férias", key=f"input_dias_fer_{mat_sel}")
-        _ret_fer_rt = _calc_termino(
-            _ss_val(f"input_dt_fer_{mat_sel}", dt_fer),
-            _ss_val(f"input_dias_fer_{mat_sel}", dias_fer)
-        )
-        ret_fer = _ret_fer_rt
-        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Retorno Férias:</b> {_ret_fer_rt or "—"}</div>', unsafe_allow_html=True)
-
-    af1,af2 = st.columns(2)
-    with af1:
-        st.markdown("**Afastamento**")
-        dt_af = st.text_input("Data Afastamento", key=f"input_dt_af_{mat_sel}")
-        dias_af = st.text_input("Dias Afastamento", key=f"input_dias_af_{mat_sel}")
-        _ret_af_rt = _calc_termino(
-            _ss_val(f"input_dt_af_{mat_sel}", dt_af),
-            _ss_val(f"input_dias_af_{mat_sel}", dias_af)
-        )
-        ret_af = _ret_af_rt
-        st.markdown(f'<div style="padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px;background:#f5f5f5;color:#333;font-size:14px;min-height:20px;"><b>Retorno Afastamento:</b> {_ret_af_rt or "—"}</div>', unsafe_allow_html=True)
-        _tipo_af_val = st.session_state.get(_tipo_af_key, "Nenhum")
-        _tipo_af_idx = ["Nenhum", "Doença", "Acidente", "Maternidade"].index(_tipo_af_val) if _tipo_af_val in ["Nenhum", "Doença", "Acidente", "Maternidade"] else 0
-        tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], index=_tipo_af_idx, key=_tipo_af_key)
-    with af2:
-        st.markdown("**Desligamento**")
-        dt_ped = st.text_input("Data Pedido Conta", key=f"input_dt_ped_{mat_sel}")
-        dt_res = st.text_input("Data Rescisão", key=f"input_dt_res_{mat_sel}")
-        dt_aband = st.text_input("Data Abandono", key=f"input_dt_aband_{mat_sel}")
-        dt_desist = st.text_input("Data Desistência", key=f"input_dt_desist_{mat_sel}")
-        dt_termino_cont = st.text_input("📅 Data Término de Contrato", key=f"input_dt_termcont_{mat_sel}")
-
-    # ── Situação automática em tempo real (DEPOIS dos widgets de eventos) ──
-    # Agora que todos os widgets de eventos já foram renderizados e seus valores
-    # estão disponíveis no session_state, podemos calcular a situação correta.
-    _sit_rt = calcular_e_atualizar({
-        "dt_aviso": _ss_val(f"input_dt_aviso_{mat_sel}", dt_aviso),
-        "dias_aviso": _ss_val(f"input_dias_aviso_{mat_sel}", dias_aviso),
-        "dt_lic": _ss_val(f"input_dt_lic_{mat_sel}", dt_lic),
-        "dias_lic": _ss_val(f"input_dias_lic_{mat_sel}", dias_lic),
-        "dt_fer": _ss_val(f"input_dt_fer_{mat_sel}", dt_fer),
-        "dias_fer": _ss_val(f"input_dias_fer_{mat_sel}", dias_fer),
-        "dt_af": _ss_val(f"input_dt_af_{mat_sel}", dt_af),
-        "dias_af": _ss_val(f"input_dias_af_{mat_sel}", dias_af),
-        "tipo_af": _ss_val(f"sel_tipo_af_{mat_sel}", tipo_af),
-        "dt_pedido": _ss_val(f"input_dt_ped_{mat_sel}", dt_ped),
-        "dt_rescisao": _ss_val(f"input_dt_res_{mat_sel}", dt_res),
-        "dt_abandono": _ss_val(f"input_dt_aband_{mat_sel}", dt_aband),
-        "dt_desistencia": _ss_val(f"input_dt_desist_{mat_sel}", dt_desist),
-        "dt_termino_cont": _ss_val(f"input_dt_termcont_{mat_sel}", dt_termino_cont),
-        "situacao": situacao_val
-    })
-    _situacao_auto = _sit_rt["situacao"]
-
-    # ── Limpeza de campos de eventos temporários vencidos ──
-    # Se calcular_e_atualizar detectou que férias/licença/afastamento venceu,
-    # atualiza o Excel imediatamente (limpa campos + muda Situação) e
-    # depois deleta session_state keys + rerun para refletir na tela.
-    _need_rerun_limpeza = False
-    _campos_limpar = []  # (col_excel, ss_key) pares
-    if _sit_rt.get("_fer_venceu"):
-        _campos_limpar += [
-            ("DataFeriasInicio", f"input_dt_fer_{mat_sel}"),
-            ("DiasFerias", f"input_dias_fer_{mat_sel}"),
-            ("DataRetornoFerias", None),  # campo calculado, sem widget direto
-        ]
-    if _sit_rt.get("_lic_venceu"):
-        _campos_limpar += [
-            ("DataLicenca", f"input_dt_lic_{mat_sel}"),
-            ("DiasLicenca", f"input_dias_lic_{mat_sel}"),
-            ("DataTerminoLicenca", None),  # campo calculado
-        ]
-    if _sit_rt.get("_af_venceu"):
-        _campos_limpar += [
-            ("DataAfastamento", f"input_dt_af_{mat_sel}"),
-            ("DiasAfastamento", f"input_dias_af_{mat_sel}"),
-            ("DataRetornoAfastamento", None),  # campo calculado
-            ("TipoAfastamento", f"sel_tipo_af_{mat_sel}"),
-        ]
-    if _campos_limpar:
-        # Salva no Excel os campos limpos + situação atualizada
-        try:
-            _dados_limpeza = carregar_dados()
-            _base_limpeza = _dados_limpeza["Base_Dados"]
-            _idx_limpeza = _base_limpeza.index[_base_limpeza["Matricula"] == mat_sel].tolist()
-            if _idx_limpeza:
-                _i = _idx_limpeza[0]
-                for _col, _ssk in _campos_limpar:
-                    if _col in _base_limpeza.columns:
-                        _val_limpeza = "Nenhum" if _col == "TipoAfastamento" else ""
-                        _base_limpeza.at[_i, _col] = _val_limpeza
-                if "Situacao" in _base_limpeza.columns:
-                    _base_limpeza.at[_i, "Situacao"] = _situacao_auto
-                salvar_dados(_dados_limpeza)
-        except Exception:
-            pass
-        # Deleta session_state keys dos widgets para que rerenderizem com valor vazio
-        for _col, _ssk in _campos_limpar:
-            if _ssk and _ssk in st.session_state:
-                del st.session_state[_ssk]
-                _need_rerun_limpeza = True
-        # Atualiza a situação no session_state do selectbox
-        _sit_key = f"sel_sit_{mat_sel}"
-        if _sit_key in st.session_state and st.session_state[_sit_key] != _situacao_auto and _situacao_auto in SITUACOES:
-            st.session_state[_sit_key] = _situacao_auto
-            _need_rerun_limpeza = True
-        if _need_rerun_limpeza:
-            st.rerun()
-
-    # ── Atualizar selectbox Situação automaticamente ──
-    # Se a situação automática difere do que está no session_state do selectbox,
-    # atualiza ANTES de renderizar (permitido pelo Streamlit: antes do widget ser criado nesta run)
-    _sit_key = f"sel_sit_{mat_sel}"
-    if _sit_key in st.session_state:
-        if st.session_state[_sit_key] != _situacao_auto and _situacao_auto in SITUACOES:
-            # Proteção contra loop: se já forçamos a atualização nesta run, não faz rerun de novo
-            _loop_flag = f"_auto_sit_forced_{mat_sel}"
-            if not st.session_state.get(_loop_flag):
-                st.session_state[_sit_key] = _situacao_auto
-                st.session_state[_loop_flag] = True
-                st.rerun()
-            else:
-                # Já forçamos nesta run, limpa a flag para a próxima
-                st.session_state[_loop_flag] = False
-    else:
-        # Primeira renderização: define o index pelo valor automático
-        situacao_val = _situacao_auto if _situacao_auto in SITUACOES else situacao_val
-
-    st.markdown("---")
-    st.subheader("📊 Situação do Funcionário")
-    _sit_key = f"sel_sit_{mat_sel}"
-    _cur_sit_val = st.session_state.get(_sit_key, situacao_val)
-    _idx_sit = SITUACOES.index(_cur_sit_val) if _cur_sit_val in SITUACOES else 0
-    situacao = st.selectbox("Situação", SITUACOES, index=_idx_sit, key=_sit_key)
-
-    # Badge informativo se o usuário alterar manualmente a situação diferente do automático
-    if situacao != _situacao_auto:
-        st.warning(f"⚠️ Situação manual: **{situacao}** | Situação sugerida pelos eventos: **{_situacao_auto}**")
-
-    btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key=f"btn_salvar_cad_{mat_sel}")
-    if btn_salvar:
-        try:
-            matricula_tratada = str(matricula).strip()
-            if not matricula_tratada:
-                st.error("❌ INFORME A MATRÍCULA!")
-                st.stop()
-            # Usa a matrícula original do registro selecionado para garantir edição correta
-            mat_para_busca = matricula_original if modo_edicao else matricula_tratada
-            mat_para_busca = mat_para_busca.strip()
-
-            # ── Renomear matrícula se foi alterada em modo de edição ──
-            matricula_alterada = False
-            if modo_edicao and matricula_tratada != matricula_original:
-                matricula_alterada = True
-                # Verifica se a nova matrícula já existe
-                existe_nova = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == matricula_tratada]
-                if not existe_nova.empty:
-                    st.error(f"❌ A matrícula **{matricula_tratada}** já existe! Escolha outra.")
+        btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
+        if btn_salvar:
+            try:
+                matricula_tratada = str(matricula).strip()
+                if not matricula_tratada:
+                    st.error("❌ INFORME A MATRÍCULA!")
                     st.stop()
-                # Renomeia em Base_Dados
-                mask_base = dados["Base_Dados"]["Matricula"] == matricula_original
-                dados["Base_Dados"].loc[mask_base, "Matricula"] = matricula_tratada
-                # Renomeia em Historico
-                if "Matricula" in dados["Historico"].columns:
-                    mask_hist = dados["Historico"]["Matricula"] == matricula_original
-                    dados["Historico"].loc[mask_hist, "Matricula"] = matricula_tratada
-                # Renomeia em Docs_Funcionarios
-                if "Matricula" in dados["Docs_Funcionarios"].columns:
-                    mask_docs = dados["Docs_Funcionarios"]["Matricula"] == matricula_original
-                    dados["Docs_Funcionarios"].loc[mask_docs, "Matricula"] = matricula_tratada
-                st.info(f"🔄 Matrícula renomeada: **{matricula_original}** → **{matricula_tratada}**")
-
-            caminho_final_foto = caminho_foto_atual
-            if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
-                os.remove(caminho_final_foto)
-                caminho_final_foto = ""
-            if nova_foto:
-                if caminho_final_foto and os.path.exists(caminho_final_foto):
+                caminho_final_foto = caminho_foto_atual
+                if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
                     os.remove(caminho_final_foto)
-                extensao = os.path.splitext(nova_foto.name)[1].lower()
-                nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
-                caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
-                img = Image.open(nova_foto)
-                img.save(caminho_final_foto)
+                    caminho_final_foto = ""
+                if nova_foto:
+                    if caminho_final_foto and os.path.exists(caminho_final_foto):
+                        os.remove(caminho_final_foto)
+                    extensao = os.path.splitext(nova_foto.name)[1].lower()
+                    nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
+                    caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
+                    img = Image.open(nova_foto)
+                    img.save(caminho_final_foto)
 
-            # Ao salvar, usa _ss_val() para ler valores atuais do session_state
-            # (evita valores stale de widgets que não foram "commitados" pelo Enter)
-            _sv = lambda k, fb: st.session_state.get(k, fb) if k in st.session_state else fb
-            dados_form = calcular_e_atualizar({
-                "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
-                "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
-                "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
-                "dt_aviso": _sv(f"input_dt_aviso_{mat_sel}", dt_aviso),
-                "dias_aviso": _sv(f"input_dias_aviso_{mat_sel}", dias_aviso),
-                "termino_aviso": term_aviso,
-                "dt_lic": _sv(f"input_dt_lic_{mat_sel}", dt_lic),
-                "dias_lic": _sv(f"input_dias_lic_{mat_sel}", dias_lic),
-                "termino_lic": term_lic,
-                "dt_fer": _sv(f"input_dt_fer_{mat_sel}", dt_fer),
-                "dias_fer": _sv(f"input_dias_fer_{mat_sel}", dias_fer),
-                "retorno_fer": ret_fer,
-                "dt_af": _sv(f"input_dt_af_{mat_sel}", dt_af),
-                "dias_af": _sv(f"input_dias_af_{mat_sel}", dias_af),
-                "retorno_af": ret_af,
-                "tipo_af": _sv(f"sel_tipo_af_{mat_sel}", tipo_af),
-                "dt_pedido": _sv(f"input_dt_ped_{mat_sel}", dt_ped),
-                "dt_rescisao": _sv(f"input_dt_res_{mat_sel}", dt_res),
-                "dt_abandono": _sv(f"input_dt_aband_{mat_sel}", dt_aband),
-                "dt_desistencia": _sv(f"input_dt_desist_{mat_sel}", dt_desist),
-                "dt_termino_cont": _sv(f"input_dt_termcont_{mat_sel}", dt_termino_cont)
-            })
-            registro_final = {
-                "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
-                "RG": dados_form["rg"], "PIS": dados_form["pis"], "Nascimento": dados_form["nasc"],
-                "Admissao": dados_form["adm"], "Telefone": dados_form["tel"], "Endereco": dados_form["end"],
-                "Loja": dados_form["loja"], "Cargo": dados_form["cargo"], "Salario": dados_form["sal"],
-                "Situacao": dados_form["situacao"], "DataAvisoPrevio": dados_form["dt_aviso"],
-                "DiasAvisoPrevio": dados_form["dias_aviso"], "DataTerminoAviso": dados_form["termino_aviso"],
-                "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
-                "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
-                "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
-                "DataDesistencia": dados_form["dt_desistencia"],
-                "DataTerminoContrato": dados_form["dt_termino_cont"],
-                "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
-                "DataTerminoLicenca": dados_form["termino_lic"],
-                "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
-                "DataRetornoAfastamento": dados_form["retorno_af"],
-                "TipoAfastamento": dados_form.get("tipo_af", "Nenhum"),
-                "CaminhoFoto": caminho_final_foto
-            }
-            # Busca pela matrícula original em caso de edição, ou pela matrícula informada em novo cadastro
-            indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_para_busca].tolist()
-            acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
-            if matricula_alterada:
-                acao_hist = "Atualização Cadastral (Matrícula alterada)"
-            if indice:
-                idx_linha = indice[0]
-                for coluna, valor in registro_final.items():
-                    dados["Base_Dados"].at[idx_linha, coluna] = valor
-            else:
-                dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
-            if not salvar_dados(dados):
-                st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
-                st.stop()
-            add_historico_auto(matricula_tratada, dados_form["nome"], acao_hist, registro_final)
-            # Limpa flag de edição após salvar
-            if "_matricula_original_edicao" in st.session_state:
-                st.session_state["_matricula_original_edicao"] = ""
-            # Se matrícula foi alterada, atualiza o autocomplete para refletir
-            if matricula_alterada and "autocomplete_func" in st.session_state:
-                del st.session_state["autocomplete_func"]
-            st.success(f"✅ {'Atualização' if 'Atualização' in acao_hist else 'Cadastro'} realizada! Matrícula: **{matricula_tratada}**")
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Erro ao salvar: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+                dados_form = calcular_e_atualizar({
+                    "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
+                    "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
+                    "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
+                    "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
+                    "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
+                    "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
+                    "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af, "tipo_af": tipo_af,
+                    "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
+                    "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
+                })
+                registro_final = {
+                    "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
+                    "RG": dados_form["rg"], "PIS": dados_form["pis"], "Nascimento": dados_form["nasc"],
+                    "Admissao": dados_form["adm"], "Telefone": dados_form["tel"], "Endereco": dados_form["end"],
+                    "Loja": dados_form["loja"], "Cargo": dados_form["cargo"], "Salario": dados_form["sal"],
+                    "Situacao": dados_form["situacao"], "DataAvisoPrevio": dados_form["dt_aviso"],
+                    "DiasAvisoPrevio": dados_form["dias_aviso"], "DataTerminoAviso": dados_form["termino_aviso"],
+                    "DataFeriasInicio": dados_form["dt_fer"], "DiasFerias": dados_form["dias_fer"],
+                    "DataRetornoFerias": dados_form["retorno_fer"], "DataPedidoConta": dados_form["dt_pedido"],
+                    "DataRescisao": dados_form["dt_rescisao"], "DataAbandono": dados_form["dt_abandono"],
+                    "DataDesistencia": dados_form["dt_desistencia"],
+                    "DataTerminoContrato": dados_form["dt_termino_cont"],
+                    "DataLicenca": dados_form["dt_lic"], "DiasLicenca": dados_form["dias_lic"],
+                    "DataTerminoLicenca": dados_form["termino_lic"],
+                    "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
+                    "DataRetornoAfastamento": dados_form["retorno_af"],
+                    "CaminhoFoto": caminho_final_foto
+                }
+                indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
+                acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
+                if indice:
+                    idx_linha = indice[0]
+                    for coluna, valor in registro_final.items():
+                        dados["Base_Dados"].at[idx_linha, coluna] = valor
+                else:
+                    dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
+                if not salvar_dados(dados):
+                    st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
+                    st.stop()
+                add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
+                st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Erro ao salvar: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
     # ---------- EXCLUSÃO DE REGISTRO ----------
     if mat_sel.strip():
-        st.markdown("---")
-        st.markdown("**⚠️ Zona de Exclusão**")
-        
-        with st.expander("🗑️ EXCLUIR REGISTRO (clique para expandir)", expanded=False):
-            st.warning("⚠️ Esta ação não pode ser desfeita! Todos os dados, foto e documentos deste colaborador serão removidos permanentemente.")
-            
-            # Usa a matrícula original para garantir consistência
-            mat_para_excluir = matricula_original if modo_edicao else mat_sel.strip()
-            st.info(f"Colaborador a excluir: **{mat_para_excluir} - {val_campo('Nome')}**")
-            
+        if st.button("🗑️ EXCLUIR REGISTRO", use_container_width=True, type="secondary"):
+            st.session_state["confirmar_exclusao"] = True
+
+        if st.session_state.get("confirmar_exclusao"):
+            st.warning("⚠️ Esta ação não pode ser desfeita!")
             confirma = st.checkbox("CONFIRMO QUE DESEJO EXCLUIR PERMANENTEMENTE", key="chk_confirma_exclusao")
             c1, c2 = st.columns(2)
             with c1:
-                btn_confirmar_exclusao = st.button("✅ SIM, EXCLUIR", type="primary", use_container_width=True, key="btn_confirmar_excluir_registro", disabled=not confirma)
-            with c2:
-                btn_cancelar_exclusao = st.button("❌ CANCELAR", type="secondary", use_container_width=True, key="btn_cancelar_excluir_registro")
-            
-            if btn_cancelar_exclusao:
-                st.info("Exclusão cancelada.")
-            
-            if btn_confirmar_exclusao and confirma:
-                try:
-                    indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_para_excluir.strip()].tolist()
-                    if indice:
-                        dados_excluir = dados["Base_Dados"].loc[indice[0]].to_dict()
-                        if dados_excluir.get("CaminhoFoto") and os.path.exists(str(dados_excluir["CaminhoFoto"])):
-                            os.remove(str(dados_excluir["CaminhoFoto"]))
-                        docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_para_excluir.strip()]
-                        for _, d in docs_excluir.iterrows():
-                            if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
-                        dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_para_excluir.strip()]
-                        dados["Base_Dados"] = dados["Base_Dados"].drop(indice[0])
-                        if not salvar_dados(dados):
-                            st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
-                            st.stop()
-                        add_historico_auto(mat_para_excluir.strip(), dados_excluir.get("Nome", ""), "Exclusão de Cadastro", dados_excluir)
-                        # Limpa sessão
-                        if "autocomplete_func" in st.session_state:
-                            del st.session_state["autocomplete_func"]
-                        if "_matricula_original_edicao" in st.session_state:
-                            st.session_state["_matricula_original_edicao"] = ""
-                        st.session_state.pop("confirmar_exclusao", None)
-                        if "chk_confirma_exclusao" in st.session_state:
-                            del st.session_state["chk_confirma_exclusao"]
-                        st.success("✅ Registro, foto e documentos excluídos com sucesso!")
-                        st.rerun()
+                if st.button("✅ SIM, EXCLUIR", type="primary", use_container_width=True):
+                    if confirma:
+                        indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_sel.strip()].tolist()
+                        if indice:
+                            dados_excluir = dados["Base_Dados"].loc[indice[0]].to_dict()
+                            if dados_excluir.get("CaminhoFoto") and os.path.exists(dados_excluir["CaminhoFoto"]):
+                                os.remove(dados_excluir["CaminhoFoto"])
+                            docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_sel.strip()]
+                            for _, d in docs_excluir.iterrows():
+                                if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
+                            dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_sel.strip()]
+                            dados["Base_Dados"] = dados["Base_Dados"].drop(indice[0])
+                            if not salvar_dados(dados):
+                                st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
+                                st.stop()
+                            add_historico_auto(mat_sel.strip(), dados_excluir["Nome"], "Exclusão de Cadastro", dados_excluir)
+                            st.session_state["confirmar_exclusao"] = False
+                            if "chk_confirma_exclusao" in st.session_state:
+                                del st.session_state["chk_confirma_exclusao"]
+                            st.success("✅ Registro, foto e documentos excluídos!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Registro não encontrado!")
                     else:
-                        st.error("❌ Registro não encontrado! Matrícula: " + mat_para_excluir)
-                except Exception as e:
-                    st.error(f"❌ Erro ao excluir: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                        st.error("❌ Marque a caixa de confirmação para prosseguir.")
+            with c2:
+                if st.button("❌ CANCELAR", type="secondary", use_container_width=True):
+                    st.session_state["confirmar_exclusao"] = False
+                    if "chk_confirma_exclusao" in st.session_state:
+                        del st.session_state["chk_confirma_exclusao"]
+                    st.rerun()
 
     st.markdown("---")
     st.subheader("📎 DOCUMENTOS DO FUNCIONÁRIO")
@@ -3946,10 +3058,7 @@ with aba1:
                 with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
                     col_v, col_b, col_e = st.columns([3,1,1])
                     with col_b:
-                        if os.path.exists(doc["Caminho"]):
-                            with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
-                        else:
-                            st.warning("⚠️ Arquivo não encontrado no servidor.")
+                        with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
                     with col_e:
                         if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
                             if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
@@ -4141,7 +3250,7 @@ with aba4:
 with aba5:
     st.subheader("📄 RELATÓRIOS")
     rel_opcoes = [
-        "Prazos Experiência","Ativos","Pré-cadastro","Férias","Licença","Afastados","Avisos",
+        "Prazos Experiência","Ativos","Pré-cadastro","Férias","Afastados","Avisos",
         "Abandono","Término de Contrato","Demitido S/JC","Demitido C/JC",
         "Pedido de Conta","Rescisão Indireta","Desistente","Doença","Acidente","Maternidade",
         "Histórico","Individual"
@@ -4163,7 +3272,6 @@ with aba5:
         elif rel == "Ativos": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Ativo"]
         elif rel == "Pré-cadastro": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Pré-cadastro"]
         elif rel == "Férias": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Férias"]
-        elif rel == "Licença": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Licença"]
         elif rel == "Afastados": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"].isin(["Doença","Acidente","Maternidade"])]
         elif rel == "Avisos": df = dados["Base_Dados"][dados["Base_Dados"]["DataAvisoPrevio"].str.strip()!=""]
         elif rel == "Abandono": df = dados["Base_Dados"][dados["Base_Dados"]["Situacao"] == "Abandono"]
@@ -4218,10 +3326,7 @@ with aba6:
     else:
         for i,d in filt.iterrows():
             with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
-                if os.path.exists(d["Caminho"]):
-                    with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
-                else:
-                    st.warning("⚠️ Arquivo não encontrado no servidor.")
+                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
                     os.remove(d["Caminho"])
                     dados["Docs_Lojas"].drop(i,inplace=True)
@@ -4313,48 +3418,28 @@ with aba8:
         ⚠️ **Atenção:** ao carregar uma planilha, os dados anteriores serão substituídos pelos dados do arquivo. Faça backup se necessário.
         """)
     
-    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx ou .csv)", type=["xlsx", "csv"], key="upload_diarias")
+    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
     if arq_diarias is not None:
-        # Evita loop infinito: só processa se este arquivo ainda não foi processado nesta sessão
-        chave_processado = f"_diarias_processado_{arq_diarias.name}"
-        if st.session_state.get(chave_processado):
-            # Já processado, apenas exibe mensagem de sucesso
-            st.success(f"✅ Planilha '{arq_diarias.name}' já foi carregada. Recarregue a página (F5) se necessário.")
-        else:
-            # Determina extensão e caminho temporário
-            extensao = os.path.splitext(arq_diarias.name)[1].lower()
-            if extensao == ".csv":
-                temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.csv")
+        # Salva temporariamente para validar
+        temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
+        with open(temp_path, "wb") as f:
+            f.write(arq_diarias.read())
+        
+        # Valida se o arquivo tem dados legíveis
+        try:
+            df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
+            if df_test.empty or df_test.shape[0] < 1:
+                st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
             else:
-                temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), "_temp_diarias.xlsx")
-            with open(temp_path, "wb") as f:
-                f.write(arq_diarias.read())
-            
-            # Valida se o arquivo tem dados legíveis
-            try:
-                if extensao == ".csv":
-                    df_test = pd.read_csv(temp_path, dtype=str, keep_default_na=False, sep=None, engine="python")
-                    # Converte CSV para XLSX para manter compatibilidade com o resto do app
-                    temp_xlsx = temp_path.replace(".csv", ".xlsx")
-                    df_test.to_excel(temp_xlsx, index=False, engine="openpyxl")
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    temp_path = temp_xlsx
-                else:
-                    df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
-                if df_test.empty or df_test.shape[0] < 1:
-                    st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
-                else:
-                    # Move o arquivo temporário para o definitivo
-                    shutil.move(temp_path, ARQUIVO_DIARIAS)
-                    st.session_state[chave_processado] = True
-                    st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
-                    st.info("🔄 Atualizando a página...")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ Erro ao ler a planilha: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                # Move o arquivo temporário para o definitivo
+                shutil.move(temp_path, ARQUIVO_DIARIAS)
+                st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
+                st.info("🔄 A página será atualizada em instantes...")
+                st.rerun()
+        except Exception as e:
+            st.error(f"❌ Erro ao ler a planilha: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     df_diarias = carregar_diarias()
     if df_diarias.empty:
@@ -4921,308 +4006,252 @@ with aba9:
                     lat2, lon2 = geocodificar(destino_str.strip())
                 if lat1 is None or lat2 is None:
                     st.error("❌ Não foi possível localizar um ou ambos os endereços. Tente incluir a cidade mais próxima ou verificar a grafia.")
-                    if "rota_dados" in st.session_state:
-                        del st.session_state["rota_dados"]
                 else:
+                    st.success("✅ Pontos localizados com sucesso!")
+                    st.markdown("---")
                     cidade_origem = origem_str.split(",")[0].strip()
                     cidade_destino = destino_str.split(",")[0].strip()
+
+                    # ---- CARRO ----
                     if transporte == "Carro":
                         distancia, tempo, geometria = calcular_rota(lat1, lon1, lat2, lon2)
                         if distancia is None:
                             st.error("❌ Não foi possível calcular a rota de carro. Tente novamente mais tarde.")
-                            if "rota_dados" in st.session_state:
-                                del st.session_state["rota_dados"]
                         else:
-                            horas = int(tempo // 60)
-                            mins = int(tempo % 60)
-                            st.session_state["rota_dados"] = {
-                                "tipo": "Carro",
-                                "lat1": lat1, "lon1": lon1,
-                                "lat2": lat2, "lon2": lon2,
-                                "cidade_origem": cidade_origem,
-                                "cidade_destino": cidade_destino,
-                                "origem_str": origem_str,
-                                "destino_str": destino_str,
-                                "distancia": distancia,
-                                "tempo": tempo,
-                                "horas": horas,
-                                "mins": mins,
-                                "geometria": geometria,
-                            }
+                            st.subheader("📊 RESUMO DA ROTA (CARRO)")
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                st.metric("📏 Distância", f"{distancia:.1f} km")
+                            with c2:
+                                horas = int(tempo // 60)
+                                mins = int(tempo % 60)
+                                st.metric("⏱️ Tempo Estimado", f"{horas}h {mins}min")
+                            with c3:
+                                st.metric("💰 Pedágio", "Consultar via app")
+
+                            # Combustível
+                            st.markdown("---")
+                            st.subheader("⛽ CUSTO ESTIMADO DE COMBUSTÍVEL")
+                            cc1, cc2 = st.columns(2)
+                            with cc1:
+                                preco_litro = st.number_input("Preço/Litro (R$)", min_value=0.0, value=5.89, step=0.01, format="%.2f", key="preco_carro")
+                            with cc2:
+                                consumo_km_l = st.number_input("Consumo (km/L)", min_value=0.1, value=10.0, step=0.1, format="%.1f", key="consumo_carro")
+                            if preco_litro > 0 and consumo_km_l > 0:
+                                litros = distancia / consumo_km_l
+                                custo_ida = litros * preco_litro
+                                custo_ida_volta = custo_ida * 2
+                                cb1, cb2 = st.columns(2)
+                                with cb1:
+                                    st.metric("⛽ Ida", f"R$ {custo_ida:,.2f}")
+                                with cb2:
+                                    st.metric("⛽ Ida + Volta", f"R$ {custo_ida_volta:,.2f}")
+                                st.info(f"💡 Litros necessários (ida): **{litros:.1f} L** | Preço/L: R$ {preco_litro:.2f} | Consumo: {consumo_km_l:.1f} km/L")
+
+                            # PDF
+                            st.markdown("---")
+                            pdf_bytes = gerar_pdf_rota(
+                                tipo="Carro",
+                                origem=origem_str,
+                                destino=destino_str,
+                                distancia=distancia,
+                                tempo_info=f"{horas}h {mins}min",
+                                custo_ida=custo_ida if (preco_litro > 0 and consumo_km_l > 0) else None,
+                                custo_volta=custo_ida_volta if (preco_litro > 0 and consumo_km_l > 0) else None,
+                                litros=litros if (preco_litro > 0 and consumo_km_l > 0) else None,
+                                preco_litro=preco_litro if (preco_litro > 0 and consumo_km_l > 0) else None,
+                                consumo=consumo_km_l if (preco_litro > 0 and consumo_km_l > 0) else None,
+                            )
+                            if pdf_bytes:
+                                st.download_button(
+                                    label="📄 BAIXAR RESUMO EM PDF",
+                                    data=pdf_bytes,
+                                    file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                    mime="application/pdf"
+                                )
+                            else:
+                                st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
+
+                            # Mapa com linha
+                            st.markdown("---")
+                            st.subheader("🗺️ Visualização da Rota")
+                            try:
+                                import pydeck as pdk
+                                coords = geometria["coordinates"]
+                                path_coords = coords  # já é [lon, lat]
+                                mid_lat = (lat1 + lat2) / 2
+                                mid_lon = (lon1 + lon2) / 2
+                                zoom_lvl = calcular_zoom(distancia)
+
+                                path_layer = pdk.Layer(
+                                    "PathLayer",
+                                    data=[{"path": path_coords, "color": [255, 60, 0]}],
+                                    get_path="path",
+                                    get_color="color",
+                                    width_scale=20,
+                                    width_min_pixels=4,
+                                )
+                                scatter_layer = pdk.Layer(
+                                    "ScatterplotLayer",
+                                    data=[
+                                        {"position": [lon1, lat1], "color": [0, 200, 0]},
+                                        {"position": [lon2, lat2], "color": [255, 0, 0]},
+                                    ],
+                                    get_position="position",
+                                    get_color="color",
+                                    get_radius=20000,
+                                    radius_min_pixels=8,
+                                    radius_max_pixels=25,
+                                )
+                                text_layer = pdk.Layer(
+                                    "TextLayer",
+                                    data=[
+                                        {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
+                                        {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
+                                    ],
+                                    get_position="position",
+                                    get_text="text",
+                                    get_color="color",
+                                    get_size=18,
+                                    get_text_anchor="middle",
+                                    get_alignment_baseline="bottom",
+                                    size_units="pixels",
+                                )
+                                view_state = pdk.ViewState(
+                                    latitude=mid_lat, longitude=mid_lon,
+                                    zoom=zoom_lvl, pitch=0
+                                )
+                                st.pydeck_chart(pdk.Deck(
+                                    layers=[path_layer, scatter_layer, text_layer],
+                                    initial_view_state=view_state,
+                                    tooltip={"text": "Rota de carro"},
+                                    height=800,
+                                ))
+                                st.caption("🟢 Origem  |  🔴 Destino  |  🟠 Linha = rota por estrada")
+                            except Exception as e:
+                                st.warning(f"Não foi possível exibir o mapa: {e}")
+
+                            # Instruções passo a passo
+                            st.markdown("---")
+                            st.subheader("📝 Instruções de Rota (passo a passo)")
+                            try:
+                                url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+                                params = {"overview": "false", "steps": "true"}
+                                resp = requests.get(url, params=params, timeout=20)
+                                dados_inst = resp.json()
+                                if dados_inst.get("routes"):
+                                    legs = dados_inst["routes"][0]["legs"][0]
+                                    passos = []
+                                    for step in legs.get("steps", []):
+                                        nome = step.get("name", "")
+                                        dist = step.get("distance", 0)
+                                        instr = step.get("maneuver", {}).get("type", "continue")
+                                        passos.append(f"• {instr.upper()}: siga em **{nome}** por `{dist/1000:.1f} km`")
+                                    if passos:
+                                        for p in passos[:25]:
+                                            st.markdown(p)
+                                        if len(passos) > 25:
+                                            st.info(f"... e mais {len(passos)-25} instruções.")
+                                    else:
+                                        st.info("Nenhuma instrução detalhada disponível.")
+                                else:
+                                    st.info("Instruções não disponíveis.")
+                            except Exception as e:
+                                st.info(f"Instruções não disponíveis: {e}")
+
+                    # ---- AVIÃO ----
                     else:
                         distancia = haversine(lat1, lon1, lat2, lon2)
-                        tempo_voo_min = (distancia / 850) * 60
-                        tempo_total_min = tempo_voo_min + 90
-                        horas_v = int(tempo_total_min // 60)
-                        mins_v = int(tempo_total_min % 60)
-                        st.session_state["rota_dados"] = {
-                            "tipo": "Avião",
-                            "lat1": lat1, "lon1": lon1,
-                            "lat2": lat2, "lon2": lon2,
-                            "cidade_origem": cidade_origem,
-                            "cidade_destino": cidade_destino,
-                            "origem_str": origem_str,
-                            "destino_str": destino_str,
-                            "distancia": distancia,
-                            "tempo_voo_min": tempo_voo_min,
-                            "tempo_total_min": tempo_total_min,
-                            "horas_v": horas_v,
-                            "mins_v": mins_v,
-                        }
+                        tempo_voo_min = (distancia / 850) * 60  # 850 km/h média
+                        tempo_total_min = tempo_voo_min + 90   # +1h30 taxi
+                        st.subheader("📊 RESUMO DA ROTA (AVIÃO)")
+                        a1, a2, a3 = st.columns(3)
+                        with a1:
+                            st.metric("📏 Distância (linha reta)", f"{distancia:.1f} km")
+                        with a2:
+                            horas_v = int(tempo_total_min // 60)
+                            mins_v = int(tempo_total_min % 60)
+                            st.metric("⏱️ Tempo Estimado", f"{horas_v}h {mins_v}min")
+                        with a3:
+                            st.metric("✈️ Veloc. Média", "~850 km/h")
+                        st.info("💡 O tempo inclui aproximadamente 1h30 de taxi, decolagem e pouso.")
 
-        # ---- EXIBIR RESULTADOS DA ROTA (fora do botão, sobrevive a reruns) ----
-        if "rota_dados" in st.session_state and st.session_state["rota_dados"]["tipo"] == transporte:
-            dados = st.session_state["rota_dados"]
-
-            if dados["tipo"] == "Carro":
-                distancia = dados["distancia"]
-                tempo = dados["tempo"]
-                horas = dados["horas"]
-                mins = dados["mins"]
-                geometria = dados["geometria"]
-                lat1, lon1 = dados["lat1"], dados["lon1"]
-                lat2, lon2 = dados["lat2"], dados["lon2"]
-                cidade_origem = dados["cidade_origem"]
-                cidade_destino = dados["cidade_destino"]
-                origem_str = dados["origem_str"]
-                destino_str = dados["destino_str"]
-
-                st.subheader("📊 RESUMO DA ROTA (CARRO)")
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("📏 Distância", f"{distancia:.1f} km")
-                with c2:
-                    st.metric("⏱️ Tempo Estimado", f"{horas}h {mins}min")
-                with c3:
-                    st.metric("💰 Pedágio", "Consultar via app")
-
-                # Combustível
-                st.markdown("---")
-                st.subheader("⛽ CUSTO ESTIMADO DE COMBUSTÍVEL")
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    preco_litro = st.number_input("Preço/Litro (R$)", min_value=0.0, value=5.89, step=0.01, format="%.2f", key="preco_carro")
-                with cc2:
-                    consumo_km_l = st.number_input("Consumo (km/L)", min_value=0.1, value=10.0, step=0.1, format="%.1f", key="consumo_carro")
-                if preco_litro > 0 and consumo_km_l > 0:
-                    litros = distancia / consumo_km_l
-                    custo_ida = litros * preco_litro
-                    custo_ida_volta = custo_ida * 2
-                    cb1, cb2 = st.columns(2)
-                    with cb1:
-                        st.metric("⛽ Ida", f"R$ {custo_ida:,.2f}")
-                    with cb2:
-                        st.metric("⛽ Ida + Volta", f"R$ {custo_ida_volta:,.2f}")
-                    st.info(f"💡 Litros necessários (ida): **{litros:.1f} L** | Preço/L: R$ {preco_litro:.2f} | Consumo: {consumo_km_l:.1f} km/L")
-
-                # PDF
-                st.markdown("---")
-                pdf_bytes = gerar_pdf_rota(
-                    tipo="Carro",
-                    origem=origem_str,
-                    destino=destino_str,
-                    distancia=distancia,
-                    tempo_info=f"{horas}h {mins}min",
-                    custo_ida=custo_ida if (preco_litro > 0 and consumo_km_l > 0) else None,
-                    custo_volta=custo_ida_volta if (preco_litro > 0 and consumo_km_l > 0) else None,
-                    litros=litros if (preco_litro > 0 and consumo_km_l > 0) else None,
-                    preco_litro=preco_litro if (preco_litro > 0 and consumo_km_l > 0) else None,
-                    consumo=consumo_km_l if (preco_litro > 0 and consumo_km_l > 0) else None,
-                )
-                if pdf_bytes:
-                    st.download_button(
-                        label="📄 BAIXAR RESUMO EM PDF",
-                        data=pdf_bytes,
-                        file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf"
-                    )
-                else:
-                    st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
-
-                # Mapa com linha
-                st.markdown("---")
-                st.subheader("🗺️ Visualização da Rota")
-                try:
-                    import pydeck as pdk
-                    coords = geometria["coordinates"]
-                    path_coords = coords  # já é [lon, lat]
-                    mid_lat = (lat1 + lat2) / 2
-                    mid_lon = (lon1 + lon2) / 2
-                    zoom_lvl = calcular_zoom(distancia)
-
-                    path_layer = pdk.Layer(
-                        "PathLayer",
-                        data=[{"path": path_coords, "color": [255, 60, 0]}],
-                        get_path="path",
-                        get_color="color",
-                        width_scale=20,
-                        width_min_pixels=4,
-                    )
-                    scatter_layer = pdk.Layer(
-                        "ScatterplotLayer",
-                        data=[
-                            {"position": [lon1, lat1], "color": [0, 200, 0]},
-                            {"position": [lon2, lat2], "color": [255, 0, 0]},
-                        ],
-                        get_position="position",
-                        get_color="color",
-                        get_radius=20000,
-                        radius_min_pixels=8,
-                        radius_max_pixels=25,
-                    )
-                    text_layer = pdk.Layer(
-                        "TextLayer",
-                        data=[
-                            {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
-                            {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
-                        ],
-                        get_position="position",
-                        get_text="text",
-                        get_color="color",
-                        get_size=18,
-                        get_text_anchor="middle",
-                        get_alignment_baseline="bottom",
-                        size_units="pixels",
-                    )
-                    view_state = pdk.ViewState(
-                        latitude=mid_lat, longitude=mid_lon,
-                        zoom=zoom_lvl, pitch=0
-                    )
-                    st.pydeck_chart(pdk.Deck(
-                        layers=[path_layer, scatter_layer, text_layer],
-                        initial_view_state=view_state,
-                        tooltip={"text": "Rota de carro"},
-                        height=800,
-                    ))
-                    st.caption("🟢 Origem  |  🔴 Destino  |  🟠 Linha = rota por estrada")
-                except Exception as e:
-                    st.warning(f"Não foi possível exibir o mapa: {e}")
-
-                # Instruções passo a passo
-                st.markdown("---")
-                st.subheader("📝 Instruções de Rota (passo a passo)")
-                try:
-                    url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
-                    params = {"overview": "false", "steps": "true"}
-                    resp = requests.get(url, params=params, timeout=20)
-                    dados_inst = resp.json()
-                    if dados_inst.get("routes"):
-                        legs = dados_inst["routes"][0]["legs"][0]
-                        passos = []
-                        for step in legs.get("steps", []):
-                            nome = step.get("name", "")
-                            dist = step.get("distance", 0)
-                            instr = step.get("maneuver", {}).get("type", "continue")
-                            passos.append(f"• {instr.upper()}: siga em **{nome}** por `{dist/1000:.1f} km`")
-                        if passos:
-                            for p in passos[:25]:
-                                st.markdown(p)
-                            if len(passos) > 25:
-                                st.info(f"... e mais {len(passos)-25} instruções.")
+                        # PDF
+                        st.markdown("---")
+                        pdf_bytes = gerar_pdf_rota(
+                            tipo="Avião",
+                            origem=origem_str,
+                            destino=destino_str,
+                            distancia=distancia,
+                            tempo_info=f"{horas_v}h {mins_v}min",
+                        )
+                        if pdf_bytes:
+                            st.download_button(
+                                label="📄 BAIXAR RESUMO EM PDF",
+                                data=pdf_bytes,
+                                file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                mime="application/pdf"
+                            )
                         else:
-                            st.info("Nenhuma instrução detalhada disponível.")
-                    else:
-                        st.info("Instruções não disponíveis.")
-                except Exception as e:
-                    st.info(f"Instruções não disponíveis: {e}")
+                            st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
 
-            elif dados["tipo"] == "Avião":
-                distancia = dados["distancia"]
-                horas_v = dados["horas_v"]
-                mins_v = dados["mins_v"]
-                lat1, lon1 = dados["lat1"], dados["lon1"]
-                lat2, lon2 = dados["lat2"], dados["lon2"]
-                cidade_origem = dados["cidade_origem"]
-                cidade_destino = dados["cidade_destino"]
-                origem_str = dados["origem_str"]
-                destino_str = dados["destino_str"]
+                        # Mapa com linha reta
+                        st.markdown("---")
+                        st.subheader("🗺️ Visualização da Rota")
+                        try:
+                            import pydeck as pdk
+                            path_coords = [[lon1, lat1], [lon2, lat2]]
+                            mid_lat = (lat1 + lat2) / 2
+                            mid_lon = (lon1 + lon2) / 2
+                            zoom_lvl = calcular_zoom(distancia)
 
-                st.subheader("📊 RESUMO DA ROTA (AVIÃO)")
-                a1, a2, a3 = st.columns(3)
-                with a1:
-                    st.metric("📏 Distância (linha reta)", f"{distancia:.1f} km")
-                with a2:
-                    st.metric("⏱️ Tempo Estimado", f"{horas_v}h {mins_v}min")
-                with a3:
-                    st.metric("✈️ Veloc. Média", "~850 km/h")
-                st.info("💡 O tempo inclui aproximadamente 1h30 de taxi, decolagem e pouso.")
-
-                # PDF
-                st.markdown("---")
-                pdf_bytes = gerar_pdf_rota(
-                    tipo="Avião",
-                    origem=origem_str,
-                    destino=destino_str,
-                    distancia=distancia,
-                    tempo_info=f"{horas_v}h {mins_v}min",
-                )
-                if pdf_bytes:
-                    st.download_button(
-                        label="📄 BAIXAR RESUMO EM PDF",
-                        data=pdf_bytes,
-                        file_name=f"Resumo_Viagem_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf"
-                    )
-                else:
-                    st.warning("⚠️ Não foi possível gerar o PDF. Verifique se a biblioteca `reportlab` está instalada.")
-
-                # Mapa com linha reta
-                st.markdown("---")
-                st.subheader("🗺️ Visualização da Rota")
-                try:
-                    import pydeck as pdk
-                    path_coords = [[lon1, lat1], [lon2, lat2]]
-                    mid_lat = (lat1 + lat2) / 2
-                    mid_lon = (lon1 + lon2) / 2
-                    zoom_lvl = calcular_zoom(distancia)
-
-                    path_layer = pdk.Layer(
-                        "PathLayer",
-                        data=[{"path": path_coords, "color": [0, 100, 255]}],
-                        get_path="path",
-                        get_color="color",
-                        width_scale=20,
-                        width_min_pixels=4,
-                    )
-                    scatter_layer = pdk.Layer(
-                        "ScatterplotLayer",
-                        data=[
-                            {"position": [lon1, lat1], "color": [0, 200, 0]},
-                            {"position": [lon2, lat2], "color": [255, 0, 0]},
-                        ],
-                        get_position="position",
-                        get_color="color",
-                        get_radius=20000,
-                        radius_min_pixels=8,
-                        radius_max_pixels=25,
-                    )
-                    text_layer = pdk.Layer(
-                        "TextLayer",
-                        data=[
-                            {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
-                            {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
-                        ],
-                        get_position="position",
-                        get_text="text",
-                        get_color="color",
-                        get_size=18,
-                        get_text_anchor="middle",
-                        get_alignment_baseline="bottom",
-                        size_units="pixels",
-                    )
-                    view_state = pdk.ViewState(
-                        latitude=mid_lat, longitude=mid_lon,
-                        zoom=zoom_lvl, pitch=0
-                    )
-                    st.pydeck_chart(pdk.Deck(
-                        layers=[path_layer, scatter_layer, text_layer],
-                        initial_view_state=view_state,
-                        tooltip={"text": "Rota aérea (linha reta)"},
-                        height=800,
-                    ))
-                    st.caption("🟢 Origem  |  🔴 Destino  |  🔵 Linha = trajeto aéreo aproximado")
-                except Exception as e:
-                    st.warning(f"Não foi possível exibir o mapa: {e}")
+                            path_layer = pdk.Layer(
+                                "PathLayer",
+                                data=[{"path": path_coords, "color": [0, 100, 255]}],
+                                get_path="path",
+                                get_color="color",
+                                width_scale=20,
+                                width_min_pixels=4,
+                            )
+                            scatter_layer = pdk.Layer(
+                                "ScatterplotLayer",
+                                data=[
+                                    {"position": [lon1, lat1], "color": [0, 200, 0]},
+                                    {"position": [lon2, lat2], "color": [255, 0, 0]},
+                                ],
+                                get_position="position",
+                                get_color="color",
+                                get_radius=20000,
+                                radius_min_pixels=8,
+                                radius_max_pixels=25,
+                            )
+                            text_layer = pdk.Layer(
+                                "TextLayer",
+                                data=[
+                                    {"position": [lon1, lat1], "text": cidade_origem, "color": [0, 200, 0]},
+                                    {"position": [lon2, lat2], "text": cidade_destino, "color": [255, 0, 0]},
+                                ],
+                                get_position="position",
+                                get_text="text",
+                                get_color="color",
+                                get_size=18,
+                                get_text_anchor="middle",
+                                get_alignment_baseline="bottom",
+                                size_units="pixels",
+                            )
+                            view_state = pdk.ViewState(
+                                latitude=mid_lat, longitude=mid_lon,
+                                zoom=zoom_lvl, pitch=0
+                            )
+                            st.pydeck_chart(pdk.Deck(
+                                layers=[path_layer, scatter_layer, text_layer],
+                                initial_view_state=view_state,
+                                tooltip={"text": "Rota aérea (linha reta)"},
+                                height=800,
+                            ))
+                            st.caption("🟢 Origem  |  🔴 Destino  |  🔵 Linha = trajeto aéreo aproximado")
+                        except Exception as e:
+                            st.warning(f"Não foi possível exibir o mapa: {e}")
 
 
     with sub_aba_viagens:
@@ -5416,84 +4445,6 @@ with aba9:
             with col_ev:
                 st.markdown("**🗑️ Para excluir:** delete as linhas na tabela (tecla Delete) e clique em SALVAR ALTERAÇÕES.")
 
-            # --- PRESTAÇÃO DE CONTAS POR VIAGEM ---
-            st.markdown("---")
-            st.markdown("### 📎 PRESTAÇÃO DE CONTAS — ANEXAR COMPROVANTES")
-            st.caption("Anexe comprovantes (PDF, JPG, PNG) por viagem específica.")
-
-            viagens_disponiveis_pc = df_v_filt["NUMERO_VIAGEM"].unique().tolist()
-            if viagens_disponiveis_pc:
-                viagem_sel_pc = st.selectbox(
-                    "Selecione a Viagem (Nº)",
-                    options=viagens_disponiveis_pc,
-                    key="sel_prestacao_viagem",
-                )
-
-                # Listar comprovantes já anexados
-                comps_existentes = _listar_comprovantes_viagem(viagem_sel_pc)
-                if comps_existentes:
-                    st.markdown(f"**📄 Comprovantes anexados ({len(comps_existentes)}):**")
-                    for comp in comps_existentes:
-                        comp_cols = st.columns([6, 3, 1])
-                        with comp_cols[0]:
-                            st.text(comp["nome"])
-                        with comp_cols[1]:
-                            tam_kb = comp["tamanho"] / 1024
-                            try:
-                                with open(comp["caminho"], "rb") as f_comp:
-                                    ext = os.path.splitext(comp["nome"])[1].lower()
-                                    mime = "application/pdf" if ext == ".pdf" else "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
-                                    st.download_button(
-                                        label="⬇️ Baixar",
-                                        data=f_comp.read(),
-                                        file_name=comp["nome"],
-                                        mime=mime,
-                                        key=f"dl_comp_{comp['nome']}",
-                                    )
-                            except Exception:
-                                st.warning("Erro ao ler arquivo.")
-                        with comp_cols[2]:
-                            if st.button("🗑️", key=f"del_comp_{comp['nome']}", help="Excluir este comprovante"):
-                                if _excluir_comprovante_viagem(comp["caminho"]):
-                                    st.success("Comprovante excluído!")
-                                    st.rerun()
-                                else:
-                                    st.error("Erro ao excluir comprovante.")
-                else:
-                    st.info("Nenhum comprovante anexado para esta viagem.")
-
-                # Upload de comprovantes (múltiplos)
-                novos_comps = st.file_uploader(
-                    "📤 Anexar comprovantes (PDF, JPG, PNG) – você pode selecionar vários",
-                    type=["pdf", "jpg", "jpeg", "png"],
-                    accept_multiple_files=True,
-                    key=f"upload_prestacao_{viagem_sel_pc}",
-                )
-                if novos_comps:
-                    # Mostra prévia dos arquivos selecionados
-                    nomes_sel = [f.name for f in novos_comps]
-                    preview = f"**{len(novos_comps)} arquivo(s) selecionado(s):**  " + "  ".join([f"\n• {n}" for n in nomes_sel])
-                    st.markdown(preview)
-                    if st.button("📤 ENVIAR COMPROVANTE(S)", type="primary", key=f"btn_enviar_prestacao_{viagem_sel_pc}"):
-                        salvos = 0
-                        erros = 0
-                        for arq in novos_comps:
-                            caminho_salvo = _salvar_comprovante_viagem(viagem_sel_pc, arq)
-                            if caminho_salvo:
-                                salvos += 1
-                            else:
-                                erros += 1
-                        if salvos > 0:
-                            msg = f"✅ {salvos} comprovante(s) anexado(s) à viagem {viagem_sel_pc}!"
-                            if erros > 0:
-                                msg += f"  ⚠️ {erros} falha(s)."
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error("Erro ao salvar os comprovantes.")
-            else:
-                st.info("Nenhuma viagem disponível para anexar comprovantes.")
-
 
         # --- RESUMO, GRÁFICOS E EXPORTAÇÃO ---
         st.markdown("---")
@@ -5528,270 +4479,58 @@ with aba9:
                 st.markdown("---")
                 st.markdown("#### 📈 Gráficos")
 
-                # --- Gráficos Plotly (interativos e bonitos) ---
-                if PLOTLY:
-                    # ── helper: layout profissional dark ──
-                    def _base_layout(title, height=380):
-                        return dict(
-                            title=dict(text=title, font=dict(size=15, color="#e0e0e0"), x=0.5, xanchor="center"),
-                            template="plotly_dark",
-                            paper_bgcolor="rgba(30,30,42,0.92)",
-                            plot_bgcolor="rgba(30,30,42,0.60)",
-                            font=dict(size=12, color="#c8c8d0"),
-                            margin=dict(t=52, b=40, l=50, r=20),
-                            height=height,
-                            xaxis=dict(gridcolor="rgba(255,255,255,0.08)", zerolinecolor="rgba(255,255,255,0.08)"),
-                            yaxis=dict(gridcolor="rgba(255,255,255,0.08)", zerolinecolor="rgba(255,255,255,0.08)"),
-                            legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="center", x=0.5,
-                                        font=dict(size=11, color="#c8c8d0")),
-                        )
+                g1, g2 = st.columns(2)
+                with g1:
+                    status_counts = df_v_num["STATUS"].value_counts()
+                    if not status_counts.empty:
+                        fig1, ax1 = plt.subplots(figsize=(4.5, 3.5))
+                        colors = {"Planejada": "#3498db", "Em Andamento": "#f1c40f", "Concluída": "#2ecc71", "Cancelada": "#e74c3c"}
+                        pie_colors = [colors.get(s, "#95a5a6") for s in status_counts.index]
+                        ax1.pie(status_counts.values, labels=status_counts.index, autopct="%1.1f%%", colors=pie_colors, startangle=90)
+                        ax1.set_title("Distribuição por Status", fontsize=10, fontweight="bold")
+                        plt.tight_layout()
+                        st.pyplot(fig1)
+                        plt.close(fig1)
 
-                    # ── 1) 🥧 Pizza – Distribuição por Status ──
-                    g1, g2 = st.columns(2)
-                    with g1:
-                        status_counts = df_v_num["STATUS"].value_counts()
-                        if not status_counts.empty:
-                            df_pie = status_counts.reset_index()
-                            df_pie.columns = ["Status", "Quantidade"]
-                            color_map = {"Planejada": "#5dade2", "Em Andamento": "#f5b041", "Concluída": "#58d68d", "Cancelada": "#ec7063"}
-                            fig1 = px.pie(
-                                df_pie, names="Status", values="Quantidade",
-                                hole=0,
-                                color="Status",
-                                color_discrete_map=color_map,
-                            )
-                            fig1.update_traces(
-                                textposition="inside",
-                                textinfo="percent+label+value",
-                                hovertemplate="<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}",
-                                marker=dict(line=dict(color="rgba(30,30,42,0.7)", width=2.5)),
-                                textfont=dict(size=13, color="#fff"),
-                                rotation=90,
-                                pull=[0.04 if s == status_counts.idxmax() else 0 for s in df_pie["Status"]],
-                            )
-                            fig1.update_layout(**_base_layout("🥧 Pizza – Distribuição por Status"))
-                            fig1.update_layout(showlegend=True)
-                            st.plotly_chart(fig1, use_container_width=True)
+                with g2:
+                    top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
+                    if not top_colab.empty:
+                        fig2, ax2 = plt.subplots(figsize=(4.5, 3.5))
+                        top_colab.plot(kind="barh", ax=ax2, color="#2ecc71")
+                        ax2.set_title("Top 10 Colaboradores - Total Gasto", fontsize=10, fontweight="bold")
+                        ax2.set_xlabel("R$", fontsize=8)
+                        plt.tight_layout()
+                        st.pyplot(fig2)
+                        plt.close(fig2)
 
-                    # ── 2) 🍩 Rosca – Status (com detalhes no centro) ──
-                    with g2:
-                        status_counts2 = df_v_num["STATUS"].value_counts()
-                        if not status_counts2.empty:
-                            df_rosca = status_counts2.reset_index()
-                            df_rosca.columns = ["Status", "Quantidade"]
-                            fig2 = px.pie(
-                                df_rosca, names="Status", values="Quantidade",
-                                hole=0.55,
-                                color="Status",
-                                color_discrete_map=color_map,
-                            )
-                            total_viagens = int(df_rosca["Quantidade"].sum())
-                            fig2.update_traces(
-                                textposition="inside",
-                                textinfo="percent+label",
-                                hovertemplate="<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}",
-                                marker=dict(line=dict(color="rgba(30,30,42,0.7)", width=2.5)),
-                                textfont=dict(size=12, color="#fff"),
-                            )
-                            fig2.update_layout(**_base_layout("🍩 Rosca – Status por Quantidade"))
-                            fig2.update_layout(
-                                showlegend=True,
-                                annotations=[dict(
-                                    text=f"<b>{total_viagens}</b><br>viagens",
-                                    x=0.5, y=0.5,
-                                    font_size=18, font_color="#f5b041",
-                                    showarrow=False,
-                                )],
-                            )
-                            st.plotly_chart(fig2, use_container_width=True)
+                g3, g4 = st.columns(2)
+                with g3:
+                    loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
+                    if not loja_gasto.empty:
+                        fig3, ax3 = plt.subplots(figsize=(4.5, 3.5))
+                        loja_gasto.plot(kind="bar", ax=ax3, color="#3498db")
+                        ax3.set_title("Top 10 Lojas - Total Gasto", fontsize=10, fontweight="bold")
+                        ax3.set_ylabel("R$", fontsize=8)
+                        ax3.tick_params(axis="x", rotation=45, labelsize=7)
+                        plt.tight_layout()
+                        st.pyplot(fig3)
+                        plt.close(fig3)
 
-                    # ── 3) Barras Horizontais – Top 10 Colaboradores (gasto) ──
-                    g3, g4 = st.columns(2)
-                    with g3:
-                        top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
-                        if not top_colab.empty and top_colab.sum() > 0:
-                            df_barh = top_colab.reset_index()
-                            df_barh.columns = ["Colaborador", "Total Gasto (R$)"]
-                            fig3 = px.bar(
-                                df_barh, x="Total Gasto (R$)", y="Colaborador", orientation="h",
-                                color="Total Gasto (R$)",
-                                color_continuous_scale=["#1a5276", "#2e86c1", "#5dade2"],
-                            )
-                            fig3.update_traces(
-                                texttemplate="R$ %{x:,.2f}",
-                                textposition="outside",
-                                textfont=dict(size=10, color="#aed6f1"),
-                                hovertemplate="<b>%{y}</b><br>Gasto: R$ %{x:,.2f}",
-                                marker_line=dict(color="#2e86c1", width=0.8),
-                                marker=dict(cornerradius=6),
-                            )
-                            fig3.update_layout(**_base_layout("💰 Top 10 Colaboradores – Gasto"))
-                            fig3.update_layout(coloraxis_showscale=False, yaxis=dict(tickfont=dict(size=11)))
-                            st.plotly_chart(fig3, use_container_width=True)
-                        else:
-                            st.info("ℹ️ Nenhuma viagem com gasto registrado para exibir este gráfico.")
-
-                    # ── 4) Barras Verticais – Top 10 Lojas (gasto) ──
-                    with g4:
-                        loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
-                        if not loja_gasto.empty and loja_gasto.sum() > 0:
-                            df_barv = loja_gasto.reset_index()
-                            df_barv.columns = ["Loja", "Total Gasto (R$)"]
-                            fig4 = px.bar(
-                                df_barv, x="Loja", y="Total Gasto (R$)",
-                                color="Total Gasto (R$)",
-                                color_continuous_scale=["#154360", "#1a5276", "#2980b9"],
-                            )
-                            fig4.update_traces(
-                                texttemplate="R$ %{y:,.2f}",
-                                textposition="outside",
-                                textfont=dict(size=9, color="#aed6f1"),
-                                hovertemplate="<b>%{x}</b><br>Gasto: R$ %{y:,.2f}",
-                                marker_line=dict(color="#2980b9", width=0.8),
-                                marker=dict(cornerradius=6),
-                            )
-                            fig4.update_layout(**_base_layout("🏪 Top 10 Lojas – Gasto"))
-                            fig4.update_layout(
-                                coloraxis_showscale=False,
-                                xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
-                            )
-                            st.plotly_chart(fig4, use_container_width=True)
-                        else:
-                            st.info("ℹ️ Nenhuma viagem com gasto registrado para exibir este gráfico.")
-
-                    # ── 5) Linha temporal – Viagens por Mês ──
-                    g5, _ = st.columns([3, 1])
-                    with g5:
-                        try:
-                            df_v_num["MES_RAW"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce")
-                            df_v_num["MES"] = df_v_num["MES_RAW"].dt.to_period("M").astype(str)
-                            # mês legível: "AGO/25"
-                            df_v_num["MES_LABEL"] = df_v_num["MES_RAW"].dt.strftime("%b/%y").str.upper()
-                            mes_grp = df_v_num.groupby("MES").agg(Viagens=("MES", "size"), Label=("MES_LABEL", "first")).reset_index()
-                            mes_grp = mes_grp.sort_values("MES").tail(12)
-                            if not mes_grp.empty:
-                                fig5 = go.Figure()
-                                fig5.add_trace(go.Scatter(
-                                    x=mes_grp["Label"],
-                                    y=mes_grp["Viagens"],
-                                    mode="lines+markers+text",
-                                    text=mes_grp["Viagens"],
-                                    textposition="top center",
-                                    textfont=dict(size=12, color="#f5b041", family="Arial Black"),
-                                    line=dict(width=3, color="#f5b041", shape="spline"),
-                                    marker=dict(symbol="diamond", size=10, color="#f39c12", line=dict(width=2, color="#fff")),
-                                    fill="tozeroy",
-                                    fillcolor="rgba(245,176,65,0.10)",
-                                    hovertemplate="<b>%{x}</b><br>Viagens: %{y}",
-                                    name="Viagens",
-                                ))
-                                fig5.update_layout(**_base_layout("📅 Viagens por Mês (últimos 12)"))
-                                fig5.update_layout(
-                                    xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
-                                    yaxis=dict(dtick=1, title=dict(text="Quantidade", font=dict(size=11))),
-                                )
-                                st.plotly_chart(fig5, use_container_width=True)
-                        except Exception:
-                            pass
-
-                    # ── 6) Barras Agrupadas – Liberado vs Gasto por Status ──
-                    g6, _ = st.columns([3, 1])
-                    with g6:
-                        try:
-                            agg_status = df_v_num.groupby("STATUS").agg(
-                                Liberado=("TOTAL_LIBERADO", "sum"),
-                                Gasto=("TOTAL_GASTO", "sum"),
-                            ).reset_index()
-                            agg_status = agg_status[agg_status["Liberado"] + agg_status["Gasto"] > 0]
-                            if not agg_status.empty:
-                                fig6 = go.Figure()
-                                fig6.add_trace(go.Bar(
-                                    x=agg_status["STATUS"],
-                                    y=agg_status["Liberado"],
-                                    name="Liberado",
-                                    marker=dict(color="#2ecc71", cornerradius=6),
-                                    texttemplate="R$ %{y:,.2f}",
-                                    textposition="outside",
-                                    textfont=dict(size=10, color="#82e0aa"),
-                                    hovertemplate="<b>%{x}</b><br>Liberado: R$ %{y:,.2f}",
-                                ))
-                                fig6.add_trace(go.Bar(
-                                    x=agg_status["STATUS"],
-                                    y=agg_status["Gasto"],
-                                    name="Gasto",
-                                    marker=dict(color="#e74c3c", cornerradius=6),
-                                    texttemplate="R$ %{y:,.2f}",
-                                    textposition="outside",
-                                    textfont=dict(size=10, color="#f1948a"),
-                                    hovertemplate="<b>%{x}</b><br>Gasto: R$ %{y:,.2f}",
-                                ))
-                                fig6.update_layout(**_base_layout("📊 Liberado vs Gasto por Status"))
-                                fig6.update_layout(
-                                    barmode="group",
-                                    bargap=0.25,
-                                    xaxis=dict(tickfont=dict(size=12)),
-                                    yaxis=dict(title=dict(text="R$", font=dict(size=11))),
-                                )
-                                st.plotly_chart(fig6, use_container_width=True)
-                            else:
-                                st.info("ℹ️ Nenhuma viagem com valores financeiros para exibir Liberado vs Gasto.")
-                        except Exception:
-                            pass
-
-                else:
-                    # Fallback matplotlib se Plotly não estiver disponível
-                    g1, g2 = st.columns(2)
-                    with g1:
-                        status_counts = df_v_num["STATUS"].value_counts()
-                        if not status_counts.empty and MATPLOT:
-                            fig1, ax1 = plt.subplots(figsize=(4.5, 3.5))
-                            colors = {"Planejada": "#5dade2", "Em Andamento": "#f5b041", "Concluída": "#58d68d", "Cancelada": "#ec7063"}
-                            pie_colors = [colors.get(s, "#aab7b8") for s in status_counts.index]
-                            ax1.pie(status_counts.values, labels=status_counts.index, autopct="%1.1f%%", colors=pie_colors, startangle=90)
-                            ax1.set_title("Distribuição por Status", fontsize=10, fontweight="bold")
+                with g4:
+                    try:
+                        df_v_num["MES"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce").dt.to_period("M").astype(str)
+                        mes_counts = df_v_num["MES"].value_counts().sort_index().tail(12)
+                        if not mes_counts.empty:
+                            fig4, ax4 = plt.subplots(figsize=(4.5, 3.5))
+                            mes_counts.plot(kind="line", ax=ax4, marker="o", color="#e74c3c")
+                            ax4.set_title("Viagens por Mês (últimos 12)", fontsize=10, fontweight="bold")
+                            ax4.set_ylabel("Quantidade", fontsize=8)
+                            ax4.tick_params(axis="x", rotation=45, labelsize=7)
                             plt.tight_layout()
-                            st.pyplot(fig1)
-                            plt.close(fig1)
-
-                    with g2:
-                        top_colab = df_v_num.groupby("COLABORADOR")["TOTAL_GASTO"].sum().sort_values(ascending=True).tail(10)
-                        if not top_colab.empty and MATPLOT:
-                            fig2, ax2 = plt.subplots(figsize=(4.5, 3.5))
-                            top_colab.plot(kind="barh", ax=ax2, color="#2ecc71")
-                            ax2.set_title("Top 10 Colaboradores - Total Gasto", fontsize=10, fontweight="bold")
-                            ax2.set_xlabel("R$", fontsize=8)
-                            plt.tight_layout()
-                            st.pyplot(fig2)
-                            plt.close(fig2)
-
-                    g3, g4 = st.columns(2)
-                    with g3:
-                        loja_gasto = df_v_num.groupby("LOJA")["TOTAL_GASTO"].sum().sort_values(ascending=False).head(10)
-                        if not loja_gasto.empty and MATPLOT:
-                            fig3, ax3 = plt.subplots(figsize=(4.5, 3.5))
-                            loja_gasto.plot(kind="bar", ax=ax3, color="#3498db")
-                            ax3.set_title("Top 10 Lojas - Total Gasto", fontsize=10, fontweight="bold")
-                            ax3.set_ylabel("R$", fontsize=8)
-                            ax3.tick_params(axis="x", rotation=45, labelsize=7)
-                            plt.tight_layout()
-                            st.pyplot(fig3)
-                            plt.close(fig3)
-
-                    with g4:
-                        try:
-                            df_v_num["MES"] = pd.to_datetime(df_v_num["DATA_CADASTRO"], format="%d/%m/%Y %H:%M", errors="coerce").dt.to_period("M").astype(str)
-                            mes_counts = df_v_num["MES"].value_counts().sort_index().tail(12)
-                            if not mes_counts.empty and MATPLOT:
-                                fig4, ax4 = plt.subplots(figsize=(4.5, 3.5))
-                                mes_counts.plot(kind="line", ax=ax4, marker="o", color="#e74c3c")
-                                ax4.set_title("Viagens por Mês (últimos 12)", fontsize=10, fontweight="bold")
-                                ax4.set_ylabel("Quantidade", fontsize=8)
-                                ax4.tick_params(axis="x", rotation=45, labelsize=7)
-                                plt.tight_layout()
-                                st.pyplot(fig4)
-                                plt.close(fig4)
-                        except Exception:
-                            pass
+                            st.pyplot(fig4)
+                            plt.close(fig4)
+                    except Exception:
+                        pass
 
                 st.markdown("---")
                 st.markdown("#### 📥 EXPORTAR DADOS")
@@ -5918,7 +4657,7 @@ with aba10:
 
     st.markdown("---")
     st.markdown("### 📂 Arquivos Atuais no Sistema")
-    col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
+    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
     with col_b1:
         st.metric("📎 Docs Lojas", len(os.listdir(PASTA_DOCS)) if os.path.exists(PASTA_DOCS) else 0)
     with col_b2:
@@ -5927,9 +4666,6 @@ with aba10:
         st.metric("🖼️ Fotos", len(os.listdir(PASTA_FOTOS)) if os.path.exists(PASTA_FOTOS) else 0)
     with col_b4:
         st.metric("📎 Comprovantes", len(os.listdir(PASTA_COMPROVANTES)) if os.path.exists(PASTA_COMPROVANTES) else 0)
-    with col_b5:
-        _total_pcv = sum(len(files) for _, _, files in os.walk(PASTA_PRESTACAO_VIAGEM)) if os.path.exists(PASTA_PRESTACAO_VIAGEM) else 0
-        st.metric("🧾 Prest. Contas Viag.", _total_pcv)
 
     st.markdown("---")
     st.caption("Dica: Faça backup periodicamente ou sempre antes de atualizar o código no Streamlit Cloud.")
@@ -5977,32 +4713,6 @@ IDIOMAS = {
     "Polonês": "pl",
 }
 
-
-def _auto_instalar_pacote(nome_pip: str, nome_import: str) -> bool:
-    """Tenta importar um pacote; se falhar, tenta instalar via pip e importar novamente.
-    Retorna True se o pacote ficou disponível, False caso contrário.
-    NÃO usa st.stop() para não interromper a renderização de outras abas."""
-    try:
-        __import__(nome_import)
-        return True
-    except ImportError:
-        pass
-    # Tenta auto-instalar
-    try:
-        import subprocess
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", nome_pip],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        # Tenta importar novamente após instalação
-        try:
-            __import__(nome_import)
-            return True
-        except ImportError:
-            return False
-    except Exception:
-        return False
-
 with aba11:
     st.subheader("🌐 TRADUTOR MULTILÍNGUE")
     st.info("Traduza textos, gere áudio a partir de textos e transcreva arquivos de áudio para texto.")
@@ -6031,14 +4741,22 @@ with aba11:
                 if resultado:
                     st.success("✅ Tradução concluída!")
                     if "traducoes_historico" not in st.session_state:
-                        st.session_state["traducoes_historico"] = []
-                    st.session_state["traducoes_historico"].append({
+                        try:
+                            st.session_state["traducoes_historico"] = _sqlite_list("traducoes_historico") or []
+                        except Exception:
+                            st.session_state["traducoes_historico"] = []
+                    entry = {
                         "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                         "origem": idioma_origem,
                         "destino": idioma_destino,
                         "texto_original": texto_origem,
                         "texto_traduzido": resultado,
-                    })
+                    }
+                    st.session_state["traducoes_historico"].append(entry)
+                    try:
+                        _sqlite_add_traducao(entry)
+                    except Exception:
+                        pass
                 else:
                     st.error("❌ Não foi possível traduzir. Verifique a conexão com a internet.")
 
@@ -6064,6 +4782,10 @@ with aba11:
                     )
             if st.button("🗑️ Limpar Histórico de Traduções", key="trad_limpar_hist"):
                 st.session_state["traducoes_historico"] = []
+                try:
+                    _sqlite_clear_table("traducoes_historico")
+                except Exception:
+                    pass
                 st.rerun()
 
     # ---------- SUB-ABA 2: TEXTO → ÁUDIO (TTS) ----------
@@ -6071,9 +4793,16 @@ with aba11:
         st.markdown("### 🔊 Texto para Áudio (TTS)")
         st.caption("Converta texto em fala. Você pode traduzir o texto antes de gerar o áudio.")
 
-        # Inicializa histórico de TTS
+        # Inicializa histórico de TTS (carrega do SQLite se existir)
         if "tts_historico" not in st.session_state:
-            st.session_state["tts_historico"] = []
+            try:
+                rows = _sqlite_list("tts_historico")
+                for r in rows:
+                    if r.get("audio_bytes") and isinstance(r["audio_bytes"], memoryview):
+                        r["audio_bytes"] = bytes(r["audio_bytes"])
+                st.session_state["tts_historico"] = rows or []
+            except Exception:
+                st.session_state["tts_historico"] = []
 
         c1, c2 = st.columns(2)
         with c1:
@@ -6090,66 +4819,70 @@ with aba11:
         with col_limpar:
             if st.button("🗑️ Limpar Histórico de Áudio", use_container_width=True, key="tts_btn_limpar"):
                 st.session_state["tts_historico"] = []
+                try:
+                    _sqlite_clear_table("tts_historico")
+                except Exception:
+                    pass
                 st.rerun()
 
         if gerar_audio:
             if not texto_tts.strip():
                 st.warning("⚠️ Digite um texto para converter.")
             else:
-                gtts_disponivel = _auto_instalar_pacote("gTTS", "gtts")
-                if not gtts_disponivel:
-                    st.error("❌ A biblioteca `gTTS` não está instalada e não foi possível instalar automaticamente.")
-                    st.code("pip install gTTS", language="bash")
-                    st.info("💡 Após instalar, reinicie o app com `streamlit run app_rh.py`")
-                else:
+                try:
                     from gtts import gTTS
+                except ImportError:
+                    st.error("❌ A biblioteca `gTTS` não está instalada. Execute: `pip install gtts`")
+                    st.stop()
 
-                if not gtts_disponivel:
-                    st.warning("⚠️ Função de áudio desabilitada até instalar gTTS.")
-                else:
-                    texto_final = texto_tts
-                    cod_tts = IDIOMAS.get(idioma_destino_tts, "pt")
+                texto_final = texto_tts
+                cod_tts = IDIOMAS.get(idioma_destino_tts, "pt")
 
-                    # Traduzir se necessário
-                    if traduzir_antes:
-                        with st.spinner("Traduzindo texto..."):
-                            cod_origem = "auto" if idioma_origem_tts == "Auto-detectar" else IDIOMAS.get(idioma_origem_tts, "auto")
-                            texto_traduzido = traduzir_texto(texto_tts, origem=cod_origem, destino=cod_tts)
-                        if texto_traduzido:
-                            texto_final = texto_traduzido
-                            st.success(f"✅ Texto traduzido de {idioma_origem_tts} para {idioma_destino_tts}")
-                            st.text_area("Texto que será convertido em áudio", value=texto_final, height=100, disabled=True, key="tts_texto_convertido")
-                        else:
-                            st.warning("⚠️ Não foi possível traduzir. Usando texto original.")
-                            texto_final = texto_tts
+                # Traduzir se necessário
+                if traduzir_antes:
+                    with st.spinner("Traduzindo texto..."):
+                        cod_origem = "auto" if idioma_origem_tts == "Auto-detectar" else IDIOMAS.get(idioma_origem_tts, "auto")
+                        texto_traduzido = traduzir_texto(texto_tts, origem=cod_origem, destino=cod_tts)
+                    if texto_traduzido:
+                        texto_final = texto_traduzido
+                        st.success(f"✅ Texto traduzido de {idioma_origem_tts} para {idioma_destino_tts}")
+                        st.text_area("Texto que será convertido em áudio", value=texto_final, height=100, disabled=True, key="tts_texto_convertido")
+                    else:
+                        st.warning("⚠️ Não foi possível traduzir. Usando texto original.")
+                        texto_final = texto_tts
 
-                    with st.spinner("Gerando áudio..."):
+                with st.spinner("Gerando áudio..."):
+                    try:
+                        tts = gTTS(text=texto_final, lang=cod_tts, slow=False)
+                        mp3_buffer = io.BytesIO()
+                        tts.write_to_fp(mp3_buffer)
+                        mp3_buffer.seek(0)
+                        st.success("✅ Áudio gerado com sucesso!")
+                        st.audio(mp3_buffer, format="audio/mp3")
+                        st.download_button(
+                            label="📥 Baixar Áudio (.mp3)",
+                            data=mp3_buffer.getvalue(),
+                            file_name=f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
+                            mime="audio/mpeg",
+                            key="tts_download_audio"
+                        )
+                        # Adiciona ao histórico
+                        entry = {
+                            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                            "idioma_origem": idioma_origem_tts,
+                            "idioma_destino": idioma_destino_tts,
+                            "texto_original": texto_tts,
+                            "texto_convertido": texto_final,
+                            "audio_bytes": mp3_buffer.getvalue(),
+                        }
+                        st.session_state["tts_historico"].append(entry)
                         try:
-                            tts = gTTS(text=texto_final, lang=cod_tts, slow=False)
-                            mp3_buffer = io.BytesIO()
-                            tts.write_to_fp(mp3_buffer)
-                            mp3_buffer.seek(0)
-                            st.success("✅ Áudio gerado com sucesso!")
-                            st.audio(mp3_buffer, format="audio/mp3")
-                            st.download_button(
-                                label="📥 Baixar Áudio (.mp3)",
-                                data=mp3_buffer.getvalue(),
-                                file_name=f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
-                                mime="audio/mpeg",
-                                key="tts_download_audio"
-                            )
-                            # Adiciona ao histórico
-                            st.session_state["tts_historico"].append({
-                                "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                "idioma_origem": idioma_origem_tts,
-                                "idioma_destino": idioma_destino_tts,
-                                "texto_original": texto_tts,
-                                "texto_convertido": texto_final,
-                                "audio_bytes": mp3_buffer.getvalue(),
-                            })
-                        except Exception as e_gtts:
-                            st.error("❌ Erro ao gerar áudio com gTTS.")
-                            st.info("ℹ️ O serviço Google TTS pode estar indisponível temporariamente ou o idioma selecionado pode não ser suportado no momento. Tente outro idioma ou tente novamente mais tarde.")
+                            _sqlite_add_tts(entry)
+                        except Exception:
+                            pass
+                    except Exception as e_gtts:
+                        st.error(f"❌ Erro ao gerar áudio com gTTS.")
+                        st.info("ℹ️ O serviço Google TTS pode estar indisponível temporariamente ou o idioma selecionado pode não ser suportado no momento. Tente outro idioma ou tente novamente mais tarde.")
 
         # Exibe histórico de áudio gerado
         if st.session_state["tts_historico"]:
@@ -6174,9 +4907,16 @@ with aba11:
         st.markdown("### 🎤 Fale, Transcreva, Traduza e Corrija")
         st.caption("Grave áudio pelo microfone ou envie um arquivo. O sistema transcreve, traduz e permite correções por escrito ou por nova fala.")
 
-        # --- Inicializa histórico ---
+        # --- Inicializa histórico (carrega do SQLite se existir) ---
         if "stt_historico" not in st.session_state:
-            st.session_state["stt_historico"] = []
+            try:
+                rows = _sqlite_list("stt_historico")
+                for r in rows:
+                    if r.get("audio_bytes") and isinstance(r["audio_bytes"], memoryview):
+                        r["audio_bytes"] = bytes(r["audio_bytes"])
+                st.session_state["stt_historico"] = rows or []
+            except Exception:
+                st.session_state["stt_historico"] = []
         if "stt_ultimo_audio_bytes" not in st.session_state:
             st.session_state["stt_ultimo_audio_bytes"] = None
         if "stt_ultimo_audio_ext" not in st.session_state:
@@ -6223,90 +4963,85 @@ with aba11:
             if st.session_state["stt_ultimo_audio_bytes"] is None:
                 st.warning("⚠️ Grave ou envie um áudio primeiro.")
             else:
-                sr_disponivel = _auto_instalar_pacote("SpeechRecognition", "speech_recognition")
-                if not sr_disponivel:
-                    st.error("❌ A biblioteca `SpeechRecognition` não está instalada e não foi possível instalar automaticamente.")
-                    st.code("pip install SpeechRecognition", language="bash")
-                    st.info("💡 Após instalar, reinicie o app com `streamlit run app_rh.py`")
-                else:
+                try:
                     import speech_recognition as sr
+                except ImportError:
+                    st.error("❌ A biblioteca `SpeechRecognition` não está instalada. Execute: `pip install SpeechRecognition`")
+                    st.stop()
 
-                if sr_disponivel:
-                    with st.spinner("Processando áudio..."):
-                        audio_bytes = st.session_state["stt_ultimo_audio_bytes"]
-                        ext = st.session_state["stt_ultimo_audio_ext"]
-                        tmp_path = f"/tmp/stt_audio_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
-                        with open(tmp_path, "wb") as f_audio:
-                            f_audio.write(audio_bytes)
+                with st.spinner("Processando áudio..."):
+                    audio_bytes = st.session_state["stt_ultimo_audio_bytes"]
+                    ext = st.session_state["stt_ultimo_audio_ext"]
+                    tmp_path = f"/tmp/stt_audio_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+                    with open(tmp_path, "wb") as f_audio:
+                        f_audio.write(audio_bytes)
 
-                        # Converter para wav se necessário
-                        wav_path = tmp_path
-                        conversao_ok = True
-                        if ext != ".wav":
-                            pydub_disponivel = _auto_instalar_pacote("pydub", "pydub")
-                            if not pydub_disponivel:
-                                st.error("❌ Para arquivos MP3/OGG/FLAC é necessário instalar: `pip install pydub` (e ter ffmpeg instalado no sistema).")
-                                st.code("pip install pydub", language="bash")
-                                st.info("💡 Após instalar, reinicie o app.")
-                                conversao_ok = False
-                                if os.path.exists(tmp_path):
-                                    os.remove(tmp_path)
-                            else:
-                                from pydub import AudioSegment
-                                try:
-                                    wav_path = tmp_path.replace(ext, ".wav")
-                                    audio_seg = AudioSegment.from_file(tmp_path, format=ext.replace(".", ""))
-                                    audio_seg.export(wav_path, format="wav")
-                                except Exception as e_conv:
-                                    st.error(f"❌ Erro ao converter áudio: {e_conv}")
-                                    conversao_ok = False
-                                    if os.path.exists(tmp_path):
-                                        os.remove(tmp_path)
+                    # Converter para wav se necessário
+                    wav_path = tmp_path
+                    if ext != ".wav":
+                        try:
+                            from pydub import AudioSegment
+                            wav_path = tmp_path.replace(ext, ".wav")
+                            audio_seg = AudioSegment.from_file(tmp_path, format=ext.replace(".", ""))
+                            audio_seg.export(wav_path, format="wav")
+                        except ImportError:
+                            st.error("❌ Para arquivos MP3/OGG/FLAC é necessário instalar: `pip install pydub` (e ter ffmpeg instalado no sistema).")
+                            os.remove(tmp_path)
+                            st.stop()
+                        except Exception as e_conv:
+                            st.error(f"❌ Erro ao converter áudio: {e_conv}")
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                            st.stop()
 
-                        if conversao_ok:
-                            recognizer = sr.Recognizer()
-                            try:
-                                with sr.AudioFile(wav_path) as source:
-                                    audio_data = recognizer.record(source)
-                                cod_stt = IDIOMAS.get(idioma_audio, "pt")
-                                texto_transcrito = recognizer.recognize_google(audio_data, language=cod_stt)
+                    recognizer = sr.Recognizer()
+                    try:
+                        with sr.AudioFile(wav_path) as source:
+                            audio_data = recognizer.record(source)
+                        cod_stt = IDIOMAS.get(idioma_audio, "pt")
+                        texto_transcrito = recognizer.recognize_google(audio_data, language=cod_stt)
 
-                                # Traduzir automaticamente
-                                cod_trad = IDIOMAS.get(idioma_trad, "pt")
+                        # Traduzir automaticamente
+                        cod_trad = IDIOMAS.get(idioma_trad, "pt")
+                        texto_traduzido = ""
+                        if texto_transcrito.strip():
+                            texto_traduzido = traduzir_texto(texto_transcrito, origem=cod_stt, destino=cod_trad)
+                            if texto_traduzido is None:
                                 texto_traduzido = ""
-                                if texto_transcrito.strip():
-                                    texto_traduzido = traduzir_texto(texto_transcrito, origem=cod_stt, destino=cod_trad)
-                                    if texto_traduzido is None:
-                                        texto_traduzido = ""
 
-                                # Guarda transcrição atual para re-traduzir depois
-                                st.session_state["stt_texto_transcrito_atual"] = texto_transcrito
-                                st.session_state["stt_cod_idioma_audio_atual"] = cod_stt
+                        # Guarda transcrição atual para re-traduzir depois
+                        st.session_state["stt_texto_transcrito_atual"] = texto_transcrito
+                        st.session_state["stt_cod_idioma_audio_atual"] = cod_stt
 
-                                # Adiciona ao histórico
-                                st.session_state["stt_historico"].append({
-                                    "id": len(st.session_state["stt_historico"]),
-                                    "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                    "idioma_audio": idioma_audio,
-                                    "cod_audio": cod_stt,
-                                    "idioma_trad": idioma_trad,
-                                    "cod_trad": cod_trad,
-                                    "texto_transcrito": texto_transcrito,
-                                    "texto_traduzido": texto_traduzido,
-                                })
-                                st.success("✅ Áudio transcrito e traduzido com sucesso!")
+                        # Adiciona ao histórico
+                        entry_stt = {
+                            "id": len(st.session_state["stt_historico"]),
+                            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                            "idioma_audio": idioma_audio,
+                            "cod_audio": cod_stt,
+                            "idioma_trad": idioma_trad,
+                            "cod_trad": cod_trad,
+                            "texto_transcrito": texto_transcrito,
+                            "texto_traduzido": texto_traduzido,
+                        }
+                        st.session_state["stt_historico"].append(entry_stt)
+                        try:
+                            _sqlite_add_stt(entry_stt)
+                        except Exception:
+                            pass
+                        st.success("✅ Áudio transcrito e traduzido com sucesso!")
 
-                            except sr.UnknownValueError:
-                                st.error("❌ Não foi possível entender o áudio. Verifique a qualidade do arquivo ou fale mais próximo do microfone.")
-                            except sr.RequestError as e_req:
-                                st.error(f"❌ Erro no serviço de reconhecimento: {e_req}")
-                            except Exception as e_all:
-                                st.error(f"❌ Erro ao processar áudio: {e_all}")
-                            finally:
-                                if os.path.exists(tmp_path):
-                                    os.remove(tmp_path)
-                                if os.path.exists(wav_path) and wav_path != tmp_path:
-                                    os.remove(wav_path)
+                    except sr.UnknownValueError:
+                        st.error("❌ Não foi possível entender o áudio. Verifique a qualidade do arquivo ou fale mais próximo do microfone.")
+                    except sr.RequestError as e_req:
+                        st.error(f"❌ Erro no serviço de reconhecimento: {e_req}")
+                    except Exception as e_all:
+                        st.error(f"❌ Erro ao processar áudio: {e_all}")
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                        if os.path.exists(wav_path) and wav_path != tmp_path:
+                            os.remove(wav_path)
 
         # --- AÇÃO: TRADUZIR ÚLTIMO ÁUDIO PARA OUTRO IDIOMA ---
         if traduzir_novamente:
@@ -6320,7 +5055,7 @@ with aba11:
                     texto_traduzido = traduzir_texto(texto_transcrito, origem=cod_stt, destino=cod_trad)
                     if texto_traduzido is None:
                         texto_traduzido = ""
-                st.session_state["stt_historico"].append({
+                entry_stt2 = {
                     "id": len(st.session_state["stt_historico"]),
                     "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                     "idioma_audio": idioma_audio,
@@ -6329,7 +5064,12 @@ with aba11:
                     "cod_trad": cod_trad,
                     "texto_transcrito": texto_transcrito,
                     "texto_traduzido": texto_traduzido,
-                })
+                }
+                st.session_state["stt_historico"].append(entry_stt2)
+                try:
+                    _sqlite_add_stt(entry_stt2)
+                except Exception:
+                    pass
                 st.success("✅ Nova tradução adicionada ao histórico!")
 
         # --- SEÇÃO DE HISTÓRICO E CORREÇÃO ---
@@ -6368,40 +5108,37 @@ with aba11:
                             if not texto_ouvir.strip():
                                 st.warning("⚠️ Nenhuma tradução para ouvir.")
                             else:
-                                gtts_ok = _auto_instalar_pacote("gTTS", "gtts")
-                                if not gtts_ok:
-                                    st.error("❌ A biblioteca `gTTS` não está instalada e não foi possível instalar automaticamente.")
-                                    st.code("pip install gTTS", language="bash")
-                                else:
+                                try:
                                     from gtts import gTTS
-
-                                if gtts_ok:
-                                    with st.spinner("Gerando áudio..."):
-                                            cod_tts = item["cod_trad"]
-                                            try:
-                                                from gtts.lang import tts_langs
-                                                suportados = tts_langs()
-                                            except Exception:
-                                                suportados = {}
-                                            if not cod_tts or cod_tts not in suportados:
-                                                cod_tts = "pt"
-                                                st.info("ℹ️ Idioma não suportado para áudio. Usando Português.")
-                                            try:
-                                                tts = gTTS(text=texto_ouvir, lang=cod_tts, slow=False)
-                                                mp3_buffer = io.BytesIO()
-                                                tts.write_to_fp(mp3_buffer)
-                                                mp3_buffer.seek(0)
-                                                st.success("✅ Áudio gerado!")
-                                                st.audio(mp3_buffer, format="audio/mp3")
-                                                st.download_button(
-                                                    label="📥 Baixar Áudio",
-                                                    data=mp3_buffer.getvalue(),
-                                                    file_name=f"traducao_audio_{item['timestamp'].replace('/', '').replace(' ', '_').replace(':', '')}.mp3",
-                                                    mime="audio/mpeg",
-                                                    key=f"stt_down_audio_{idx}"
-                                                )
-                                            except Exception as e_gtts:
-                                                st.error(f"❌ Erro ao gerar áudio com gTTS: {e_gtts}")
+                                except ImportError:
+                                    st.error("❌ A biblioteca `gTTS` não está instalada. Execute: `pip install gtts`")
+                                    st.stop()
+                                with st.spinner("Gerando áudio..."):
+                                    cod_tts = item["cod_trad"]
+                                    try:
+                                        from gtts.lang import tts_langs
+                                        suportados = tts_langs()
+                                    except Exception:
+                                        suportados = {}
+                                    if not cod_tts or cod_tts not in suportados:
+                                        cod_tts = "pt"
+                                        st.info("ℹ️ Idioma não suportado para áudio. Usando Português.")
+                                    try:
+                                        tts = gTTS(text=texto_ouvir, lang=cod_tts, slow=False)
+                                        mp3_buffer = io.BytesIO()
+                                        tts.write_to_fp(mp3_buffer)
+                                        mp3_buffer.seek(0)
+                                        st.success("✅ Áudio gerado!")
+                                        st.audio(mp3_buffer, format="audio/mp3")
+                                        st.download_button(
+                                            label="📥 Baixar Áudio",
+                                            data=mp3_buffer.getvalue(),
+                                            file_name=f"traducao_audio_{item['timestamp'].replace('/', '').replace(' ', '_').replace(':', '')}.mp3",
+                                            mime="audio/mpeg",
+                                            key=f"stt_down_audio_{idx}"
+                                        )
+                                    except Exception as e_gtts:
+                                        st.error(f"❌ Erro ao gerar áudio com gTTS: {e_gtts}")
                     with col_b2:
                         if st.button("💾 Salvar Correção", use_container_width=True, key=f"stt_salvar_{idx}"):
                             item["texto_traduzido"] = texto_editado
@@ -6421,6 +5158,10 @@ with aba11:
                 st.session_state["stt_texto_transcrito_atual"] = ""
                 st.session_state["stt_cod_idioma_audio_atual"] = "pt"
                 st.session_state["stt_ultimo_audio_bytes"] = None
+                try:
+                    _sqlite_clear_table("stt_historico")
+                except Exception:
+                    pass
                 st.rerun()
 
 
