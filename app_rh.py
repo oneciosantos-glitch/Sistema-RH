@@ -2746,9 +2746,15 @@ with aba1:
         help="Comece a digitar para filtrar automaticamente"
     )
     
+    # Flag de limpeza: após salvar ou limpar, zera tudo
+    _cad_limpo = st.session_state.get("_cad_limpo", False)
+    if _cad_limpo:
+        st.session_state["_cad_limpo"] = False
+        _cad_limpo = False
+
     # Extrai matrícula se selecionou no autocomplete
     mat_sel = ""
-    if sel_auto and " - " in sel_auto:
+    if sel_auto and " - " in sel_auto and not _cad_limpo:
         mat_sel = sel_auto.split(" - ")[0].strip()
         st.success(f"✅ Colaborador selecionado: {sel_auto}")
     
@@ -2786,7 +2792,7 @@ with aba1:
         mat_busca = str(mat_sel).strip()
         reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_busca]
 
-    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
+    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty and not _cad_limpo else ""
 
     prazos_exp = []
     if not reg.empty and val_campo("Admissao").strip():
@@ -2806,7 +2812,7 @@ with aba1:
         except:
             pass
 
-    if not reg.empty:
+    if not reg.empty and not _cad_limpo:
         temp = {
             "dt_aviso": val_campo("DataAvisoPrevio"), "dias_aviso": val_campo("DiasAvisoPrevio"),
             "dt_lic": val_campo("DataLicenca"), "dias_lic": val_campo("DiasLicenca"),
@@ -2825,8 +2831,15 @@ with aba1:
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
         if "autocomplete_func" in st.session_state:
             del st.session_state["autocomplete_func"]
+        # Limpa todas as chaves de widget do formulário para forçar reset
+        _keys_to_del = [k for k in st.session_state if k.startswith(("form_cadastro", "cad_", "foto_"))]
+        for k in _keys_to_del:
+            del st.session_state[k]
+        st.session_state["_cad_limpo"] = True
         st.rerun()
-    with st.form("form_cadastro", clear_on_submit=False):
+    # Chave dinâmica: muda quando muda o colaborador selecionado, forçando reset dos widgets
+    _form_key = f"form_cadastro_{mat_sel if mat_sel else '_novo'}"
+    with st.form(_form_key, clear_on_submit=False):
         st.subheader("Dados Básicos")
         col_foto, col_dados = st.columns([1,3])
         
@@ -2838,34 +2851,34 @@ with aba1:
                 st.info("Sem foto")
             
             nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
-            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
+            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False, key=f"cad_exclfoto_{mat_sel}")
 
         with col_dados:
             c1,c2,c3 = st.columns(3)
             with c1:
-                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
-                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
-                cpf = st.text_input("CPF", value=val_campo("CPF"))
-                rg = st.text_input("RG", value=val_campo("RG"))
-                pis = st.text_input("PIS", value=val_campo("PIS"))
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"), key=f"cad_mat_{mat_sel}")
+                nome = st.text_input("Nome Completo", value=val_campo("Nome"), key=f"cad_nome_{mat_sel}")
+                cpf = st.text_input("CPF", value=val_campo("CPF"), key=f"cad_cpf_{mat_sel}")
+                rg = st.text_input("RG", value=val_campo("RG"), key=f"cad_rg_{mat_sel}")
+                pis = st.text_input("PIS", value=val_campo("PIS"), key=f"cad_pis_{mat_sel}")
             with c2:
-                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
-                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
-                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
-                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"), key=f"cad_nasc_{mat_sel}")
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"), key=f"cad_adm_{mat_sel}")
+                telefone = st.text_input("Telefone", value=val_campo("Telefone"), key=f"cad_tel_{mat_sel}")
+                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"), key=f"cad_end_{mat_sel}")
             with c3:
                 lojas = lista_lojas()
                 idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
-                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
+                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key=f"cad_loja_{mat_sel}")
 
                 cargos = lista_cargos()
                 idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
-                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
+                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key=f"cad_cargo_{mat_sel}")
 
-                salario = st.text_input("Salário", value=val_campo("Salario"))
+                salario = st.text_input("Salário", value=val_campo("Salario"), key=f"cad_sal_{mat_sel}")
 
                 idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
-                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"cad_sit_{mat_sel}")
 
         if prazos_exp:
             st.markdown("---")
@@ -2882,34 +2895,37 @@ with aba1:
         av1,av2,av3 = st.columns(3)
         with av1:
             st.markdown("**Aviso Prévio**")
-            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"))
-            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"))
-            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True)
+            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"), key=f"cad_dtav_{mat_sel}")
+            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"), key=f"cad_diav_{mat_sel}")
+            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key=f"cad_terav_{mat_sel}")
         with av2:
             st.markdown("**Licença**")
-            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"))
-            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"))
-            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True)
+            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"), key=f"cad_dtlic_{mat_sel}")
+            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"), key=f"cad_dilic_{mat_sel}")
+            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key=f"cad_terlic_{mat_sel}")
         with av3:
             st.markdown("**Férias**")
-            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"))
-            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"))
-            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True)
+            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"), key=f"cad_dtfer_{mat_sel}")
+            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"), key=f"cad_difer_{mat_sel}")
+            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key=f"cad_retfer_{mat_sel}")
 
         af1,af2 = st.columns(2)
         with af1:
             st.markdown("**Afastamento**")
-            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
-            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
-            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
-            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"])
+            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"), key=f"cad_dtaf_{mat_sel}")
+            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"), key=f"cad_diaf_{mat_sel}")
+            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key=f"cad_retaf_{mat_sel}")
+            _taf_opts = ["Nenhum", "Doença", "Acidente", "Maternidade"]
+            _taf_val = val_campo("TipoAfastamento") or "Nenhum"
+            _idx_taf = _taf_opts.index(_taf_val) if _taf_val in _taf_opts else 0
+            tipo_af = st.selectbox("Tipo Afastamento", _taf_opts, index=_idx_taf, key=f"cad_tipoaf_{mat_sel}")
         with af2:
             st.markdown("**Desligamento**")
-            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
-            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
-            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
-            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"))
-            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
+            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"), key=f"cad_dtped_{mat_sel}")
+            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"), key=f"cad_dtres_{mat_sel}")
+            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"), key=f"cad_dtab_{mat_sel}")
+            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"cad_dtdes_{mat_sel}")
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"cad_dtterm_{mat_sel}")
 
         btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
         if btn_salvar:
@@ -2973,6 +2989,13 @@ with aba1:
                     st.stop()
                 add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
                 st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
+                # Limpa seleção e campos após salvar
+                if "autocomplete_func" in st.session_state:
+                    del st.session_state["autocomplete_func"]
+                _keys_to_del = [k for k in st.session_state if k.startswith(("form_cadastro", "cad_", "foto_"))]
+                for k in _keys_to_del:
+                    del st.session_state[k]
+                st.session_state["_cad_limpo"] = True
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Erro ao salvar: {e}")
