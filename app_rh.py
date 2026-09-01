@@ -2862,7 +2862,7 @@ with aba1:
         if "autocomplete_func" in st.session_state:
             del st.session_state["autocomplete_func"]
         # Limpa todas as chaves de widget do formulário para forçar reset
-        _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_"))]
+        _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_", "_cad_prev_sel"))]
         for k in _keys_to_del:
             del st.session_state[k]
         st.session_state["_cad_limpo"] = True
@@ -2870,11 +2870,13 @@ with aba1:
     # --- Sem st.form(): widgets atualizam session_state imediatamente ---
     # Quando muda o colaborador selecionado, limpa chaves para forçar reload do banco
     _prev_sel = st.session_state.get("_cad_prev_sel", "")
-    if _prev_sel != mat_sel and mat_sel:
-        # Colaborador mudou — deleta chaves de widget para forçar reload dos defaults
+    if _prev_sel != mat_sel:
+        # Colaborador mudou OU foi limpo — deleta chaves de widget para forçar reload dos defaults
         _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_"))]
         for k in _keys_to_del:
             del st.session_state[k]
+        st.session_state["_cad_prev_sel"] = mat_sel
+        st.rerun()  # Necessário para que os widgets sejam re-renderizados com os novos defaults
     st.session_state["_cad_prev_sel"] = mat_sel
     # Container para agrupar visualmente os widgets do "formulário"
     with st.container():
@@ -3055,7 +3057,7 @@ with aba1:
                 # Limpa seleção e campos após salvar
                 if "autocomplete_func" in st.session_state:
                     del st.session_state["autocomplete_func"]
-                _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_"))]
+                _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_", "_cad_prev_sel"))]
                 for k in _keys_to_del:
                     del st.session_state[k]
                 st.session_state["_cad_limpo"] = True
