@@ -12,7 +12,6 @@ import time
 import io
 import json
 import hashlib
-import sqlite3
 import requests
 from datetime import datetime, timedelta
 from PIL import Image
@@ -23,9 +22,13 @@ from openpyxl.utils import get_column_letter
 # ============================================================
 # CACHE DE DADOS — evita recarregar arquivo JSON a cada rerun
 # ============================================================
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=0, show_spinner=False)
 def _cached_carregar_compras_local(path: str, mtime: float = 0.0):
-    """Carrega dados do JSON com cache de 5 min (invalidado por mtime)."""
+    """Carrega dados do JSON (cache invalidado pela data de modificação do arquivo).
+
+    CORRECAO: o cache de 5 minutos podia devolver dados velhos e sobrescrever
+    alterações recentes.
+    """
     if not os.path.exists(path):
         return [], []
     try:
@@ -69,12 +72,10 @@ except Exception:
 # ====================== MÓDULO DE COMPRAS EMBUTIDO ======================
 # -*- coding: utf-8 -*-
 """Módulo Sistema de Compras e Entregas - Streamlit"""
-import streamlit as st
-import pandas as pd
+# Imports do módulo de compras (os repetidos foram removidos: streamlit, pandas,
+# datetime, io e base64 já são importados no início do arquivo)
 import uuid
-from datetime import datetime, date
-import io
-import base64
+from datetime import date
 
 # ========== FRAGMENT SUPPORT (Streamlit >= 1.38) ==========
 # Isola reruns para não recarregar todo o app a cada clique
@@ -243,20 +244,13 @@ def formatar_moeda(v):
 def init_session_state():
     if "compras_solicitacoes" not in st.session_state:
         sols, ents = [], []
-        # 1) Tenta carregar do SQLite (primário)
-        try:
-            sols = _sqlite_list("compras_solicitacoes", "data DESC")
-            ents = _sqlite_list("compras_entregas", "data DESC")
-        except Exception:
-            sols, ents = [], []
-        # 2) Se SQLite vazio, tenta Google Sheets
-        if not sols and not ents:
-            if GS_ENABLED and GS_ID_COMPRAS:
-                try:
-                    sols, ents = _carregar_compras_gs()
-                except Exception:
-                    sols, ents = [], []
-        # 3) Se ainda vazio, carrega do arquivo local JSON (com cache)
+        # Tenta carregar do Google Sheets
+        if GS_ENABLED and GS_ID_COMPRAS:
+            try:
+                sols, ents = _carregar_compras_gs()
+            except Exception:
+                sols, ents = [], []
+        # Se não conseguiu do GS, carrega do arquivo local (com cache)
         if not sols and not ents:
             mtime = os.path.getmtime(ARQUIVO_COMPRAS) if os.path.exists(ARQUIVO_COMPRAS) else 0.0
             sols, ents = _cached_carregar_compras_local(ARQUIVO_COMPRAS, mtime)
@@ -267,12 +261,6 @@ def init_session_state():
                         dados = json.load(f)
                     sols = dados.get("solicitacoes", [])
                     ents = dados.get("entregas", [])
-                except Exception:
-                    pass
-            # Se carregou do JSON e não do SQLite, popula o SQLite
-            if sols or ents:
-                try:
-                    _sqlite_salvar_tudo_compras(sols, ents)
                 except Exception:
                     pass
         st.session_state["compras_solicitacoes"] = sols
@@ -553,7 +541,6 @@ def _cached_df_entregas(entregas_json):
 def page_dashboard():
     st.markdown("### 📊 Dashboard")
     sols = st.session_state["compras_solicitacoes"]
-    ents = st.session_state["compras_entregas"]
 
     total = len(sols)
     pendentes = sum(1 for s in sols if s.get("status") == "Pendente")
@@ -581,17 +568,24 @@ def page_dashboard():
 
 
 def _salvar_compras_local(solicitacoes, entregas):
-    """Salva dados de compras em arquivo JSON local (apenas se houver mudanças)."""
+    """Salva dados de compras em arquivo JSON local, sempre de forma segura.
+
+    CORRECOES:
+    - o "pular se nao mudou" agora so vale se o arquivo realmente existir e
+      o carimbo for gravado DEPOIS da escrita bem-sucedida;
+    - gravacao atomica com backup, para nunca perder o arquivo pela metade;
+    - erro aparece na tela em vez de ser engolido.
+    """
+    dados = {"solicitacoes": solicitacoes, "entregas": entregas}
     try:
-        dados = {"solicitacoes": solicitacoes, "entregas": entregas}
         dados_json = json.dumps(dados, ensure_ascii=False, sort_keys=True)
         hash_novo = hashlib.md5(dados_json.encode("utf-8")).hexdigest()
         chave_cache = "_compras_hash"
-        hash_antigo = st.session_state.get(chave_cache, "")
-        if hash_novo == hash_antigo:
-            return  # sem mudanças, ignora
+        arquivo_ok = os.path.exists(ARQUIVO_COMPRAS) and os.path.getsize(ARQUIVO_COMPRAS) > 10
+        if arquivo_ok and hash_novo == st.session_state.get(chave_cache, ""):
+            return  # nada mudou E o arquivo esta no lugar
         # Protecao: nao salvar dados vazios por cima de arquivo existente com dados
-        if not solicitacoes and not entregas and os.path.exists(ARQUIVO_COMPRAS) and os.path.getsize(ARQUIVO_COMPRAS) > 10:
+        if not solicitacoes and not entregas and arquivo_ok:
             try:
                 with open(ARQUIVO_COMPRAS, "r", encoding="utf-8") as f:
                     dados_existentes = json.load(f)
@@ -600,10 +594,10 @@ def _salvar_compras_local(solicitacoes, entregas):
                     return
             except Exception:
                 pass
-        st.session_state[chave_cache] = hash_novo
-        with open(ARQUIVO_COMPRAS, "w", encoding="utf-8") as f:
-            json.dump(dados, f, ensure_ascii=False, indent=2)
+        _salvar_json_seguro(ARQUIVO_COMPRAS, dados)
+        st.session_state[chave_cache] = hash_novo  # só marca DEPOIS de gravar
     except Exception as e:
+        st.session_state["_compras_hash"] = ""  # força nova tentativa no próximo save
         st.error(f"❌ Erro ao salvar compras localmente: {e}")
 
 
@@ -630,28 +624,22 @@ def _carregar_compras_local():
 
 
 def _salvar_compras_automatico():
-    """Salva automaticamente o estado atual do módulo de compras: SQLite → JSON → GS(bg)."""
-    import sys, threading
+    """Salva o estado atual do módulo de compras localmente e no Google Sheets.
+
+    CORRECAO: o envio para a nuvem era feito em segundo plano (thread daemon) e
+    podia ser cortado quando o app encerrava, perdendo o salvamento. Agora é
+    feito na hora, e qualquer falha aparece na tela.
+    """
     sols = st.session_state.get("compras_solicitacoes", [])
     ents = st.session_state.get("compras_entregas", [])
-    # 1) Salva no SQLite primeiro (mais robusto)
-    try:
-        _sqlite_salvar_tudo_compras(sols, ents)
-    except Exception as e:
-        print(f"[DEBUG] Falha ao salvar no SQLite: {e}", file=sys.stderr)
-    # 2) Salva localmente em JSON (backup)
+    # Sempre salva localmente para garantir persistência
     _salvar_compras_local(sols, ents)
-    # 3) Salva no Google Sheets em background
     if not GS_ENABLED or not GS_ID_COMPRAS:
         return
-
-    def _bg_save():
-        try:
-            _salvar_compras_gs(sols, ents)
-        except Exception as e:
-            print(f"[DEBUG] Falha ao salvar no GS: {e}", file=sys.stderr)
-
-    threading.Thread(target=_bg_save, daemon=True).start()
+    try:
+        _salvar_compras_gs(sols, ents)
+    except Exception as e:
+        st.warning(f"⚠️ Dados salvos no arquivo, mas falhou o envio para o Google Sheets: {e}")
 
 
 # Inicialização Google Sheets: garante que abas existam
@@ -1389,171 +1377,134 @@ def render_compras():
 
 
 # ====================== CONFIGURAÇÕES GERAIS ======================
-# Diretório base fixo onde o script está (garante persistência entre reinícios)
+# Diretório onde o script está
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Log de diagnóstico no stderr para debug de persistência
-import sys
-print(f"[DEBUG] BASE_DIR={BASE_DIR}", file=sys.stderr)
-print(f"[DEBUG] ARQUIVO_COMPRAS={os.path.join(BASE_DIR, 'dados_compras.json')}", file=sys.stderr)
 
-ARQUIVO = os.path.join(BASE_DIR, "dados_funcionarios.xlsx")
-ARQUIVO_DIARIAS = os.path.join(BASE_DIR, "controle_diarias.xlsx")
-ARQUIVO_VIAGENS = os.path.join(BASE_DIR, "registro_viagens.xlsx")
-ARQUIVO_COMPRAS = os.path.join(BASE_DIR, "dados_compras.json")
-PASTA_DOCS = os.path.join(BASE_DIR, "Documentos_Lojas")
-PASTA_DOCS_FUNC = os.path.join(BASE_DIR, "Documentos_Funcionarios")
-PASTA_FOTOS = os.path.join(BASE_DIR, "Fotos_Funcionarios")
-PASTA_COMPROVANTES = os.path.join(BASE_DIR, "Comprovantes_Diarias")
+# ------------------------------------------------------------------
+# PASTA DE DADOS (CORRIGIDO)
+# Antes tudo era gravado junto do script -> apagado a cada reinicio
+# no Streamlit Cloud. Agora pode ser apontada para uma pasta fixa
+# (disco persistente / OneDrive / pasta da rede) com a variavel de
+# ambiente RH_DATA_DIR ou o segredo [dados] pasta = "...".
+# ------------------------------------------------------------------
+def _descobrir_pasta_dados():
+    destino = os.environ.get("RH_DATA_DIR", "").strip()
+    if not destino:
+        try:
+            destino = str(st.secrets.get("dados", {}).get("pasta", "")).strip()
+        except Exception:
+            destino = ""
+    if not destino:
+        destino = BASE_DIR
+    try:
+        os.makedirs(destino, exist_ok=True)
+    except Exception:
+        destino = BASE_DIR
+    return os.path.abspath(destino)
+
+DATA_DIR = _descobrir_pasta_dados()
+
+ARQUIVO = os.path.join(DATA_DIR, "dados_funcionarios.xlsx")
+ARQUIVO_DIARIAS = os.path.join(DATA_DIR, "controle_diarias.xlsx")
+ARQUIVO_VIAGENS = os.path.join(DATA_DIR, "registro_viagens.xlsx")
+ARQUIVO_COMPRAS = os.path.join(DATA_DIR, "dados_compras.json")
+PASTA_DOCS = os.path.join(DATA_DIR, "Documentos_Lojas")
+PASTA_DOCS_FUNC = os.path.join(DATA_DIR, "Documentos_Funcionarios")
+PASTA_FOTOS = os.path.join(DATA_DIR, "Fotos_Funcionarios")
+PASTA_COMPROVANTES = os.path.join(DATA_DIR, "Comprovantes_Diarias")
+PASTA_BACKUPS = os.path.join(DATA_DIR, "Backups_Automaticos")
 os.makedirs(PASTA_DOCS, exist_ok=True)
 os.makedirs(PASTA_DOCS_FUNC, exist_ok=True)
 os.makedirs(PASTA_FOTOS, exist_ok=True)
 os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
+os.makedirs(PASTA_BACKUPS, exist_ok=True)
 
-# ====================== SQLITE PERSISTÊNCIA ======================
-DB_PATH = os.path.join(BASE_DIR, "rh_app.db")
+# ====================== GRAVACAO SEGURA (NOVO) ======================
+MAX_BACKUPS_POR_ARQUIVO = 20
 
-def _get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+def _backup_rotativo(caminho):
+    """Guarda uma copia datada do arquivo antes de sobrescrever."""
+    try:
+        if not os.path.exists(caminho) or os.path.getsize(caminho) == 0:
+            return
+        nome = os.path.basename(caminho)
+        base, ext = os.path.splitext(nome)
+        selo = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(caminho, os.path.join(PASTA_BACKUPS, f"{base}_{selo}{ext}"))
+        copias = sorted(
+            [f for f in os.listdir(PASTA_BACKUPS) if f.startswith(base + "_") and f.endswith(ext)]
+        )
+        for antigo in copias[:-MAX_BACKUPS_POR_ARQUIVO]:
+            try:
+                os.remove(os.path.join(PASTA_BACKUPS, antigo))
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-def init_db():
-    conn = _get_conn()
-    c = conn.cursor()
-    c.executescript('''
-        CREATE TABLE IF NOT EXISTS compras_solicitacoes (
-            id TEXT PRIMARY KEY,
-            data TEXT, item TEXT, quantidade TEXT, unidade TEXT,
-            justificativa TEXT, setor TEXT, status TEXT, urgencia TEXT,
-            link TEXT, observacao TEXT, data_edicao TEXT, editado_por TEXT
-        );
-        CREATE TABLE IF NOT EXISTS compras_entregas (
-            id TEXT PRIMARY KEY,
-            solicitacao_id TEXT, data TEXT, fornecedor TEXT, quantidade TEXT,
-            nf TEXT, observacao TEXT, data_registro TEXT
-        );
-        CREATE TABLE IF NOT EXISTS traducoes_historico (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT, origem TEXT, destino TEXT, texto_original TEXT, texto_traduzido TEXT
-        );
-        CREATE TABLE IF NOT EXISTS tts_historico (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT, idioma_origem TEXT, idioma_destino TEXT, texto_original TEXT, texto_convertido TEXT, audio_bytes BLOB
-        );
-        CREATE TABLE IF NOT EXISTS stt_historico (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT, idioma_audio TEXT, cod_audio TEXT, idioma_trad TEXT, cod_trad TEXT, texto_transcrito TEXT, texto_traduzido TEXT, audio_bytes BLOB
-        );
-    ''')
-    conn.commit()
-    conn.close()
+def _gravar_atomico(caminho, escrever):
+    """Escreve em arquivo temporario e so troca pelo definitivo se der certo.
 
-init_db()
+    Evita o arquivo ficar truncado/corrompido se a gravacao falhar no meio.
+    Levanta a excecao original em caso de erro (para o chamador avisar o usuario).
+    """
+    _backup_rotativo(caminho)
+    temporario = f"{caminho}.tmp_{os.getpid()}"
+    try:
+        escrever(temporario)
+        with open(temporario, "rb") as fv:
+            if not fv.read(1):
+                raise IOError("arquivo temporario vazio")
+        os.replace(temporario, caminho)
+    except Exception:
+        if os.path.exists(temporario):
+            try:
+                os.remove(temporario)
+            except Exception:
+                pass
+        raise
 
-def _sqlite_list(table, order_by="id"):
-    conn = _get_conn()
-    rows = conn.execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def _salvar_excel_seguro(caminho, abas):
+    """Grava um dicionario {nome_aba: DataFrame} em Excel de forma atomica."""
+    def _escrever(destino):
+        with pd.ExcelWriter(destino, engine="openpyxl", mode="w") as f:
+            for aba, df in abas.items():
+                df.to_excel(f, sheet_name=str(aba)[:31], index=False)
+    _gravar_atomico(caminho, _escrever)
 
-def _sqlite_upsert_solicitacao(s):
-    conn = _get_conn()
-    conn.execute('''INSERT OR REPLACE INTO compras_solicitacoes
-        (id,data,item,quantidade,unidade,justificativa,setor,status,urgencia,link,observacao,data_edicao,editado_por)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (s.get('id',''), s.get('data',''), s.get('item',''), s.get('quantidade',''),
-         s.get('unidade',''), s.get('justificativa',''), s.get('setor',''),
-         s.get('status',''), s.get('urgencia',''), s.get('link',''),
-         s.get('observacao',''), s.get('data_edicao',''), s.get('editado_por','')))
-    conn.commit()
-    conn.close()
-
-def _sqlite_upsert_entrega(e):
-    conn = _get_conn()
-    conn.execute('''INSERT OR REPLACE INTO compras_entregas
-        (id,solicitacao_id,data,fornecedor,quantidade,nf,observacao,data_registro)
-        VALUES(?,?,?,?,?,?,?,?)''',
-        (e.get('id',''), e.get('solicitacao_id',''), e.get('data',''),
-         e.get('fornecedor',''), e.get('quantidade',''), e.get('nf',''),
-         e.get('observacao',''), e.get('data_registro','')))
-    conn.commit()
-    conn.close()
-
-def _sqlite_delete_solicitacao(sid):
-    conn = _get_conn()
-    conn.execute("DELETE FROM compras_solicitacoes WHERE id=?", (sid,))
-    conn.execute("DELETE FROM compras_entregas WHERE solicitacao_id=?", (sid,))
-    conn.commit()
-    conn.close()
-
-def _sqlite_delete_entrega(eid):
-    conn = _get_conn()
-    conn.execute("DELETE FROM compras_entregas WHERE id=?", (eid,))
-    conn.commit()
-    conn.close()
-
-def _sqlite_salvar_tudo_compras(solicitacoes, entregas):
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM compras_solicitacoes")
-    c.execute("DELETE FROM compras_entregas")
-    for s in solicitacoes:
-        c.execute('''INSERT OR REPLACE INTO compras_solicitacoes
-            (id,data,item,quantidade,unidade,justificativa,setor,status,urgencia,link,observacao,data_edicao,editado_por)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (s.get('id',''), s.get('data',''), s.get('item',''), s.get('quantidade',''),
-             s.get('unidade',''), s.get('justificativa',''), s.get('setor',''),
-             s.get('status',''), s.get('urgencia',''), s.get('link',''),
-             s.get('observacao',''), s.get('data_edicao',''), s.get('editado_por','')))
-    for e in entregas:
-        c.execute('''INSERT OR REPLACE INTO compras_entregas
-            (id,solicitacao_id,data,fornecedor,quantidade,nf,observacao,data_registro)
-            VALUES(?,?,?,?,?,?,?,?)''',
-            (e.get('id',''), e.get('solicitacao_id',''), e.get('data',''),
-             e.get('fornecedor',''), e.get('quantidade',''), e.get('nf',''),
-             e.get('observacao',''), e.get('data_registro','')))
-    conn.commit()
-    conn.close()
-
-def _sqlite_add_traducao(entry):
-    conn = _get_conn()
-    conn.execute('''INSERT INTO traducoes_historico (timestamp,origem,destino,texto_original,texto_traduzido)
-        VALUES(?,?,?,?,?)''',
-        (entry.get('timestamp',''), entry.get('origem',''), entry.get('destino',''),
-         entry.get('texto_original',''), entry.get('texto_traduzido','')))
-    conn.commit()
-    conn.close()
-
-def _sqlite_add_tts(entry):
-    conn = _get_conn()
-    conn.execute('''INSERT INTO tts_historico (timestamp,idioma_origem,idioma_destino,texto_original,texto_convertido,audio_bytes)
-        VALUES(?,?,?,?,?,?)''',
-        (entry.get('timestamp',''), entry.get('idioma_origem',''), entry.get('idioma_destino',''),
-         entry.get('texto_original',''), entry.get('texto_convertido',''), entry.get('audio_bytes','')))
-    conn.commit()
-    conn.close()
-
-def _sqlite_add_stt(entry):
-    conn = _get_conn()
-    conn.execute('''INSERT INTO stt_historico (timestamp,idioma_audio,cod_audio,idioma_trad,cod_trad,texto_transcrito,texto_traduzido,audio_bytes)
-        VALUES(?,?,?,?,?,?,?,?)''',
-        (entry.get('timestamp',''), entry.get('idioma_audio',''), entry.get('cod_audio',''),
-         entry.get('idioma_trad',''), entry.get('cod_trad',''),
-         entry.get('texto_transcrito',''), entry.get('texto_traduzido',''), entry.get('audio_bytes','')))
-    conn.commit()
-    conn.close()
-
-def _sqlite_clear_table(table):
-    conn = _get_conn()
-    conn.execute(f"DELETE FROM {table}")
-    conn.commit()
-    conn.close()
-
-# Fim do módulo SQLite
+def _salvar_json_seguro(caminho, dados):
+    """Grava JSON de forma atomica."""
+    def _escrever(destino):
+        with open(destino, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+    _gravar_atomico(caminho, _escrever)
 
 MESES = ["Todos", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+
+# ====================== AVISO DE PERSISTÊNCIA (NOVO) ======================
+def _ambiente_efemero():
+    """Detecta se o app está rodando em servidor cuja pasta é apagada ao reiniciar."""
+    pistas = ("/mount/src", "/app", "/home/adminuser", "/home/appuser")
+    return any(BASE_DIR.startswith(p) for p in pistas)
+
+def aviso_persistencia():
+    """Mostra um alerta claro quando os dados podem ser perdidos ao reiniciar."""
+    if GS_ENABLED:
+        st.sidebar.success("☁️ Dados sincronizados com o Google Sheets (seguros ao reiniciar).")
+        return
+    if _ambiente_efemero() and DATA_DIR == BASE_DIR:
+        st.sidebar.error(
+            "⚠️ **RISCO DE PERDA DE DADOS**\n\n"
+            "Os dados estão sendo gravados numa pasta temporária do servidor, "
+            "que é apagada quando o aplicativo reinicia.\n\n"
+            "Para resolver de forma definitiva: configure o Google Sheets ou "
+            "aponte a pasta de dados para um local fixo. Enquanto isso, "
+            "**baixe o backup em ZIP todos os dias**."
+        )
+    else:
+        st.sidebar.info("💾 Dados salvos em pasta fixa. Cópias automáticas na pasta 'Backups_Automaticos'.")
 
 # ====================== FUNÇÕES DE BUSCA INTELIGENTE ======================
 import unicodedata
@@ -1591,8 +1542,7 @@ ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 SITUACOES = [
     "Ativo", "Pré-cadastro", "Abandono", "Desistente", "Término de Contrato",
     "Demitido S/JC", "Demitido C/JC", "Pedido de Conta",
-    "Rescisão Indireta", "Aviso Prévio", "Férias", "Licença",
-    "Doença", "Acidente", "Maternidade"
+    "Rescisão Indireta", "Férias", "Doença", "Acidente", "Maternidade"
 ]
 
 # ====================== GOOGLE SHEETS HELPERS ======================
@@ -1611,15 +1561,26 @@ def _gsheet_to_df(worksheet):
         return pd.DataFrame()
 
 def _df_to_gsheet(df, worksheet):
-    """Sobrescreve uma worksheet do gspread com os dados de um DataFrame."""
-    worksheet.clear()
+    """Sobrescreve uma worksheet do gspread com os dados de um DataFrame.
+
+    CORRECAO: antes os dados eram CORTADOS em 1000 linhas (o resto era
+    perdido de verdade). Agora a planilha é redimensionada para caber tudo.
+    """
+    if df is None:
+        return
     if df.empty:
-        worksheet.update([df.columns.tolist()])
+        worksheet.clear()
+        worksheet.update([df.columns.tolist()] if len(df.columns) else [[""]])
         return
     data = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
-    # Garante que não ultrapasse limites do Google Sheets
-    if len(data) > 1000:
-        data = data[:1000]
+    linhas_necessarias = len(data) + 50
+    colunas_necessarias = max(len(df.columns), 1)
+    try:
+        if worksheet.row_count < linhas_necessarias or worksheet.col_count < colunas_necessarias:
+            worksheet.resize(rows=linhas_necessarias, cols=max(colunas_necessarias, worksheet.col_count))
+    except Exception:
+        pass
+    worksheet.clear()
     worksheet.update(data)
 
 def _garantir_abas_gs(spreadsheet, abas_necessarias, padrao_cols):
@@ -1808,7 +1769,7 @@ def _row_to_entrega(row):
             e[campo_data] = _normalizar_data_iso(e.get(campo_data, ""))
     return e
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=0, show_spinner=False)
 def _carregar_compras_gs():
     """Carrega dados de compras do Google Sheets."""
     spreadsheet = gc.open_by_key(GS_ID_COMPRAS)
@@ -1871,7 +1832,7 @@ if GS_ENABLED:
                 "DataTerminoContrato",
                 "DataLicenca","DiasLicenca","DataTerminoLicenca",
                 "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-                "TipoAfastamento","CaminhoFoto"
+                "CaminhoFoto"
             ],
             "Historico": [
                 "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -1881,7 +1842,7 @@ if GS_ENABLED:
                 "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
                 "DataTerminoContrato",
                 "DataLicenca","DiasLicenca","DataTerminoLicenca",
-                "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","TipoAfastamento","Detalhes"
+                "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
             ],
             "Auxiliares": ["Loja", "Cargo"],
             "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
@@ -1899,29 +1860,33 @@ if GS_ENABLED:
 # ====================== BANCO DE DADOS ======================
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_dados():
-    # Tenta carregar do Google Sheets primeiro
+    """Carrega a base de funcionários (nuvem quando disponível, senão arquivo local).
+
+    CORRECAO: a cópia local só é sobrescrita quando a nuvem realmente traz
+    dados. Antes, uma leitura vazia na nuvem apagava a cópia local boa.
+    """
+    dados = None
     if GS_ENABLED:
         try:
             dados = _carregar_dados_gs()
-            # Também salva localmente como cache/fallback
-            try:
-                with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
-                    for aba, df in dados.items():
-                        df.to_excel(f, sheet_name=aba, index=False)
-            except Exception:
-                pass
+            tem_conteudo = any(
+                isinstance(df, pd.DataFrame) and not df.empty for df in dados.values()
+            )
+            if tem_conteudo:
+                try:
+                    _salvar_excel_seguro(ARQUIVO, dados)
+                except Exception:
+                    pass
         except Exception as e:
             st.warning(f"⚠️ Erro ao carregar do Google Sheets: {e}. Usando arquivo local.")
-            try:
-                dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-            except:
-                dados = {}
-    else:
+            dados = None
+
+    if dados is None:
         try:
             dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-        except:
+        except Exception:
             dados = {}
-    
+
     padrao = {
         "Base_Dados": [
             "Matricula","Nome","CPF","RG","PIS","Nascimento","Admissao",
@@ -1932,7 +1897,7 @@ def carregar_dados():
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-            "TipoAfastamento","CaminhoFoto"
+            "CaminhoFoto"
         ],
         "Historico": [
             "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -1942,7 +1907,7 @@ def carregar_dados():
             "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
-            "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","TipoAfastamento","Detalhes"
+            "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
         ],
         "Auxiliares": ["Loja", "Cargo"],
         "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
@@ -1975,14 +1940,16 @@ def carregar_diarias():
     if GS_ENABLED:
         try:
             df = _carregar_diarias_gs()
-            # Salva local como fallback
-            try:
-                df.to_excel(ARQUIVO_DIARIAS, index=False, engine="openpyxl")
-            except Exception:
-                pass
+            # Espelha localmente somente quando a nuvem trouxe dados de verdade
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                try:
+                    _salvar_excel_seguro(ARQUIVO_DIARIAS, {"Diarias": df})
+                except Exception:
+                    pass
         except Exception as e:
             st.warning(f"⚠️ Erro ao carregar diárias do Google Sheets: {e}. Usando arquivo local.")
-    
+            df = None
+
     if df is None:
         if not os.path.exists(ARQUIVO_DIARIAS):
             return pd.DataFrame(columns=cols_padrao)
@@ -2068,42 +2035,46 @@ def carregar_diarias():
     return df
 
 def salvar_dados(dados):
+    """Salva a base de funcionários em disco (atomico + backup) e no Google Sheets."""
     sucesso = False
-    # Sempre salva localmente como fallback
     try:
-        with pd.ExcelWriter(ARQUIVO, engine="openpyxl", mode="w") as f:
-            for aba, df in dados.items():
-                df.to_excel(f, sheet_name=aba, index=False)
+        _salvar_excel_seguro(ARQUIVO, dados)
         sucesso = True
     except Exception as e:
         st.error(f"❌ Erro ao salvar arquivo local: {e}")
-    
+
     # Se Google Sheets ativo, salva na nuvem também
     if GS_ENABLED:
         try:
             _salvar_dados_gs(dados)
         except Exception as e:
             st.warning(f"⚠️ Erro ao salvar no Google Sheets: {e}")
-    
+
     st.cache_data.clear()
     return sucesso
 
 def salvar_diarias(df_diarias):
-    # Sempre salva localmente como fallback
+    """Salva as diárias em disco (atomico + backup) e no Google Sheets.
+
+    CORRECAO: antes a falha na gravacao local era silenciosa (except: pass),
+    ou seja, o usuario via "salvo com sucesso" mesmo quando nada foi gravado.
+    """
+    sucesso = False
     try:
-        with pd.ExcelWriter(ARQUIVO_DIARIAS, engine="openpyxl", mode="w") as f:
-            df_diarias.to_excel(f, sheet_name="Diarias", index=False)
-    except Exception:
-        pass
-    
+        _salvar_excel_seguro(ARQUIVO_DIARIAS, {"Diarias": df_diarias})
+        sucesso = True
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar o arquivo de diárias: {e}")
+
     # Se Google Sheets ativo, salva na nuvem também
     if GS_ENABLED:
         try:
             _salvar_diarias_gs(df_diarias)
         except Exception as e:
             st.warning(f"⚠️ Erro ao salvar diárias no Google Sheets: {e}")
-    
+
     st.cache_data.clear()
+    return sucesso
 
 def exportar_diarias_formatado(df, caminho):
     """Exporta DataFrame de diárias para Excel com a mesma formatação da planilha padrão."""
@@ -2242,17 +2213,18 @@ def carregar_viagens():
 
 
 def salvar_viagens(df_viagens):
-    """Salva o registro de viagens no arquivo Excel."""
+    """Salva o registro de viagens (atomico + backup) avisando em caso de erro."""
+    sucesso = False
     try:
-        with pd.ExcelWriter(ARQUIVO_VIAGENS, engine="openpyxl", mode="w") as f:
-            df_viagens.to_excel(f, sheet_name="Viagens", index=False)
-    except Exception:
-        pass
+        _salvar_excel_seguro(ARQUIVO_VIAGENS, {"Viagens": df_viagens})
+        sucesso = True
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar o arquivo de viagens: {e}")
     st.cache_data.clear()
+    return sucesso
 
 # ====================== BACKUP / RESTORE ======================
 import zipfile
-import io
 
 def criar_backup_zip():
     """Cria um arquivo ZIP em memória com todos os dados e anexos."""
@@ -2262,40 +2234,46 @@ def criar_backup_zip():
         for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS]:
             if os.path.exists(arq):
                 zf.write(arq, os.path.basename(arq))
-        # Banco SQLite
-        if os.path.exists(DB_PATH):
-            zf.write(DB_PATH, os.path.basename(DB_PATH))
         # Pastas de documentos, fotos e comprovantes (caminho relativo ao BASE_DIR)
         for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
             if os.path.exists(pasta):
                 for root, dirs, files in os.walk(pasta):
                     for file in files:
                         caminho_completo = os.path.join(root, file)
-                        caminho_zip = os.path.relpath(caminho_completo, start=BASE_DIR)
+                        caminho_zip = os.path.relpath(caminho_completo, start=DATA_DIR)
                         zf.write(caminho_completo, caminho_zip)
     zip_buffer.seek(0)
     return zip_buffer
 
 def restaurar_backup_zip(zip_file):
-    """Restaura todos os dados e anexos a partir de um arquivo ZIP."""
+    """Restaura todos os dados e anexos a partir de um arquivo ZIP.
+
+    CORRECAO de segurança: antes um ZIP com nomes tipo "../../arquivo" podia
+    gravar fora da pasta do sistema (zip-slip). Agora todo caminho é validado.
+    """
     arquivos_extraidos = []
+    ignorados = []
+    destino_raiz = os.path.abspath(DATA_DIR)
     with zipfile.ZipFile(zip_file, "r") as zf:
         for item in zf.namelist():
-            # Ignora arquivos de sistema do Mac/Windows
-            if item.startswith("__MACOSX") or item.startswith("."):
+            nome = item.replace("\\", "/")
+            # Ignora arquivos de sistema do Mac/Windows e pastas
+            if nome.endswith("/") or "__MACOSX" in nome or os.path.basename(nome).startswith("."):
                 continue
-            # Garante que a pasta de destino exista dentro do BASE_DIR
-            destino = os.path.join(BASE_DIR, item)
+            # Bloqueia caminhos absolutos ou com ".."
+            if os.path.isabs(nome) or ".." in nome.split("/"):
+                ignorados.append(item)
+                continue
+            destino = os.path.abspath(os.path.join(destino_raiz, nome))
+            if os.path.commonpath([destino_raiz, destino]) != destino_raiz:
+                ignorados.append(item)
+                continue
             os.makedirs(os.path.dirname(destino), exist_ok=True)
             with open(destino, "wb") as f_out:
                 f_out.write(zf.read(item))
-            arquivos_extraidos.append(item)
-    # Se o backup incluía o DB SQLite, re-inicializa para garantir schema
-    if os.path.exists(DB_PATH):
-        try:
-            init_db()
-        except Exception:
-            pass
+            arquivos_extraidos.append(nome)
+    if ignorados:
+        st.warning(f"⚠️ {len(ignorados)} item(ns) do ZIP foram ignorados por terem caminho inválido.")
     return arquivos_extraidos
 
 def lista_lojas():
@@ -2485,7 +2463,7 @@ def gerar_ficha_individual(fd, fh, mr):
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
         "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-        "TipoAfastamento","CaminhoFoto"
+        "CaminhoFoto"
     ]
     colunas_historico = [
         "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -2495,7 +2473,7 @@ def gerar_ficha_individual(fd, fh, mr):
         "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
-        "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","TipoAfastamento","Detalhes"
+        "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
     ]
     
     wb = Workbook()
@@ -2642,7 +2620,39 @@ def verificar_retorno_afastamentos_automatico():
 
 # ====================== INTERFACE PRINCIPAL ======================
 st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
+
+# ---------- PROTEÇÃO POR SENHA (OPCIONAL, NOVO) ----------
+# O sistema guarda CPF, RG, PIS, salário e dados bancários, mas não tinha
+# nenhuma barreira de acesso. Se existir uma senha configurada (segredo
+# [acesso] senha = "..." ou variável RH_SENHA), ela passa a ser exigida.
+def _senha_configurada():
+    try:
+        s = str(st.secrets.get("acesso", {}).get("senha", "")).strip()
+    except Exception:
+        s = ""
+    return s or os.environ.get("RH_SENHA", "").strip()
+
+def exigir_login():
+    senha_ok = _senha_configurada()
+    if not senha_ok:
+        return  # nenhuma senha configurada: comportamento antigo
+    if st.session_state.get("_autenticado"):
+        return
+    st.title("🔒 Acesso restrito")
+    st.info("Este sistema contém dados pessoais. Informe a senha para continuar.")
+    digitada = st.text_input("Senha", type="password", key="_senha_input")
+    if st.button("Entrar", key="_btn_entrar"):
+        if digitada == senha_ok:
+            st.session_state["_autenticado"] = True
+            st.rerun()
+        else:
+            st.error("❌ Senha incorreta.")
+    st.stop()
+
+exigir_login()
+
 st.title("📋 SISTEMA RH COMPLETO")
+aviso_persistencia()
 
 # Verifica retorno automático de férias e afastamentos no início da sessão (apenas 1x)
 if "ferias_verificado" not in st.session_state:
@@ -2717,8 +2727,6 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-# --- (lógica de detecção de mudança movida para inline, após extrair mat_sel) ---
-
 # ================ ABA 1 - CADASTRO ================
 with aba1:
     dados = carregar_dados()
@@ -2749,84 +2757,11 @@ with aba1:
         help="Comece a digitar para filtrar automaticamente"
     )
     
-    # Flag de limpeza: após salvar ou limpar, zera tudo
-    _cad_limpo = st.session_state.get("_cad_limpo", False)
-    if _cad_limpo:
-        st.session_state["_cad_limpo"] = False
-        _cad_limpo = False
-
     # Extrai matrícula se selecionou no autocomplete
     mat_sel = ""
-    if sel_auto and " - " in sel_auto and not _cad_limpo:
+    if sel_auto and " - " in sel_auto:
         mat_sel = sel_auto.split(" - ")[0].strip()
         st.success(f"✅ Colaborador selecionado: {sel_auto}")
-
-    # --- Detectar mudança de colaborador e SETAR chaves de widget ---
-    # Quando o colaborador muda, SETA cada cad_* key diretamente com o valor
-    # do banco. NÃO deletamos as chaves — Streamlit ignora value= se a chave
-    # foi deletada no mesmo run (o widget interno cacheia o valor antigo).
-    # Ao SETAR a chave, o widget lê o novo valor do session_state imediatamente.
-    _prev_mat = st.session_state.get("_cad_prev_sel", "")
-    if mat_sel != _prev_mat:
-        st.session_state["_cad_prev_sel"] = mat_sel
-        # Busca o registro no banco (precisa dos dados aqui, antes dos filtros)
-        if mat_sel:
-            _bd_pop = dados["Base_Dados"].copy()
-            _bd_pop["Matricula"] = _bd_pop["Matricula"].fillna("").astype(str).str.strip()
-            _reg = _bd_pop[_bd_pop["Matricula"] == str(mat_sel).strip()]
-            if not _reg.empty:
-                _r = _reg.iloc[0]
-                # Text fields
-                st.session_state["cad_mat"] = str(_r.get("Matricula", ""))
-                st.session_state["cad_nome"] = str(_r.get("Nome", ""))
-                st.session_state["cad_cpf"] = str(_r.get("CPF", ""))
-                st.session_state["cad_rg"] = str(_r.get("RG", ""))
-                st.session_state["cad_pis"] = str(_r.get("PIS", ""))
-                st.session_state["cad_nasc"] = str(_r.get("Nascimento", ""))
-                st.session_state["cad_adm"] = str(_r.get("Admissao", ""))
-                st.session_state["cad_tel"] = str(_r.get("Telefone", ""))
-                st.session_state["cad_end"] = str(_r.get("Endereco", ""))
-                st.session_state["cad_sal"] = str(_r.get("Salario", ""))
-                st.session_state["cad_dtav"] = str(_r.get("DataAvisoPrevio", ""))
-                st.session_state["cad_diav"] = str(_r.get("DiasAvisoPrevio", ""))
-                st.session_state["cad_dtlic"] = str(_r.get("DataLicenca", ""))
-                st.session_state["cad_dilic"] = str(_r.get("DiasLicenca", ""))
-                st.session_state["cad_dtfer"] = str(_r.get("DataFeriasInicio", ""))
-                st.session_state["cad_difer"] = str(_r.get("DiasFerias", ""))
-                st.session_state["cad_dtaf"] = str(_r.get("DataAfastamento", ""))
-                st.session_state["cad_diaf"] = str(_r.get("DiasAfastamento", ""))
-                st.session_state["cad_tipoaf"] = str(_r.get("TipoAfastamento", "")) or "Nenhum"
-                st.session_state["cad_dtped"] = str(_r.get("DataPedidoConta", ""))
-                st.session_state["cad_dtres"] = str(_r.get("DataRescisao", ""))
-                st.session_state["cad_dtab"] = str(_r.get("DataAbandono", ""))
-                st.session_state["cad_dtdes"] = str(_r.get("DataDesistencia", ""))
-                st.session_state["cad_dtterm"] = str(_r.get("DataTerminoContrato", ""))
-                # Selectbox fields (Loja, Cargo, Situação)
-                _loja_v = str(_r.get("Loja", ""))
-                st.session_state["cad_loja"] = _loja_v if _loja_v in lista_lojas() else lista_lojas()[0]
-                _cargo_v = str(_r.get("Cargo", ""))
-                st.session_state["cad_cargo"] = _cargo_v if _cargo_v in lista_cargos() else lista_cargos()[0]
-                _sit_v = str(_r.get("Situacao", "Ativo"))
-                st.session_state["cad_sit"] = _sit_v if _sit_v in SITUACOES else "Ativo"
-                # Calculated fields — will be updated by calcular_e_atualizar below
-                st.session_state["cad_terav"] = ""
-                st.session_state["cad_terlic"] = ""
-                st.session_state["cad_retfer"] = ""
-                st.session_state["cad_retaf"] = ""
-                st.session_state["cad_exclfoto"] = False
-                # Clear foto keys (no meaningful default)
-                for fk in [k for k in list(st.session_state.keys()) if k.startswith("foto_") and k != "foto_upload"]:
-                    del st.session_state[fk]
-            else:
-                # Colaborador não encontrado no banco — limpa todos os campos
-                _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
-                for k in _keys:
-                    del st.session_state[k]
-        else:
-            # Nenhum colaborador selecionado (mat_sel vazio) — limpa tudo
-            _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
-            for k in _keys:
-                del st.session_state[k]
     
     # ---------- FILTROS ----------
     st.markdown("---")
@@ -2860,12 +2795,9 @@ with aba1:
     reg = pd.DataFrame()
     if mat_sel:
         mat_busca = str(mat_sel).strip()
-        # Garante que Matricula seja string para comparação (pode ser numérico no DataFrame original)
-        _bd = dados["Base_Dados"].copy()
-        _bd["Matricula"] = _bd["Matricula"].fillna("").astype(str).str.strip()
-        reg = _bd[_bd["Matricula"] == mat_busca]
+        reg = dados["Base_Dados"][dados["Base_Dados"]["Matricula"] == mat_busca]
 
-    val_campo = lambda nome: reg.iloc[0].get(nome, "") if not reg.empty and not _cad_limpo else ""
+    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
 
     prazos_exp = []
     if not reg.empty and val_campo("Admissao").strip():
@@ -2885,65 +2817,27 @@ with aba1:
         except:
             pass
 
-    # --- Função auxiliar: lê valor atual do widget via session_state (tempo real) ---
-    def _ss(key, default=""):
-        """Lê st.session_state[key] se existir, senão retorna default."""
-        return st.session_state.get(key, default)
-
-    # --- Valores padrão do banco (usados quando a chave ainda não existe no session_state) ---
-    _db_val = lambda campo: reg.iloc[0].get(campo, "") if not reg.empty and not _cad_limpo else ""
-
-    # --- Cálculo em tempo real de datas derivadas ---
-    # Constrói dict a partir dos valores ATUAIS dos widgets (session_state) ou do banco
-    _temp = {
-        "dt_aviso": _ss("cad_dtav", _db_val("DataAvisoPrevio")),
-        "dias_aviso": _ss("cad_diav", _db_val("DiasAvisoPrevio")),
-        "dt_lic": _ss("cad_dtlic", _db_val("DataLicenca")),
-        "dias_lic": _ss("cad_dilic", _db_val("DiasLicenca")),
-        "dt_fer": _ss("cad_dtfer", _db_val("DataFeriasInicio")),
-        "dias_fer": _ss("cad_difer", _db_val("DiasFerias")),
-        "dt_af": _ss("cad_dtaf", _db_val("DataAfastamento")),
-        "dias_af": _ss("cad_diaf", _db_val("DiasAfastamento")),
-        "dt_pedido": _ss("cad_dtped", _db_val("DataPedidoConta")),
-        "dt_rescisao": _ss("cad_dtres", _db_val("DataRescisao")),
-        "dt_abandono": _ss("cad_dtab", _db_val("DataAbandono")),
-        "dt_desistencia": _ss("cad_dtdes", _db_val("DataDesistencia")),
-        "dt_termino_cont": _ss("cad_dtterm", _db_val("DataTerminoContrato")),
-        "situacao": _ss("cad_sit", _db_val("Situacao")),
-        "caminho_foto": _db_val("CaminhoFoto"),
-        "tipo_af": _ss("cad_tipoaf", "Nenhum"),
-    }
-    _temp = calcular_e_atualizar(_temp)
-    term_aviso_val = _temp.get("termino_aviso", "")
-    term_lic_val = _temp.get("termino_lic", "")
-    ret_fer_val = _temp.get("retorno_fer", "")
-    ret_af_val = _temp.get("retorno_af", "")
-    situacao_val = _temp.get("situacao", "Ativo")
-    caminho_foto_atual = _db_val("CaminhoFoto")
-
-    # --- FORÇAR valores calculados no session_state ANTES de renderizar os widgets ---
-    # Widgets disabled e selectbox não atualizam sozinhos quando value= muda
-    # porque session_state já contém o valor antigo e tem precedência.
-    st.session_state["cad_terav"] = term_aviso_val
-    st.session_state["cad_terlic"] = term_lic_val
-    st.session_state["cad_retfer"] = ret_fer_val
-    st.session_state["cad_retaf"] = ret_af_val
-    st.session_state["cad_sit"] = situacao_val
+    if not reg.empty:
+        temp = {
+            "dt_aviso": val_campo("DataAvisoPrevio"), "dias_aviso": val_campo("DiasAvisoPrevio"),
+            "dt_lic": val_campo("DataLicenca"), "dias_lic": val_campo("DiasLicenca"),
+            "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
+            "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
+            "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
+            "dt_abandono": val_campo("DataAbandono"), "dt_termino_cont": val_campo("DataTerminoContrato"),
+            "situacao": val_campo("Situacao"), "caminho_foto": val_campo("CaminhoFoto")
+        }
+        temp = calcular_e_atualizar(temp)
+        term_aviso_val, term_lic_val, ret_fer_val, ret_af_val, situacao_val, caminho_foto_atual = temp["termino_aviso"], temp["termino_lic"], temp["retorno_fer"], temp["retorno_af"], temp["situacao"], temp["caminho_foto"]
+    else:
+        term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
+        situacao_val = "Ativo"
 
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
         if "autocomplete_func" in st.session_state:
             del st.session_state["autocomplete_func"]
-        # Limpa todas as chaves de widget do formulário para forçar reset
-        _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_", "_cad_prev_sel"))]
-        for k in _keys_to_del:
-            del st.session_state[k]
-        st.session_state["_cad_limpo"] = True
         st.rerun()
-    # --- Sem st.form(): widgets atualizam session_state imediatamente ---
-    # A limpeza de chaves cad_*/foto_* ao mudar de colaborador agora é feita inline
-    # (logo após extrair mat_sel), SEM st.rerun(), eliminando o bug de duplo clique.
-    # Container para agrupar visualmente os widgets do "formulário"
-    with st.container():
+    with st.form("form_cadastro", clear_on_submit=False):
         st.subheader("Dados Básicos")
         col_foto, col_dados = st.columns([1,3])
         
@@ -2954,38 +2848,35 @@ with aba1:
             else:
                 st.info("Sem foto")
             
-            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key="foto_upload")
-            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False, key="cad_exclfoto")
+            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
+            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
 
         with col_dados:
             c1,c2,c3 = st.columns(3)
             with c1:
-                matricula = st.text_input("Matrícula * (igual planilha)", value=st.session_state.get("cad_mat", ""), key="cad_mat")
-                nome = st.text_input("Nome Completo", value=st.session_state.get("cad_nome", ""), key="cad_nome")
-                cpf = st.text_input("CPF", value=st.session_state.get("cad_cpf", ""), key="cad_cpf")
-                rg = st.text_input("RG", value=st.session_state.get("cad_rg", ""), key="cad_rg")
-                pis = st.text_input("PIS", value=st.session_state.get("cad_pis", ""), key="cad_pis")
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
+                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
+                cpf = st.text_input("CPF", value=val_campo("CPF"))
+                rg = st.text_input("RG", value=val_campo("RG"))
+                pis = st.text_input("PIS", value=val_campo("PIS"))
             with c2:
-                nascimento = st.text_input("Data Nascimento", value=st.session_state.get("cad_nasc", ""), placeholder="dd/mm/aaaa", key="cad_nasc")
-                admissao = st.text_input("Data Admissão", value=st.session_state.get("cad_adm", ""), placeholder="dd/mm/aaaa", key="cad_adm")
-                telefone = st.text_input("Telefone", value=st.session_state.get("cad_tel", ""), key="cad_tel")
-                endereco = st.text_input("Endereço Completo", value=st.session_state.get("cad_end", ""), key="cad_end")
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
+                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
+                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
             with c3:
                 lojas = lista_lojas()
-                _loja_val = st.session_state.get("cad_loja", "")
-                idx_loja = lojas.index(_loja_val) if _loja_val in lojas else 0
-                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key="cad_loja")
+                idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
+                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
 
                 cargos = lista_cargos()
-                _cargo_val = st.session_state.get("cad_cargo", "")
-                idx_cargo = cargos.index(_cargo_val) if _cargo_val in cargos else 0
-                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key="cad_cargo")
+                idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
+                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
 
-                salario = st.text_input("Salário", value=st.session_state.get("cad_sal", ""), key="cad_sal")
+                salario = st.text_input("Salário", value=val_campo("Salario"))
 
-                _sit_val = situacao_val  # Usa o valor CALCULADO por calcular_e_atualizar, não o antigo do session_state
-                idx_sit = SITUACOES.index(_sit_val) if _sit_val in SITUACOES else 0
-                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key="cad_sit")
+                idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
 
         if prazos_exp:
             st.markdown("---")
@@ -3002,42 +2893,39 @@ with aba1:
         av1,av2,av3 = st.columns(3)
         with av1:
             st.markdown("**Aviso Prévio**")
-            dt_aviso = st.text_input("Data Aviso", value=st.session_state.get("cad_dtav", ""), placeholder="dd/mm/aaaa", key="cad_dtav")
-            dias_aviso = st.text_input("Dias Aviso", value=st.session_state.get("cad_diav", ""), key="cad_diav")
-            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key="cad_terav")
+            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"))
+            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"))
+            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True)
         with av2:
             st.markdown("**Licença**")
-            dt_lic = st.text_input("Data Licença", value=st.session_state.get("cad_dtlic", ""), placeholder="dd/mm/aaaa", key="cad_dtlic")
-            dias_lic = st.text_input("Dias Licença", value=st.session_state.get("cad_dilic", ""), key="cad_dilic")
-            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key="cad_terlic")
+            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"))
+            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"))
+            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True)
         with av3:
             st.markdown("**Férias**")
-            dt_fer = st.text_input("Início Férias", value=st.session_state.get("cad_dtfer", ""), placeholder="dd/mm/aaaa", key="cad_dtfer")
-            dias_fer = st.text_input("Dias Férias", value=st.session_state.get("cad_difer", ""), key="cad_difer")
-            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key="cad_retfer")
+            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"))
+            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"))
+            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True)
 
         af1,af2 = st.columns(2)
         with af1:
             st.markdown("**Afastamento**")
-            dt_af = st.text_input("Data Afastamento", value=st.session_state.get("cad_dtaf", ""), placeholder="dd/mm/aaaa", key="cad_dtaf")
-            dias_af = st.text_input("Dias Afastamento", value=st.session_state.get("cad_diaf", ""), key="cad_diaf")
-            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key="cad_retaf")
-            _taf_opts = ["Nenhum", "Doença", "Acidente", "Maternidade"]
-            _taf_val = st.session_state.get("cad_tipoaf", "Nenhum")
-            _idx_taf = _taf_opts.index(_taf_val) if _taf_val in _taf_opts else 0
-            tipo_af = st.selectbox("Tipo Afastamento", _taf_opts, index=_idx_taf, key="cad_tipoaf")
+            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
+            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
+            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
+            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"])
         with af2:
             st.markdown("**Desligamento**")
-            dt_ped = st.text_input("Data Pedido Conta", value=st.session_state.get("cad_dtped", ""), placeholder="dd/mm/aaaa", key="cad_dtped")
-            dt_res = st.text_input("Data Rescisão", value=st.session_state.get("cad_dtres", ""), placeholder="dd/mm/aaaa", key="cad_dtres")
-            dt_aband = st.text_input("Data Abandono", value=st.session_state.get("cad_dtab", ""), placeholder="dd/mm/aaaa", key="cad_dtab")
-            dt_desist = st.text_input("Data Desistência", value=st.session_state.get("cad_dtdes", ""), placeholder="dd/mm/aaaa", key="cad_dtdes")
-            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=st.session_state.get("cad_dtterm", ""), placeholder="dd/mm/aaaa", key="cad_dtterm")
+            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
+            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
+            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
+            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"))
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
 
-        btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key="btn_salvar_cad")
+        btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
         if btn_salvar:
             try:
-                matricula_tratada = str(st.session_state.get("cad_mat", "")).strip()
+                matricula_tratada = str(matricula).strip()
                 if not matricula_tratada:
                     st.error("❌ INFORME A MATRÍCULA!")
                     st.stop()
@@ -3055,37 +2943,15 @@ with aba1:
                     img.save(caminho_final_foto)
 
                 dados_form = calcular_e_atualizar({
-                    "mat": matricula_tratada,
-                    "nome": st.session_state.get("cad_nome", ""),
-                    "cpf": st.session_state.get("cad_cpf", ""),
-                    "rg": st.session_state.get("cad_rg", ""),
-                    "pis": st.session_state.get("cad_pis", ""),
-                    "nasc": st.session_state.get("cad_nasc", ""),
-                    "adm": st.session_state.get("cad_adm", ""),
-                    "tel": st.session_state.get("cad_tel", ""),
-                    "end": st.session_state.get("cad_end", ""),
-                    "loja": st.session_state.get("cad_loja", lista_lojas()[0] if lista_lojas() else ""),
-                    "cargo": st.session_state.get("cad_cargo", lista_cargos()[0] if lista_cargos() else ""),
-                    "sal": st.session_state.get("cad_sal", ""),
-                    "situacao": st.session_state.get("cad_sit", "Ativo"),
-                    "dt_aviso": st.session_state.get("cad_dtav", ""),
-                    "dias_aviso": st.session_state.get("cad_diav", ""),
-                    "termino_aviso": term_aviso_val,
-                    "dt_lic": st.session_state.get("cad_dtlic", ""),
-                    "dias_lic": st.session_state.get("cad_dilic", ""),
-                    "termino_lic": term_lic_val,
-                    "dt_fer": st.session_state.get("cad_dtfer", ""),
-                    "dias_fer": st.session_state.get("cad_difer", ""),
-                    "retorno_fer": ret_fer_val,
-                    "dt_af": st.session_state.get("cad_dtaf", ""),
-                    "dias_af": st.session_state.get("cad_diaf", ""),
-                    "retorno_af": ret_af_val,
-                    "tipo_af": st.session_state.get("cad_tipoaf", "Nenhum"),
-                    "dt_pedido": st.session_state.get("cad_dtped", ""),
-                    "dt_rescisao": st.session_state.get("cad_dtres", ""),
-                    "dt_abandono": st.session_state.get("cad_dtab", ""),
-                    "dt_desistencia": st.session_state.get("cad_dtdes", ""),
-                    "dt_termino_cont": st.session_state.get("cad_dtterm", ""),
+                    "mat": matricula_tratada, "nome": nome, "cpf": cpf, "rg": rg, "pis": pis,
+                    "nasc": nascimento, "adm": admissao, "tel": telefone, "end": endereco,
+                    "loja": loja, "cargo": cargo, "sal": salario, "situacao": situacao,
+                    "dt_aviso": dt_aviso, "dias_aviso": dias_aviso, "termino_aviso": term_aviso,
+                    "dt_lic": dt_lic, "dias_lic": dias_lic, "termino_lic": term_lic,
+                    "dt_fer": dt_fer, "dias_fer": dias_fer, "retorno_fer": ret_fer,
+                    "dt_af": dt_af, "dias_af": dias_af, "retorno_af": ret_af, "tipo_af": tipo_af,
+                    "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
+                    "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
                 })
                 registro_final = {
                     "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
@@ -3103,7 +2969,6 @@ with aba1:
                     "DataTerminoLicenca": dados_form["termino_lic"],
                     "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
                     "DataRetornoAfastamento": dados_form["retorno_af"],
-                    "TipoAfastamento": dados_form["tipo_af"],
                     "CaminhoFoto": caminho_final_foto
                 }
                 indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
@@ -3119,13 +2984,6 @@ with aba1:
                     st.stop()
                 add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
                 st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
-                # Limpa seleção e campos após salvar
-                if "autocomplete_func" in st.session_state:
-                    del st.session_state["autocomplete_func"]
-                _keys_to_del = [k for k in st.session_state if k.startswith(("cad_", "foto_", "_cad_prev_sel"))]
-                for k in _keys_to_del:
-                    del st.session_state[k]
-                st.session_state["_cad_limpo"] = True
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Erro ao salvar: {e}")
@@ -3479,10 +3337,7 @@ with aba6:
     else:
         for i,d in filt.iterrows():
             with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
-                if os.path.isfile(d["Caminho"]):
-                    with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
-                else:
-                    st.caption("⚠️ Arquivo não encontrado no disco")
+                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
                     os.remove(d["Caminho"])
                     dados["Docs_Lojas"].drop(i,inplace=True)
@@ -3571,39 +3426,46 @@ with aba8:
         - Colunas principais reconhecidas: LOJA, NOME COLABORADOR, CPF, DATA EXECUÇÃO, QTDE DE DIÁRIAS, VALOR UNITÁRIO, etc.
         - O sistema identifica automaticamente o formato da planilha.
         
-        ⚠️ **Atenção:** ao carregar uma planilha, os dados anteriores serão substituídos pelos dados do arquivo. Faça backup se necessário.
+        ⚠️ **Atenção:** você escolhe se os dados do arquivo serão **acrescentados** aos atuais ou se vão **substituir** tudo. Um backup automático é guardado antes de qualquer mudança.
         """)
-    
-    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx ou .csv)", type=["xlsx", "csv"], key="upload_diarias")
+
+    arq_diarias = st.file_uploader("Carregar planilha de Diárias (.xlsx)", type=["xlsx"], key="upload_diarias")
     if arq_diarias is not None:
-        # Salva temporariamente para validar
-        _ext = ".csv" if arq_diarias.name.lower().endswith(".csv") else ".xlsx"
-        temp_path = os.path.join(os.path.dirname(ARQUIVO_DIARIAS), f"_temp_diarias{_ext}")
-        with open(temp_path, "wb") as f:
-            f.write(arq_diarias.read())
-        
-        # Valida se o arquivo tem dados legíveis
-        try:
-            if _ext == ".csv":
-                df_test = pd.read_csv(temp_path, dtype=str, keep_default_na=False)
-            else:
-                df_test = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
-            if df_test.empty or df_test.shape[0] < 1:
-                st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
-            else:
-                # Se veio CSV, converte para XLSX (formato nativo do app)
-                if _ext == ".csv":
-                    df_test.to_excel(ARQUIVO_DIARIAS, index=False, engine="openpyxl")
-                    if os.path.exists(temp_path): os.remove(temp_path)
+        # CORRECAO: antes o arquivo enviado SUBSTITUIA a base inteira na hora,
+        # sem confirmacao e sem backup. Agora o usuario escolhe e ha backup.
+        modo_import = st.radio(
+            "O que fazer com os dados do arquivo?",
+            ["Acrescentar aos dados atuais (recomendado)", "Substituir todos os dados atuais"],
+            key="modo_import_diarias",
+        )
+        confirmar_import = st.button("✅ Confirmar importação", key="btn_import_diarias")
+        if confirmar_import:
+            temp_path = os.path.join(DATA_DIR, "_temp_diarias.xlsx")
+            try:
+                with open(temp_path, "wb") as f:
+                    f.write(arq_diarias.getbuffer())
+                df_novo = pd.read_excel(temp_path, dtype=str, keep_default_na=False)
+                if df_novo.empty:
+                    st.error("❌ O arquivo parece estar vazio ou não contém dados válidos.")
                 else:
-                    shutil.move(temp_path, ARQUIVO_DIARIAS)
-                st.success(f"✅ Planilha carregada com sucesso! ({df_test.shape[0]} linha(s) encontrada(s))")
-                st.info("🔄 A página será atualizada em instantes...")
-                st.rerun()
-        except Exception as e:
-            st.error(f"❌ Erro ao ler a planilha: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+                    if modo_import.startswith("Acrescentar"):
+                        df_atual = carregar_diarias()
+                        df_final = pd.concat([df_atual, df_novo], ignore_index=True)
+                        df_final = df_final.drop_duplicates(keep="first")
+                    else:
+                        df_final = df_novo
+                    if salvar_diarias(df_final):
+                        st.success(f"✅ Importação concluída! {df_novo.shape[0]} linha(s) do arquivo; total agora: {df_final.shape[0]}.")
+                        st.info("🔄 A página será atualizada em instantes...")
+                        st.rerun()
+            except Exception as e:
+                st.error(f"❌ Erro ao ler a planilha: {e}")
+            finally:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
     df_diarias = carregar_diarias()
     if df_diarias.empty:
@@ -3735,9 +3597,9 @@ with aba8:
                             os.remove(comp)
                     df_diarias.drop(index=remover, inplace=True)
                     df_diarias.reset_index(drop=True, inplace=True)
-                salvar_diarias(df_diarias)
-                st.success("✅ Alterações salvas com sucesso!")
-                st.rerun()
+                if salvar_diarias(df_diarias):
+                    st.success("✅ Alterações salvas com sucesso!")
+                    st.rerun()
 
         with col_excluir:
             st.markdown("**🗑️ Excluir linhas selecionadas:** marque a caixa na primeira coluna da tabela acima e depois clique abaixo.")
@@ -3844,10 +3706,10 @@ with aba8:
                     "OBSERVACAO": (observacao_d.strip().upper() + " | ITENS: " + valores_desc) if observacao_d.strip() else "ITENS: " + valores_desc
                 }
                 df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
-                salvar_diarias(df_diarias)
-                st.session_state.itens_diaria = [{"qtde": 1, "valor": 0.0}]
-                st.success("✅ Diária cadastrada com sucesso!")
-                st.rerun()
+                if salvar_diarias(df_diarias):
+                    st.session_state.itens_diaria = [{"qtde": 1, "valor": 0.0}]
+                    st.success("✅ Diária cadastrada com sucesso!")
+                    st.rerun()
 
     # ---------- GERENCIAR COMPROVANTES ----------
     st.markdown("---")
@@ -3866,9 +3728,9 @@ with aba8:
                 if st.button("🗑️ Remover Comprovante", key=f"rm_comp_{idx_comp}"):
                     os.remove(comp_atual)
                     df_diarias.at[idx_comp, "COMPROVANTE"] = ""
-                    salvar_diarias(df_diarias)
-                    st.success("Comprovante removido!")
-                    st.rerun()
+                    if salvar_diarias(df_diarias):
+                        st.success("Comprovante removido!")
+                        st.rerun()
             else:
                 st.info("Nenhum comprovante anexado para esta diária.")
             arq_comp = st.file_uploader("Anexar comprovante (PDF, JPG, PNG)", type=["pdf", "jpg", "png"], key=f"up_comp_{idx_comp}")
@@ -3878,9 +3740,9 @@ with aba8:
                 cam_comp = os.path.join(PASTA_COMPROVANTES, nome_comp)
                 with open(cam_comp, "wb") as f: f.write(arq_comp.read())
                 df_diarias.at[idx_comp, "COMPROVANTE"] = cam_comp
-                salvar_diarias(df_diarias)
-                st.success("✅ Comprovante anexado!")
-                st.rerun()
+                if salvar_diarias(df_diarias):
+                    st.success("✅ Comprovante anexado!")
+                    st.rerun()
     else:
         st.info("Nenhuma diária cadastrada.")
 
@@ -4129,27 +3991,27 @@ with aba9:
         def input_endereco(label, key_prefix):
             """Monta os inputs de endereço com combos de país, estado e cidade."""
             st.markdown(f"**{label}**")
-            pais = st.selectbox(f"🌍 País", PAÍSES, key=f"{key_prefix}_pais")
+            pais = st.selectbox("🌍 País", PAÍSES, key=f"{key_prefix}_pais")
             if pais == "Brasil":
-                estado = st.selectbox(f"🏛️ Estado", ESTADOS_BR, key=f"{key_prefix}_estado")
+                estado = st.selectbox("🏛️ Estado", ESTADOS_BR, key=f"{key_prefix}_estado")
                 estado_limp = estado.split(" (")[0] if "(" in estado else estado
                 uf_sigla = estado.split("(")[1].replace(")", "").strip() if "(" in estado else ""
                 cidades = buscar_cidades_ibge(uf_sigla) if uf_sigla else []
                 if cidades:
-                    cidade = st.selectbox(f"🏙️ Cidade", cidades, key=f"{key_prefix}_cidade")
+                    cidade = st.selectbox("🏙️ Cidade", cidades, key=f"{key_prefix}_cidade")
                 else:
-                    cidade = st.text_input(f"🏙️ Cidade", placeholder="Ex: Belém", key=f"{key_prefix}_cidade")
+                    cidade = st.text_input("🏙️ Cidade", placeholder="Ex: Belém", key=f"{key_prefix}_cidade")
             elif pais == "Estados Unidos":
-                estado = st.selectbox(f"🏛️ Estado", ESTADOS_US, key=f"{key_prefix}_estado")
+                estado = st.selectbox("🏛️ Estado", ESTADOS_US, key=f"{key_prefix}_estado")
                 estado_limp = estado.split(" (")[0] if "(" in estado else estado
-                cidade = st.text_input(f"🏙️ Cidade", placeholder="Ex: Nova York", key=f"{key_prefix}_cidade")
+                cidade = st.text_input("🏙️ Cidade", placeholder="Ex: Nova York", key=f"{key_prefix}_cidade")
             elif pais == "México":
-                estado = st.selectbox(f"🏛️ Estado", ESTADOS_MX, key=f"{key_prefix}_estado")
+                estado = st.selectbox("🏛️ Estado", ESTADOS_MX, key=f"{key_prefix}_estado")
                 estado_limp = estado
-                cidade = st.text_input(f"🏙️ Cidade", placeholder="Ex: Cidade do México", key=f"{key_prefix}_cidade")
+                cidade = st.text_input("🏙️ Cidade", placeholder="Ex: Cidade do México", key=f"{key_prefix}_cidade")
             else:
-                estado_limp = st.text_input(f"🏛️ Estado / Província", key=f"{key_prefix}_estado")
-                cidade = st.text_input(f"🏙️ Cidade", placeholder="Ex: Belém", key=f"{key_prefix}_cidade")
+                estado_limp = st.text_input("🏛️ Estado / Província", key=f"{key_prefix}_estado")
+                cidade = st.text_input("🏙️ Cidade", placeholder="Ex: Belém", key=f"{key_prefix}_cidade")
             endereco = f"{cidade}, {estado_limp}, {pais}" if str(cidade).strip() and str(estado_limp).strip() else ""
             return endereco, pais
 
@@ -4478,10 +4340,10 @@ with aba9:
                                 "DATA_CADASTRO": datetime.now().strftime("%d/%m/%Y %H:%M")
                             }
                             df_v = pd.concat([df_v, pd.DataFrame([nova_viagem])], ignore_index=True)
-                            salvar_viagens(df_v)
-                            st.success("✅ Viagem cadastrada com sucesso!")
-                            time.sleep(0.5)
-                            st.rerun()
+                            if salvar_viagens(df_v):
+                                st.success("✅ Viagem cadastrada com sucesso!")
+                                time.sleep(0.5)
+                                st.rerun()
 
         # --- FILTROS ---
         st.markdown("---")
@@ -4602,9 +4464,9 @@ with aba9:
                         remover = idx_original_v[len(edited_v):]
                         df_v_main.drop(index=remover, inplace=True)
                         df_v_main.reset_index(drop=True, inplace=True)
-                    salvar_viagens(df_v_main)
-                    st.success("✅ Alterações salvas com sucesso!")
-                    st.rerun()
+                    if salvar_viagens(df_v_main):
+                        st.success("✅ Alterações salvas com sucesso!")
+                        st.rerun()
 
             with col_ev:
                 st.markdown("**🗑️ Para excluir:** delete as linhas na tabela (tecla Delete) e clique em SALVAR ALTERAÇÕES.")
@@ -4905,22 +4767,14 @@ with aba11:
                 if resultado:
                     st.success("✅ Tradução concluída!")
                     if "traducoes_historico" not in st.session_state:
-                        try:
-                            st.session_state["traducoes_historico"] = _sqlite_list("traducoes_historico") or []
-                        except Exception:
-                            st.session_state["traducoes_historico"] = []
-                    entry = {
+                        st.session_state["traducoes_historico"] = []
+                    st.session_state["traducoes_historico"].append({
                         "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                         "origem": idioma_origem,
                         "destino": idioma_destino,
                         "texto_original": texto_origem,
                         "texto_traduzido": resultado,
-                    }
-                    st.session_state["traducoes_historico"].append(entry)
-                    try:
-                        _sqlite_add_traducao(entry)
-                    except Exception:
-                        pass
+                    })
                 else:
                     st.error("❌ Não foi possível traduzir. Verifique a conexão com a internet.")
 
@@ -4946,10 +4800,6 @@ with aba11:
                     )
             if st.button("🗑️ Limpar Histórico de Traduções", key="trad_limpar_hist"):
                 st.session_state["traducoes_historico"] = []
-                try:
-                    _sqlite_clear_table("traducoes_historico")
-                except Exception:
-                    pass
                 st.rerun()
 
     # ---------- SUB-ABA 2: TEXTO → ÁUDIO (TTS) ----------
@@ -4957,16 +4807,9 @@ with aba11:
         st.markdown("### 🔊 Texto para Áudio (TTS)")
         st.caption("Converta texto em fala. Você pode traduzir o texto antes de gerar o áudio.")
 
-        # Inicializa histórico de TTS (carrega do SQLite se existir)
+        # Inicializa histórico de TTS
         if "tts_historico" not in st.session_state:
-            try:
-                rows = _sqlite_list("tts_historico")
-                for r in rows:
-                    if r.get("audio_bytes") and isinstance(r["audio_bytes"], memoryview):
-                        r["audio_bytes"] = bytes(r["audio_bytes"])
-                st.session_state["tts_historico"] = rows or []
-            except Exception:
-                st.session_state["tts_historico"] = []
+            st.session_state["tts_historico"] = []
 
         c1, c2 = st.columns(2)
         with c1:
@@ -4983,10 +4826,6 @@ with aba11:
         with col_limpar:
             if st.button("🗑️ Limpar Histórico de Áudio", use_container_width=True, key="tts_btn_limpar"):
                 st.session_state["tts_historico"] = []
-                try:
-                    _sqlite_clear_table("tts_historico")
-                except Exception:
-                    pass
                 st.rerun()
 
         if gerar_audio:
@@ -5031,21 +4870,16 @@ with aba11:
                             key="tts_download_audio"
                         )
                         # Adiciona ao histórico
-                        entry = {
+                        st.session_state["tts_historico"].append({
                             "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                             "idioma_origem": idioma_origem_tts,
                             "idioma_destino": idioma_destino_tts,
                             "texto_original": texto_tts,
                             "texto_convertido": texto_final,
                             "audio_bytes": mp3_buffer.getvalue(),
-                        }
-                        st.session_state["tts_historico"].append(entry)
-                        try:
-                            _sqlite_add_tts(entry)
-                        except Exception:
-                            pass
+                        })
                     except Exception as e_gtts:
-                        st.error(f"❌ Erro ao gerar áudio com gTTS.")
+                        st.error(f"❌ Erro ao gerar áudio: {e_gtts}")
                         st.info("ℹ️ O serviço Google TTS pode estar indisponível temporariamente ou o idioma selecionado pode não ser suportado no momento. Tente outro idioma ou tente novamente mais tarde.")
 
         # Exibe histórico de áudio gerado
@@ -5071,16 +4905,9 @@ with aba11:
         st.markdown("### 🎤 Fale, Transcreva, Traduza e Corrija")
         st.caption("Grave áudio pelo microfone ou envie um arquivo. O sistema transcreve, traduz e permite correções por escrito ou por nova fala.")
 
-        # --- Inicializa histórico (carrega do SQLite se existir) ---
+        # --- Inicializa histórico ---
         if "stt_historico" not in st.session_state:
-            try:
-                rows = _sqlite_list("stt_historico")
-                for r in rows:
-                    if r.get("audio_bytes") and isinstance(r["audio_bytes"], memoryview):
-                        r["audio_bytes"] = bytes(r["audio_bytes"])
-                st.session_state["stt_historico"] = rows or []
-            except Exception:
-                st.session_state["stt_historico"] = []
+            st.session_state["stt_historico"] = []
         if "stt_ultimo_audio_bytes" not in st.session_state:
             st.session_state["stt_ultimo_audio_bytes"] = None
         if "stt_ultimo_audio_ext" not in st.session_state:
@@ -5178,7 +5005,7 @@ with aba11:
                         st.session_state["stt_cod_idioma_audio_atual"] = cod_stt
 
                         # Adiciona ao histórico
-                        entry_stt = {
+                        st.session_state["stt_historico"].append({
                             "id": len(st.session_state["stt_historico"]),
                             "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                             "idioma_audio": idioma_audio,
@@ -5187,12 +5014,7 @@ with aba11:
                             "cod_trad": cod_trad,
                             "texto_transcrito": texto_transcrito,
                             "texto_traduzido": texto_traduzido,
-                        }
-                        st.session_state["stt_historico"].append(entry_stt)
-                        try:
-                            _sqlite_add_stt(entry_stt)
-                        except Exception:
-                            pass
+                        })
                         st.success("✅ Áudio transcrito e traduzido com sucesso!")
 
                     except sr.UnknownValueError:
@@ -5219,7 +5041,7 @@ with aba11:
                     texto_traduzido = traduzir_texto(texto_transcrito, origem=cod_stt, destino=cod_trad)
                     if texto_traduzido is None:
                         texto_traduzido = ""
-                entry_stt2 = {
+                st.session_state["stt_historico"].append({
                     "id": len(st.session_state["stt_historico"]),
                     "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                     "idioma_audio": idioma_audio,
@@ -5228,12 +5050,7 @@ with aba11:
                     "cod_trad": cod_trad,
                     "texto_transcrito": texto_transcrito,
                     "texto_traduzido": texto_traduzido,
-                }
-                st.session_state["stt_historico"].append(entry_stt2)
-                try:
-                    _sqlite_add_stt(entry_stt2)
-                except Exception:
-                    pass
+                })
                 st.success("✅ Nova tradução adicionada ao histórico!")
 
         # --- SEÇÃO DE HISTÓRICO E CORREÇÃO ---
@@ -5322,10 +5139,6 @@ with aba11:
                 st.session_state["stt_texto_transcrito_atual"] = ""
                 st.session_state["stt_cod_idioma_audio_atual"] = "pt"
                 st.session_state["stt_ultimo_audio_bytes"] = None
-                try:
-                    _sqlite_clear_table("stt_historico")
-                except Exception:
-                    pass
                 st.rerun()
 
 
