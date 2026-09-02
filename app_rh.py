@@ -594,8 +594,16 @@ def _salvar_compras_local(solicitacoes, entregas):
                     return
             except Exception:
                 pass
+        houve_conflito = _outro_usuario_alterou(ARQUIVO_COMPRAS)
         _salvar_json_seguro(ARQUIVO_COMPRAS, dados)
         st.session_state[chave_cache] = hash_novo  # só marca DEPOIS de gravar
+        _registrar_log("SALVOU COMPRAS", f"{len(solicitacoes)} solicitacoes / {len(entregas)} entregas")
+        if houve_conflito:
+            st.warning(
+                "⚠️ Outra pessoa salvou as compras enquanto você editava. Sua versão foi "
+                "gravada e a anterior ficou nos backups automáticos."
+            )
+            _registrar_log("CONFLITO", "compras")
     except Exception as e:
         st.session_state["_compras_hash"] = ""  # força nova tentativa no próximo save
         st.error(f"❌ Erro ao salvar compras localmente: {e}")
@@ -616,6 +624,7 @@ def _carregar_compras_local():
         dados = json.loads(conteudo)
         sols = dados.get("solicitacoes", [])
         ents = dados.get("entregas", [])
+        _registrar_versao_lida(ARQUIVO_COMPRAS)
         st.toast(f"📂 Compras carregadas do arquivo ({len(sols)} solicitações, {len(ents)} entregas)")
         return sols, ents
     except Exception as e:
@@ -1442,30 +1451,176 @@ def _backup_rotativo(caminho):
     except Exception:
         pass
 
+# ---------- USO SIMULTANEO POR VARIAS PESSOAS (NOVO) ----------
+TEMPO_MAX_TRAVA = 30       # segundos esperando a vez de gravar
+VALIDADE_TRAVA = 120       # segundos: apos isso a trava e considerada abandonada
+
+class _TravaArquivo:
+    """Impede que duas pessoas gravem o mesmo arquivo no mesmo instante.
+
+    Usa um arquivo de trava criado de forma exclusiva pelo sistema operacional.
+    Se a trava ficar 'presa' (app fechado no meio), ela expira automaticamente.
+    """
+
+    def __init__(self, caminho):
+        self.trava = f"{caminho}.lock"
+        self.adquirida = False
+
+    def __enter__(self):
+        limite = time.time() + TEMPO_MAX_TRAVA
+        while True:
+            try:
+                fd = os.open(self.trava, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                self.adquirida = True
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(self.trava) > VALIDADE_TRAVA:
+                        os.remove(self.trava)
+                        continue
+                except Exception:
+                    pass
+                if time.time() > limite:
+                    raise IOError(
+                        "outra pessoa esta salvando este arquivo agora; tente novamente em alguns segundos"
+                    )
+                time.sleep(0.4)
+            except Exception:
+                # Se nao foi possivel criar a trava, segue sem ela (melhor gravar do que travar).
+                return self
+
+    def __exit__(self, *args):
+        if self.adquirida:
+            try:
+                os.remove(self.trava)
+            except Exception:
+                pass
+        return False
+
+def _assinatura_arquivo(caminho):
+    """Identifica a versao atual do arquivo (data de alteracao + tamanho)."""
+    try:
+        info = os.stat(caminho)
+        return f"{int(info.st_mtime_ns)}_{info.st_size}"
+    except Exception:
+        return "inexistente"
+
+def _registrar_versao_lida(caminho):
+    """Guarda qual versao do arquivo esta pessoa carregou na tela."""
+    try:
+        st.session_state.setdefault("_versoes_lidas", {})[caminho] = _assinatura_arquivo(caminho)
+    except Exception:
+        pass
+
+def _outro_usuario_alterou(caminho):
+    """Diz se o arquivo mudou depois que esta pessoa carregou os dados."""
+    try:
+        anterior = st.session_state.get("_versoes_lidas", {}).get(caminho)
+    except Exception:
+        return False
+    if anterior is None:
+        return False
+    return anterior != _assinatura_arquivo(caminho)
+
+def usuario_atual():
+    """Nome de quem esta usando o sistema (quando informado no login)."""
+    try:
+        return st.session_state.get("_usuario") or "nao identificado"
+    except Exception:
+        return "nao identificado"
+
+def _registrar_log(acao, detalhe=""):
+    """Anota quem salvou o que e quando, para conferencia posterior."""
+    try:
+        caminho_log = os.path.join(DATA_DIR, "Registro_Alteracoes.csv")
+        novo = not os.path.exists(caminho_log)
+        with open(caminho_log, "a", encoding="utf-8") as f:
+            if novo:
+                f.write("DataHora;Usuario;Acao;Detalhe\n")
+            f.write(
+                f"{datetime.now().strftime('%d/%m/%Y %H:%M:%S')};{usuario_atual()};"
+                f"{str(acao).replace(';', ',')};{str(detalhe).replace(';', ',')}\n"
+            )
+    except Exception:
+        pass
+
+def _marcar_presenca():
+    """Anota que esta pessoa esta com o sistema aberto agora."""
+    nome = usuario_atual()
+    if nome == "nao identificado":
+        return
+    try:
+        caminho = os.path.join(DATA_DIR, "usuarios_online.json")
+        agora = time.time()
+        registro = {}
+        if os.path.exists(caminho):
+            try:
+                with open(caminho, "r", encoding="utf-8") as f:
+                    registro = json.load(f) or {}
+            except Exception:
+                registro = {}
+        registro[nome] = agora
+        # Remove quem nao aparece ha mais de 5 minutos
+        registro = {k: v for k, v in registro.items() if agora - float(v) < 300}
+        with open(caminho, "w", encoding="utf-8") as f:
+            json.dump(registro, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _usuarios_online():
+    """Lista as outras pessoas que estao com o sistema aberto agora."""
+    try:
+        caminho = os.path.join(DATA_DIR, "usuarios_online.json")
+        if not os.path.exists(caminho):
+            return []
+        with open(caminho, "r", encoding="utf-8") as f:
+            registro = json.load(f) or {}
+        agora = time.time()
+        eu = usuario_atual()
+        return [k for k, v in registro.items() if agora - float(v) < 300 and k != eu]
+    except Exception:
+        return []
+
+def _avisar_conflito(caminho, nome_amigavel):
+    """Avisa quando outra pessoa salvou o mesmo cadastro enquanto voce editava."""
+    if _outro_usuario_alterou(caminho):
+        st.warning(
+            f"⚠️ Outra pessoa salvou **{nome_amigavel}** enquanto você editava. "
+            "Sua versão foi gravada e a versão anterior ficou guardada na pasta de "
+            "backups automáticos. Atualize a tela para ver o resultado final."
+        )
+        _registrar_log("CONFLITO", nome_amigavel)
+
 def _gravar_atomico(caminho, escrever):
     """Escreve em arquivo temporario e so troca pelo definitivo se der certo.
 
     Evita o arquivo ficar truncado/corrompido se a gravacao falhar no meio.
+    Tambem usa uma trava para que duas pessoas nao gravem ao mesmo tempo.
     Levanta a excecao original em caso de erro (para o chamador avisar o usuario).
     """
-    _backup_rotativo(caminho)
-    # A extensao original precisa ser mantida no nome temporario:
-    # o gravador de Excel valida a extensao do arquivo de destino.
-    raiz, extensao = os.path.splitext(caminho)
-    temporario = f"{raiz}.tmp_{os.getpid()}{extensao}"
-    try:
-        escrever(temporario)
-        with open(temporario, "rb") as fv:
-            if not fv.read(1):
-                raise IOError("arquivo temporario vazio")
-        os.replace(temporario, caminho)
-    except Exception:
-        if os.path.exists(temporario):
-            try:
-                os.remove(temporario)
-            except Exception:
-                pass
-        raise
+    with _TravaArquivo(caminho):
+        _backup_rotativo(caminho)
+        # A extensao original precisa ser mantida no nome temporario:
+        # o gravador de Excel valida a extensao do arquivo de destino.
+        # O nome inclui um codigo unico porque varias pessoas usam o mesmo processo.
+        raiz, extensao = os.path.splitext(caminho)
+        temporario = f"{raiz}.tmp_{os.getpid()}_{uuid.uuid4().hex[:8]}{extensao}"
+        try:
+            escrever(temporario)
+            with open(temporario, "rb") as fv:
+                if not fv.read(1):
+                    raise IOError("arquivo temporario vazio")
+            os.replace(temporario, caminho)
+        except Exception:
+            if os.path.exists(temporario):
+                try:
+                    os.remove(temporario)
+                except Exception:
+                    pass
+            raise
+    _registrar_versao_lida(caminho)
 
 def _salvar_excel_seguro(caminho, abas):
     """Grava um dicionario {nome_aba: DataFrame} em Excel de forma atomica."""
@@ -1889,6 +2044,7 @@ def carregar_dados():
             dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
         except Exception:
             dados = {}
+    _registrar_versao_lida(ARQUIVO)
 
     padrao = {
         "Base_Dados": [
@@ -1956,6 +2112,7 @@ def carregar_diarias():
     if df is None:
         if not os.path.exists(ARQUIVO_DIARIAS):
             return pd.DataFrame(columns=cols_padrao)
+    _registrar_versao_lida(ARQUIVO_DIARIAS)
     
     # Mapeamento de colunas da planilha externa para o padrão do app
     rename_map = {
@@ -2040,11 +2197,21 @@ def carregar_diarias():
 def salvar_dados(dados):
     """Salva a base de funcionários em disco (atomico + backup) e no Google Sheets."""
     sucesso = False
+    houve_conflito = _outro_usuario_alterou(ARQUIVO)
     try:
         _salvar_excel_seguro(ARQUIVO, dados)
         sucesso = True
+        _registrar_log("SALVOU CADASTRO/EVENTOS")
     except Exception as e:
         st.error(f"❌ Erro ao salvar arquivo local: {e}")
+
+    if sucesso and houve_conflito:
+        st.warning(
+            "⚠️ Outra pessoa salvou o cadastro de funcionários enquanto você editava. "
+            "Sua versão foi gravada e a anterior ficou guardada nos backups automáticos. "
+            "Atualize a tela para ver o resultado final."
+        )
+        _registrar_log("CONFLITO", "cadastro de funcionários")
 
     # Se Google Sheets ativo, salva na nuvem também
     if GS_ENABLED:
@@ -2063,11 +2230,20 @@ def salvar_diarias(df_diarias):
     ou seja, o usuario via "salvo com sucesso" mesmo quando nada foi gravado.
     """
     sucesso = False
+    houve_conflito = _outro_usuario_alterou(ARQUIVO_DIARIAS)
     try:
         _salvar_excel_seguro(ARQUIVO_DIARIAS, {"Diarias": df_diarias})
         sucesso = True
+        _registrar_log("SALVOU DIÁRIAS", f"{len(df_diarias)} registros")
     except Exception as e:
         st.error(f"❌ Erro ao salvar o arquivo de diárias: {e}")
+
+    if sucesso and houve_conflito:
+        st.warning(
+            "⚠️ Outra pessoa salvou as diárias enquanto você editava. Sua versão foi "
+            "gravada e a anterior ficou nos backups automáticos."
+        )
+        _registrar_log("CONFLITO", "diárias")
 
     # Se Google Sheets ativo, salva na nuvem também
     if GS_ENABLED:
@@ -2200,6 +2376,7 @@ def carregar_viagens():
         "MOTIVO", "DATA_SAIDA", "DATA_RETORNO", "VALOR_LIBERADO", "TOTAL_GASTO",
         "RESTANTE", "STATUS", "OBSERVACOES", "DATA_CADASTRO"
     ]
+    _registrar_versao_lida(ARQUIVO_VIAGENS)
     if not os.path.exists(ARQUIVO_VIAGENS):
         return pd.DataFrame(columns=cols_padrao)
     try:
@@ -2218,11 +2395,19 @@ def carregar_viagens():
 def salvar_viagens(df_viagens):
     """Salva o registro de viagens (atomico + backup) avisando em caso de erro."""
     sucesso = False
+    houve_conflito = _outro_usuario_alterou(ARQUIVO_VIAGENS)
     try:
         _salvar_excel_seguro(ARQUIVO_VIAGENS, {"Viagens": df_viagens})
         sucesso = True
+        _registrar_log("SALVOU VIAGENS", f"{len(df_viagens)} registros")
     except Exception as e:
         st.error(f"❌ Erro ao salvar o arquivo de viagens: {e}")
+    if sucesso and houve_conflito:
+        st.warning(
+            "⚠️ Outra pessoa salvou as viagens enquanto você editava. Sua versão foi "
+            "gravada e a anterior ficou nos backups automáticos."
+        )
+        _registrar_log("CONFLITO", "viagens")
     st.cache_data.clear()
     return sucesso
 
@@ -2234,7 +2419,8 @@ def criar_backup_zip():
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # Arquivos Excel principais (nome relativo no ZIP)
-        for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS]:
+        for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS,
+                    os.path.join(DATA_DIR, "Registro_Alteracoes.csv")]:
             if os.path.exists(arq):
                 zf.write(arq, os.path.basename(arq))
         # Pastas de documentos, fotos e comprovantes (caminho relativo ao BASE_DIR)
@@ -2642,17 +2828,51 @@ def exigir_login():
     if st.session_state.get("_autenticado"):
         return
     st.title("🔒 Acesso restrito")
-    st.info("Este sistema contém dados pessoais. Informe a senha para continuar.")
+    st.info("Este sistema contém dados pessoais. Informe seu nome e a senha para continuar.")
+    nome = st.text_input("Seu nome (aparece no registro de alterações)", key="_nome_input")
     digitada = st.text_input("Senha", type="password", key="_senha_input")
     if st.button("Entrar", key="_btn_entrar"):
         if digitada == senha_ok:
             st.session_state["_autenticado"] = True
+            st.session_state["_usuario"] = (nome or "").strip() or "nao identificado"
+            _registrar_log("ENTROU NO SISTEMA")
             st.rerun()
         else:
             st.error("❌ Senha incorreta.")
     st.stop()
 
+def barra_usuario():
+    """Mostra na barra lateral quem esta usando o sistema."""
+    with st.sidebar:
+        st.markdown("### Quem está usando o sistema")
+        atual = st.session_state.get("_usuario", "")
+        if atual == "nao identificado":
+            atual = ""
+        nome = st.text_input(
+            "Seu nome",
+            value=atual,
+            key="_usuario_sidebar",
+            help="Usado apenas para registrar quem fez cada alteração.",
+        )
+        if (nome or "").strip():
+            st.session_state["_usuario"] = nome.strip()
+            st.caption("Conectado como: " + nome.strip())
+        else:
+            st.caption("Informe seu nome para identificar suas alterações.")
+        try:
+            _marcar_presenca()
+            outros = _usuarios_online()
+            if outros:
+                st.info("Também usando agora: " + ", ".join(outros))
+        except Exception:
+            pass
+        if st.button("Atualizar dados da tela", key="_btn_recarregar",
+                     help="Busca as alterações que outras pessoas salvaram."):
+            st.cache_data.clear()
+            st.rerun()
+
 exigir_login()
+barra_usuario()
 
 st.title("📋 SISTEMA RH COMPLETO")
 aviso_persistencia()
