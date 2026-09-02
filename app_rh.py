@@ -2717,22 +2717,7 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-# --- Callback: limpa chaves do formulário quando o autocomplete muda ---
-def _on_autocomplete_change():
-    """Callback on_change do selectbox autocomplete_func.
-    Roda ANTES do script, logo após o widget ser atualizado.
-    Deleta todas as chaves cad_*/foto_* para forçar reload dos valores do banco,
-    e registra a nova seleção em _cad_prev_sel.
-    """
-    old = st.session_state.get("_cad_prev_sel", "")
-    new_raw = st.session_state.get("autocomplete_func", "")
-    new_mat = new_raw.split(" - ")[0].strip() if (new_raw and " - " in new_raw) else ""
-    if old != new_mat:
-        # Colaborador mudou ou foi limpo — deleta chaves de widget para reload
-        _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
-        for k in _keys:
-            del st.session_state[k]
-        st.session_state["_cad_prev_sel"] = new_mat
+# --- (lógica de detecção de mudança movida para inline, após extrair mat_sel) ---
 
 # ================ ABA 1 - CADASTRO ================
 with aba1:
@@ -2761,8 +2746,7 @@ with aba1:
         options=[""] + opcoes_auto,
         index=0,
         key="autocomplete_func",
-        help="Comece a digitar para filtrar automaticamente",
-        on_change=_on_autocomplete_change
+        help="Comece a digitar para filtrar automaticamente"
     )
     
     # Flag de limpeza: após salvar ou limpar, zera tudo
@@ -2776,6 +2760,17 @@ with aba1:
     if sel_auto and " - " in sel_auto and not _cad_limpo:
         mat_sel = sel_auto.split(" - ")[0].strip()
         st.success(f"✅ Colaborador selecionado: {sel_auto}")
+
+    # --- Detectar mudança de colaborador e limpar chaves de widget ---
+    # Compara matrícula atual com a anterior. Se mudou, deleta cad_*/foto_*
+    # para que os widgets usem value=val_campo(...) (valores do banco).
+    # NÃO faz st.rerun() — o script continua com as chaves já limpas.
+    _prev_mat = st.session_state.get("_cad_prev_sel", "")
+    if mat_sel != _prev_mat:
+        _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
+        for k in _keys:
+            del st.session_state[k]
+        st.session_state["_cad_prev_sel"] = mat_sel
     
     # ---------- FILTROS ----------
     st.markdown("---")
@@ -2889,9 +2884,8 @@ with aba1:
         st.session_state["_cad_limpo"] = True
         st.rerun()
     # --- Sem st.form(): widgets atualizam session_state imediatamente ---
-    # A limpeza de chaves cad_*/foto_* ao mudar de colaborador agora é feita pelo
-    # callback _on_autocomplete_change (on_change do selectbox), que roda ANTES
-    # deste script. Isso elimina o st.rerun() extra que causava bugs de UX.
+    # A limpeza de chaves cad_*/foto_* ao mudar de colaborador agora é feita inline
+    # (logo após extrair mat_sel), SEM st.rerun(), eliminando o bug de duplo clique.
     # Container para agrupar visualmente os widgets do "formulário"
     with st.container():
         st.subheader("Dados Básicos")
