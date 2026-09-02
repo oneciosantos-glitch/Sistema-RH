@@ -1664,6 +1664,64 @@ def aviso_persistencia():
     else:
         st.sidebar.info("💾 Dados salvos em pasta fixa. Cópias automáticas na pasta 'Backups_Automaticos'.")
 
+# ====================== DOWNLOAD SEGURO DE ANEXOS (NOVO) ======================
+# Antes: se o arquivo anexado não existisse mais no disco (servidor reiniciado,
+# arquivo movido ou apagado à mão), o app quebrava com FileNotFoundError e a
+# tela inteira parava. Agora mostra um aviso amigável e continua funcionando.
+
+def _resolver_caminho_anexo(caminho, pastas_alternativas=None):
+    """Tenta localizar o anexo mesmo se a pasta de dados mudou de lugar."""
+    caminho = str(caminho or "").strip()
+    if not caminho:
+        return None
+    if os.path.exists(caminho):
+        return caminho
+    nome = os.path.basename(caminho.replace("\\\\", "/").replace("\\", "/"))
+    if not nome:
+        return None
+    candidatas = list(pastas_alternativas or [])
+    candidatas += [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES, DATA_DIR, BASE_DIR]
+    for pasta in candidatas:
+        try:
+            tentativa = os.path.join(pasta, nome)
+            if os.path.exists(tentativa):
+                return tentativa
+        except Exception:
+            continue
+    return None
+
+def botao_baixar_anexo(caminho, nome_arquivo, chave, rotulo="⬇️ BAIXAR", pastas_alternativas=None):
+    """Botão de download que nunca derruba o aplicativo.
+
+    Retorna True se o arquivo foi encontrado, False se estiver faltando.
+    """
+    real = _resolver_caminho_anexo(caminho, pastas_alternativas)
+    if not real:
+        st.warning(
+                "⚠️ Arquivo não encontrado no servidor. O registro existe, mas o "
+                "arquivo foi apagado ou perdido em um reinicio. Anexe novamente."
+        )
+        return False
+    try:
+        with open(real, "rb") as f:
+            conteudo = f.read()
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível ler o arquivo anexado: {e}")
+        return False
+    st.download_button(rotulo, conteudo, file_name=str(nome_arquivo or os.path.basename(real)), key=chave)
+    return True
+
+def remover_anexo(caminho, pastas_alternativas=None):
+    """Apaga o arquivo do disco se ele existir, sem gerar erro se não existir."""
+    real = _resolver_caminho_anexo(caminho, pastas_alternativas)
+    if not real:
+        return False
+    try:
+        os.remove(real)
+        return True
+    except Exception:
+        return False
+
 # ====================== FUNÇÕES DE BUSCA INTELIGENTE ======================
 import unicodedata
 
@@ -3066,8 +3124,14 @@ with aba1:
         
         with col_foto:
             st.markdown("**Foto do Funcionário**")
-            if caminho_foto_atual and os.path.exists(caminho_foto_atual):
-                st.image(caminho_foto_atual, width=180, caption="Foto atual")
+            _foto_ok = _resolver_caminho_anexo(caminho_foto_atual, [PASTA_FOTOS]) if caminho_foto_atual else None
+            if _foto_ok:
+                try:
+                    st.image(_foto_ok, width=180, caption="Foto atual")
+                except Exception:
+                    st.info("Foto não pôde ser exibida")
+            elif caminho_foto_atual:
+                st.warning("⚠️ Foto não encontrada no servidor. Envie novamente.")
             else:
                 st.info("Sem foto")
             
@@ -3153,12 +3217,12 @@ with aba1:
                     st.error("❌ INFORME A MATRÍCULA!")
                     st.stop()
                 caminho_final_foto = caminho_foto_atual
-                if excluir_foto and caminho_final_foto and os.path.exists(caminho_final_foto):
-                    os.remove(caminho_final_foto)
+                if excluir_foto and caminho_final_foto:
+                    remover_anexo(caminho_final_foto, [PASTA_FOTOS])
                     caminho_final_foto = ""
                 if nova_foto:
-                    if caminho_final_foto and os.path.exists(caminho_final_foto):
-                        os.remove(caminho_final_foto)
+                    if caminho_final_foto:
+                        remover_anexo(caminho_final_foto, [PASTA_FOTOS])
                     extensao = os.path.splitext(nova_foto.name)[1].lower()
                     nome_foto = f"{matricula_tratada}_foto_{datetime.now().strftime('%Y%m%d%H%M%S')}{extensao}"
                     caminho_final_foto = os.path.join(PASTA_FOTOS, nome_foto)
@@ -3228,11 +3292,11 @@ with aba1:
                         indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_sel.strip()].tolist()
                         if indice:
                             dados_excluir = dados["Base_Dados"].loc[indice[0]].to_dict()
-                            if dados_excluir.get("CaminhoFoto") and os.path.exists(dados_excluir["CaminhoFoto"]):
-                                os.remove(dados_excluir["CaminhoFoto"])
+                            if dados_excluir.get("CaminhoFoto"):
+                                remover_anexo(dados_excluir["CaminhoFoto"])
                             docs_excluir = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] == mat_sel.strip()]
                             for _, d in docs_excluir.iterrows():
-                                if os.path.exists(d["Caminho"]): os.remove(d["Caminho"])
+                                remover_anexo(d["Caminho"])
                             dados["Docs_Funcionarios"] = dados["Docs_Funcionarios"][dados["Docs_Funcionarios"]["Matricula"] != mat_sel.strip()]
                             dados["Base_Dados"] = dados["Base_Dados"].drop(indice[0])
                             if not salvar_dados(dados):
@@ -3292,10 +3356,10 @@ with aba1:
                 with st.expander(f"📄 {doc['TipoDoc']} - {doc['NomeArquivo']} | {doc['DataAnexado']}"):
                     col_v, col_b, col_e = st.columns([3,1,1])
                     with col_b:
-                        with open(doc["Caminho"], "rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=doc["NomeArquivo"], key=f"dw_{idx}")
+                        botao_baixar_anexo(doc["Caminho"], doc["NomeArquivo"], f"dw_{idx}")
                     with col_e:
                         if st.button("🗑️ EXCLUIR", key=f"del_{idx}"):
-                            if os.path.exists(doc["Caminho"]): os.remove(doc["Caminho"])
+                            remover_anexo(doc["Caminho"])
                             dados["Docs_Funcionarios"].drop(idx, inplace=True)
                             if not salvar_dados(dados):
                                 st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
@@ -3560,9 +3624,9 @@ with aba6:
     else:
         for i,d in filt.iterrows():
             with st.expander(f"📄 {d['NomeArquivo']} | {d['Mes']}/{d['Ano']}"):
-                with open(d["Caminho"],"rb") as f: st.download_button("⬇️ BAIXAR", f, file_name=d["NomeArquivo"], key=f"d{i}")
+                botao_baixar_anexo(d["Caminho"], d["NomeArquivo"], f"d{i}")
                 if st.button("🗑️ EXCLUIR", key=f"x{i}"):
-                    os.remove(d["Caminho"])
+                    remover_anexo(d["Caminho"])
                     dados["Docs_Lojas"].drop(i,inplace=True)
                     if not salvar_dados(dados):
                         st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
@@ -3816,8 +3880,8 @@ with aba8:
                     remover = idx_original[len(edited_df):]
                     for idx_rm in remover:
                         comp = str(df_diarias.at[idx_rm, "COMPROVANTE"])
-                        if comp and os.path.exists(comp):
-                            os.remove(comp)
+                        if comp:
+                            remover_anexo(comp, [PASTA_COMPROVANTES])
                     df_diarias.drop(index=remover, inplace=True)
                     df_diarias.reset_index(drop=True, inplace=True)
                 if salvar_diarias(df_diarias):
@@ -3944,16 +4008,19 @@ with aba8:
         if sel_diaria is not None:
             idx_comp = df_diarias.index[sel_diaria]
             comp_atual = str(df_diarias.at[idx_comp, "COMPROVANTE"])
-            if comp_atual and os.path.exists(comp_atual):
-                st.success(f"✅ Comprovante anexado: {os.path.basename(comp_atual)}")
-                with open(comp_atual, "rb") as fc:
-                    st.download_button("⬇️ Baixar Comprovante", fc, file_name=os.path.basename(comp_atual), key=f"dl_comp_{idx_comp}")
+            _comp_ok = _resolver_caminho_anexo(comp_atual, [PASTA_COMPROVANTES]) if comp_atual.strip() else None
+            if _comp_ok:
+                st.success(f"✅ Comprovante anexado: {os.path.basename(_comp_ok)}")
+                botao_baixar_anexo(_comp_ok, os.path.basename(_comp_ok), f"dl_comp_{idx_comp}",
+                                   rotulo="⬇️ Baixar Comprovante", pastas_alternativas=[PASTA_COMPROVANTES])
                 if st.button("🗑️ Remover Comprovante", key=f"rm_comp_{idx_comp}"):
-                    os.remove(comp_atual)
+                    remover_anexo(_comp_ok, [PASTA_COMPROVANTES])
                     df_diarias.at[idx_comp, "COMPROVANTE"] = ""
                     if salvar_diarias(df_diarias):
                         st.success("Comprovante removido!")
                         st.rerun()
+            elif comp_atual.strip() and comp_atual.strip().lower() not in ("nan", "none"):
+                st.warning("⚠️ O comprovante deste registro não foi encontrado no servidor. Anexe novamente.")
             else:
                 st.info("Nenhum comprovante anexado para esta diária.")
             arq_comp = st.file_uploader("Anexar comprovante (PDF, JPG, PNG)", type=["pdf", "jpg", "png"], key=f"up_comp_{idx_comp}")
