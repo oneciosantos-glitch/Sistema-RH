@@ -1449,7 +1449,10 @@ def _gravar_atomico(caminho, escrever):
     Levanta a excecao original em caso de erro (para o chamador avisar o usuario).
     """
     _backup_rotativo(caminho)
-    temporario = f"{caminho}.tmp_{os.getpid()}"
+    # A extensao original precisa ser mantida no nome temporario:
+    # o gravador de Excel valida a extensao do arquivo de destino.
+    raiz, extensao = os.path.splitext(caminho)
+    temporario = f"{raiz}.tmp_{os.getpid()}{extensao}"
     try:
         escrever(temporario)
         with open(temporario, "rb") as fv:
