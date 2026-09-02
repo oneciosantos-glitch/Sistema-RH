@@ -2761,16 +2761,72 @@ with aba1:
         mat_sel = sel_auto.split(" - ")[0].strip()
         st.success(f"✅ Colaborador selecionado: {sel_auto}")
 
-    # --- Detectar mudança de colaborador e limpar chaves de widget ---
-    # Compara matrícula atual com a anterior. Se mudou, deleta cad_*/foto_*
-    # para que os widgets usem value=val_campo(...) (valores do banco).
-    # NÃO faz st.rerun() — o script continua com as chaves já limpas.
+    # --- Detectar mudança de colaborador e SETAR chaves de widget ---
+    # Quando o colaborador muda, SETA cada cad_* key diretamente com o valor
+    # do banco. NÃO deletamos as chaves — Streamlit ignora value= se a chave
+    # foi deletada no mesmo run (o widget interno cacheia o valor antigo).
+    # Ao SETAR a chave, o widget lê o novo valor do session_state imediatamente.
     _prev_mat = st.session_state.get("_cad_prev_sel", "")
     if mat_sel != _prev_mat:
-        _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
-        for k in _keys:
-            del st.session_state[k]
         st.session_state["_cad_prev_sel"] = mat_sel
+        # Busca o registro no banco (precisa dos dados aqui, antes dos filtros)
+        if mat_sel:
+            _bd_pop = dados["Base_Dados"].copy()
+            _bd_pop["Matricula"] = _bd_pop["Matricula"].fillna("").astype(str).str.strip()
+            _reg = _bd_pop[_bd_pop["Matricula"] == str(mat_sel).strip()]
+            if not _reg.empty:
+                _r = _reg.iloc[0]
+                # Text fields
+                st.session_state["cad_mat"] = str(_r.get("Matricula", ""))
+                st.session_state["cad_nome"] = str(_r.get("Nome", ""))
+                st.session_state["cad_cpf"] = str(_r.get("CPF", ""))
+                st.session_state["cad_rg"] = str(_r.get("RG", ""))
+                st.session_state["cad_pis"] = str(_r.get("PIS", ""))
+                st.session_state["cad_nasc"] = str(_r.get("Nascimento", ""))
+                st.session_state["cad_adm"] = str(_r.get("Admissao", ""))
+                st.session_state["cad_tel"] = str(_r.get("Telefone", ""))
+                st.session_state["cad_end"] = str(_r.get("Endereco", ""))
+                st.session_state["cad_sal"] = str(_r.get("Salario", ""))
+                st.session_state["cad_dtav"] = str(_r.get("DataAvisoPrevio", ""))
+                st.session_state["cad_diav"] = str(_r.get("DiasAvisoPrevio", ""))
+                st.session_state["cad_dtlic"] = str(_r.get("DataLicenca", ""))
+                st.session_state["cad_dilic"] = str(_r.get("DiasLicenca", ""))
+                st.session_state["cad_dtfer"] = str(_r.get("DataFeriasInicio", ""))
+                st.session_state["cad_difer"] = str(_r.get("DiasFerias", ""))
+                st.session_state["cad_dtaf"] = str(_r.get("DataAfastamento", ""))
+                st.session_state["cad_diaf"] = str(_r.get("DiasAfastamento", ""))
+                st.session_state["cad_tipoaf"] = str(_r.get("TipoAfastamento", "")) or "Nenhum"
+                st.session_state["cad_dtped"] = str(_r.get("DataPedidoConta", ""))
+                st.session_state["cad_dtres"] = str(_r.get("DataRescisao", ""))
+                st.session_state["cad_dtab"] = str(_r.get("DataAbandono", ""))
+                st.session_state["cad_dtdes"] = str(_r.get("DataDesistencia", ""))
+                st.session_state["cad_dtterm"] = str(_r.get("DataTerminoContrato", ""))
+                # Selectbox fields (Loja, Cargo, Situação)
+                _loja_v = str(_r.get("Loja", ""))
+                st.session_state["cad_loja"] = _loja_v if _loja_v in lista_lojas() else lista_lojas()[0]
+                _cargo_v = str(_r.get("Cargo", ""))
+                st.session_state["cad_cargo"] = _cargo_v if _cargo_v in lista_cargos() else lista_cargos()[0]
+                _sit_v = str(_r.get("Situacao", "Ativo"))
+                st.session_state["cad_sit"] = _sit_v if _sit_v in SITUACOES else "Ativo"
+                # Calculated fields — will be updated by calcular_e_atualizar below
+                st.session_state["cad_terav"] = ""
+                st.session_state["cad_terlic"] = ""
+                st.session_state["cad_retfer"] = ""
+                st.session_state["cad_retaf"] = ""
+                st.session_state["cad_exclfoto"] = False
+                # Clear foto keys (no meaningful default)
+                for fk in [k for k in list(st.session_state.keys()) if k.startswith("foto_") and k != "foto_upload"]:
+                    del st.session_state[fk]
+            else:
+                # Colaborador não encontrado no banco — limpa todos os campos
+                _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
+                for k in _keys:
+                    del st.session_state[k]
+        else:
+            # Nenhum colaborador selecionado (mat_sel vazio) — limpa tudo
+            _keys = [k for k in list(st.session_state.keys()) if k.startswith(("cad_", "foto_"))]
+            for k in _keys:
+                del st.session_state[k]
     
     # ---------- FILTROS ----------
     st.markdown("---")
@@ -2904,28 +2960,28 @@ with aba1:
         with col_dados:
             c1,c2,c3 = st.columns(3)
             with c1:
-                matricula = st.text_input("Matrícula * (igual planilha)", value=st.session_state.get("cad_mat", val_campo("Matricula")), key="cad_mat")
-                nome = st.text_input("Nome Completo", value=st.session_state.get("cad_nome", val_campo("Nome")), key="cad_nome")
-                cpf = st.text_input("CPF", value=st.session_state.get("cad_cpf", val_campo("CPF")), key="cad_cpf")
-                rg = st.text_input("RG", value=st.session_state.get("cad_rg", val_campo("RG")), key="cad_rg")
-                pis = st.text_input("PIS", value=st.session_state.get("cad_pis", val_campo("PIS")), key="cad_pis")
+                matricula = st.text_input("Matrícula * (igual planilha)", value=st.session_state.get("cad_mat", ""), key="cad_mat")
+                nome = st.text_input("Nome Completo", value=st.session_state.get("cad_nome", ""), key="cad_nome")
+                cpf = st.text_input("CPF", value=st.session_state.get("cad_cpf", ""), key="cad_cpf")
+                rg = st.text_input("RG", value=st.session_state.get("cad_rg", ""), key="cad_rg")
+                pis = st.text_input("PIS", value=st.session_state.get("cad_pis", ""), key="cad_pis")
             with c2:
-                nascimento = st.text_input("Data Nascimento", value=st.session_state.get("cad_nasc", val_campo("Nascimento")), placeholder="dd/mm/aaaa", key="cad_nasc")
-                admissao = st.text_input("Data Admissão", value=st.session_state.get("cad_adm", val_campo("Admissao")), placeholder="dd/mm/aaaa", key="cad_adm")
-                telefone = st.text_input("Telefone", value=st.session_state.get("cad_tel", val_campo("Telefone")), key="cad_tel")
-                endereco = st.text_input("Endereço Completo", value=st.session_state.get("cad_end", val_campo("Endereco")), key="cad_end")
+                nascimento = st.text_input("Data Nascimento", value=st.session_state.get("cad_nasc", ""), placeholder="dd/mm/aaaa", key="cad_nasc")
+                admissao = st.text_input("Data Admissão", value=st.session_state.get("cad_adm", ""), placeholder="dd/mm/aaaa", key="cad_adm")
+                telefone = st.text_input("Telefone", value=st.session_state.get("cad_tel", ""), key="cad_tel")
+                endereco = st.text_input("Endereço Completo", value=st.session_state.get("cad_end", ""), key="cad_end")
             with c3:
                 lojas = lista_lojas()
-                _loja_val = st.session_state.get("cad_loja", val_campo("Loja"))
+                _loja_val = st.session_state.get("cad_loja", "")
                 idx_loja = lojas.index(_loja_val) if _loja_val in lojas else 0
                 loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key="cad_loja")
 
                 cargos = lista_cargos()
-                _cargo_val = st.session_state.get("cad_cargo", val_campo("Cargo"))
+                _cargo_val = st.session_state.get("cad_cargo", "")
                 idx_cargo = cargos.index(_cargo_val) if _cargo_val in cargos else 0
                 cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key="cad_cargo")
 
-                salario = st.text_input("Salário", value=st.session_state.get("cad_sal", val_campo("Salario")), key="cad_sal")
+                salario = st.text_input("Salário", value=st.session_state.get("cad_sal", ""), key="cad_sal")
 
                 _sit_val = situacao_val  # Usa o valor CALCULADO por calcular_e_atualizar, não o antigo do session_state
                 idx_sit = SITUACOES.index(_sit_val) if _sit_val in SITUACOES else 0
@@ -2946,37 +3002,37 @@ with aba1:
         av1,av2,av3 = st.columns(3)
         with av1:
             st.markdown("**Aviso Prévio**")
-            dt_aviso = st.text_input("Data Aviso", value=st.session_state.get("cad_dtav", val_campo("DataAvisoPrevio")), placeholder="dd/mm/aaaa", key="cad_dtav")
-            dias_aviso = st.text_input("Dias Aviso", value=st.session_state.get("cad_diav", val_campo("DiasAvisoPrevio")), key="cad_diav")
+            dt_aviso = st.text_input("Data Aviso", value=st.session_state.get("cad_dtav", ""), placeholder="dd/mm/aaaa", key="cad_dtav")
+            dias_aviso = st.text_input("Dias Aviso", value=st.session_state.get("cad_diav", ""), key="cad_diav")
             term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key="cad_terav")
         with av2:
             st.markdown("**Licença**")
-            dt_lic = st.text_input("Data Licença", value=st.session_state.get("cad_dtlic", val_campo("DataLicenca")), placeholder="dd/mm/aaaa", key="cad_dtlic")
-            dias_lic = st.text_input("Dias Licença", value=st.session_state.get("cad_dilic", val_campo("DiasLicenca")), key="cad_dilic")
+            dt_lic = st.text_input("Data Licença", value=st.session_state.get("cad_dtlic", ""), placeholder="dd/mm/aaaa", key="cad_dtlic")
+            dias_lic = st.text_input("Dias Licença", value=st.session_state.get("cad_dilic", ""), key="cad_dilic")
             term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key="cad_terlic")
         with av3:
             st.markdown("**Férias**")
-            dt_fer = st.text_input("Início Férias", value=st.session_state.get("cad_dtfer", val_campo("DataFeriasInicio")), placeholder="dd/mm/aaaa", key="cad_dtfer")
-            dias_fer = st.text_input("Dias Férias", value=st.session_state.get("cad_difer", val_campo("DiasFerias")), key="cad_difer")
+            dt_fer = st.text_input("Início Férias", value=st.session_state.get("cad_dtfer", ""), placeholder="dd/mm/aaaa", key="cad_dtfer")
+            dias_fer = st.text_input("Dias Férias", value=st.session_state.get("cad_difer", ""), key="cad_difer")
             ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key="cad_retfer")
 
         af1,af2 = st.columns(2)
         with af1:
             st.markdown("**Afastamento**")
-            dt_af = st.text_input("Data Afastamento", value=st.session_state.get("cad_dtaf", val_campo("DataAfastamento")), placeholder="dd/mm/aaaa", key="cad_dtaf")
-            dias_af = st.text_input("Dias Afastamento", value=st.session_state.get("cad_diaf", val_campo("DiasAfastamento")), key="cad_diaf")
+            dt_af = st.text_input("Data Afastamento", value=st.session_state.get("cad_dtaf", ""), placeholder="dd/mm/aaaa", key="cad_dtaf")
+            dias_af = st.text_input("Dias Afastamento", value=st.session_state.get("cad_diaf", ""), key="cad_diaf")
             ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key="cad_retaf")
             _taf_opts = ["Nenhum", "Doença", "Acidente", "Maternidade"]
-            _taf_val = st.session_state.get("cad_tipoaf", val_campo("TipoAfastamento") or "Nenhum")
+            _taf_val = st.session_state.get("cad_tipoaf", "Nenhum")
             _idx_taf = _taf_opts.index(_taf_val) if _taf_val in _taf_opts else 0
             tipo_af = st.selectbox("Tipo Afastamento", _taf_opts, index=_idx_taf, key="cad_tipoaf")
         with af2:
             st.markdown("**Desligamento**")
-            dt_ped = st.text_input("Data Pedido Conta", value=st.session_state.get("cad_dtped", val_campo("DataPedidoConta")), placeholder="dd/mm/aaaa", key="cad_dtped")
-            dt_res = st.text_input("Data Rescisão", value=st.session_state.get("cad_dtres", val_campo("DataRescisao")), placeholder="dd/mm/aaaa", key="cad_dtres")
-            dt_aband = st.text_input("Data Abandono", value=st.session_state.get("cad_dtab", val_campo("DataAbandono")), placeholder="dd/mm/aaaa", key="cad_dtab")
-            dt_desist = st.text_input("Data Desistência", value=st.session_state.get("cad_dtdes", val_campo("DataDesistencia")), placeholder="dd/mm/aaaa", key="cad_dtdes")
-            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=st.session_state.get("cad_dtterm", val_campo("DataTerminoContrato")), placeholder="dd/mm/aaaa", key="cad_dtterm")
+            dt_ped = st.text_input("Data Pedido Conta", value=st.session_state.get("cad_dtped", ""), placeholder="dd/mm/aaaa", key="cad_dtped")
+            dt_res = st.text_input("Data Rescisão", value=st.session_state.get("cad_dtres", ""), placeholder="dd/mm/aaaa", key="cad_dtres")
+            dt_aband = st.text_input("Data Abandono", value=st.session_state.get("cad_dtab", ""), placeholder="dd/mm/aaaa", key="cad_dtab")
+            dt_desist = st.text_input("Data Desistência", value=st.session_state.get("cad_dtdes", ""), placeholder="dd/mm/aaaa", key="cad_dtdes")
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=st.session_state.get("cad_dtterm", ""), placeholder="dd/mm/aaaa", key="cad_dtterm")
 
         btn_salvar = st.button("💾 SALVAR CADASTRO", type="primary", use_container_width=True, key="btn_salvar_cad")
         if btn_salvar:
