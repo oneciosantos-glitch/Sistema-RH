@@ -1871,7 +1871,7 @@ if GS_ENABLED:
                 "DataTerminoContrato",
                 "DataLicenca","DiasLicenca","DataTerminoLicenca",
                 "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-                "CaminhoFoto"
+                "TipoAfastamento","CaminhoFoto"
             ],
             "Historico": [
                 "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -1881,7 +1881,7 @@ if GS_ENABLED:
                 "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
                 "DataTerminoContrato",
                 "DataLicenca","DiasLicenca","DataTerminoLicenca",
-                "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
+                "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","TipoAfastamento","Detalhes"
             ],
             "Auxiliares": ["Loja", "Cargo"],
             "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
@@ -1932,7 +1932,7 @@ def carregar_dados():
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-            "CaminhoFoto"
+            "TipoAfastamento","CaminhoFoto"
         ],
         "Historico": [
             "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -1942,7 +1942,7 @@ def carregar_dados():
             "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
-            "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
+            "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","TipoAfastamento","Detalhes"
         ],
         "Auxiliares": ["Loja", "Cargo"],
         "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
@@ -2485,7 +2485,7 @@ def gerar_ficha_individual(fd, fh, mr):
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
         "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-        "CaminhoFoto"
+        "TipoAfastamento","CaminhoFoto"
     ]
     colunas_historico = [
         "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -2495,7 +2495,7 @@ def gerar_ficha_individual(fd, fh, mr):
         "DataPedidoConta","DataRescisao","DataAbandono","DataDesistencia",
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
-        "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","Detalhes"
+        "DataAfastamento","DiasAfastamento","DataRetornoAfastamento","TipoAfastamento","Detalhes"
     ]
     
     wb = Workbook()
@@ -2809,7 +2809,7 @@ with aba1:
         _bd["Matricula"] = _bd["Matricula"].fillna("").astype(str).str.strip()
         reg = _bd[_bd["Matricula"] == mat_busca]
 
-    val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty and not _cad_limpo else ""
+    val_campo = lambda nome: reg.iloc[0].get(nome, "") if not reg.empty and not _cad_limpo else ""
 
     prazos_exp = []
     if not reg.empty and val_campo("Admissao").strip():
@@ -2835,7 +2835,7 @@ with aba1:
         return st.session_state.get(key, default)
 
     # --- Valores padrão do banco (usados quando a chave ainda não existe no session_state) ---
-    _db_val = lambda campo: reg.iloc[0][campo] if not reg.empty and not _cad_limpo else ""
+    _db_val = lambda campo: reg.iloc[0].get(campo, "") if not reg.empty and not _cad_limpo else ""
 
     # --- Cálculo em tempo real de datas derivadas ---
     # Constrói dict a partir dos valores ATUAIS dos widgets (session_state) ou do banco
@@ -3047,6 +3047,7 @@ with aba1:
                     "DataTerminoLicenca": dados_form["termino_lic"],
                     "DataAfastamento": dados_form["dt_af"], "DiasAfastamento": dados_form["dias_af"],
                     "DataRetornoAfastamento": dados_form["retorno_af"],
+                    "TipoAfastamento": dados_form["tipo_af"],
                     "CaminhoFoto": caminho_final_foto
                 }
                 indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
