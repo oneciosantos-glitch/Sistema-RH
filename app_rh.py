@@ -48,6 +48,10 @@ gc = None
 GS_ID_FUNCIONARIOS = None
 GS_ID_DIARIAS = None
 GS_ID_COMPRAS = None
+GS_ID_VIAGENS = None
+# Quando verdadeiro, TODOS os dados ficam somente no Google Sheets
+# (nenhuma planilha Excel/JSON local e usada como banco de dados).
+GS_ONLY = False
 
 try:
     import gspread
@@ -63,8 +67,14 @@ try:
         GS_ID_FUNCIONARIOS = st.secrets.get("gsheets", {}).get("id_funcionarios", "")
         GS_ID_DIARIAS = st.secrets.get("gsheets", {}).get("id_diarias", "")
         GS_ID_COMPRAS = st.secrets.get("gsheets", {}).get("id_compras", "")
-        if GS_ID_FUNCIONARIOS or GS_ID_DIARIAS or GS_ID_COMPRAS:
+        GS_ID_VIAGENS = st.secrets.get("gsheets", {}).get("id_viagens", "")
+        if GS_ID_FUNCIONARIOS or GS_ID_DIARIAS or GS_ID_COMPRAS or GS_ID_VIAGENS:
             GS_ENABLED = True
+            # Padrao: 100% na nuvem. Pode ser desligado com somente_nuvem = false
+            try:
+                GS_ONLY = bool(st.secrets.get("gsheets", {}).get("somente_nuvem", True))
+            except Exception:
+                GS_ONLY = True
 except Exception:
     pass
 
@@ -251,7 +261,7 @@ def init_session_state():
             except Exception:
                 sols, ents = [], []
         # Se não conseguiu do GS, carrega do arquivo local (com cache)
-        if not sols and not ents:
+        if not sols and not ents and not GS_ONLY:
             mtime = os.path.getmtime(ARQUIVO_COMPRAS) if os.path.exists(ARQUIVO_COMPRAS) else 0.0
             sols, ents = _cached_carregar_compras_local(ARQUIVO_COMPRAS, mtime)
             # Fallback de seguranca: se o arquivo existe e tem conteudo mas o cache retornou vazio, recarrega direto
@@ -577,6 +587,8 @@ def _salvar_compras_local(solicitacoes, entregas):
     - erro aparece na tela em vez de ser engolido.
     """
     dados = {"solicitacoes": solicitacoes, "entregas": entregas}
+    if GS_ONLY:
+        return  # no modo 100% nuvem nada e gravado em arquivo local
     try:
         dados_json = json.dumps(dados, ensure_ascii=False, sort_keys=True)
         hash_novo = hashlib.md5(dados_json.encode("utf-8")).hexdigest()
@@ -641,6 +653,13 @@ def _salvar_compras_automatico():
     """
     sols = st.session_state.get("compras_solicitacoes", [])
     ents = st.session_state.get("compras_entregas", [])
+    if GS_ONLY:
+        try:
+            _salvar_compras_gs(sols, ents)
+            _registrar_log("SALVOU COMPRAS", f"{len(sols)} solicitacoes / {len(ents)} entregas")
+        except Exception as e:
+            st.error(f"❌ Não foi possível salvar as compras no Google Sheets: {e}")
+        return
     # Sempre salva localmente para garantir persistência
     _salvar_compras_local(sols, ents)
     if not GS_ENABLED or not GS_ID_COMPRAS:
@@ -1533,6 +1552,18 @@ def usuario_atual():
 
 def _registrar_log(acao, detalhe=""):
     """Anota quem salvou o que e quando, para conferencia posterior."""
+    linha = [
+        datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
+        usuario_atual(),
+        str(acao),
+        str(detalhe),
+    ]
+    if GS_ONLY:
+        try:
+            _registrar_log_gs(linha)
+        except Exception:
+            pass
+        return
     try:
         caminho_log = os.path.join(DATA_DIR, "Registro_Alteracoes.csv")
         novo = not os.path.exists(caminho_log)
@@ -1650,7 +1681,14 @@ def _ambiente_efemero():
 def aviso_persistencia():
     """Mostra um alerta claro quando os dados podem ser perdidos ao reiniciar."""
     if GS_ENABLED:
-        st.sidebar.success("☁️ Dados sincronizados com o Google Sheets (seguros ao reiniciar).")
+        if GS_ONLY:
+            st.sidebar.success(
+                "☁️ **100% Google Sheets**\n\n"
+                "Todos os cadastros, diárias, viagens e compras são lidos e gravados "
+                "direto nas planilhas do Google. Nada depende de arquivo no servidor."
+            )
+        else:
+            st.sidebar.success("☁️ Dados sincronizados com o Google Sheets (seguros ao reiniciar).")
         return
     if _ambiente_efemero() and DATA_DIR == BASE_DIR:
         st.sidebar.error(
@@ -1810,17 +1848,21 @@ def _garantir_abas_gs(spreadsheet, abas_necessarias, padrao_cols):
 
 def _carregar_dados_gs():
     """Carrega dados do Google Sheets."""
-    spreadsheet = gc.open_by_key(GS_ID_FUNCIONARIOS)
+    spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS, GS_ID_DIARIAS)
     abas = {ws.title: ws for ws in spreadsheet.worksheets()}
     dados = {}
     for aba_nome, ws in abas.items():
+        if aba_nome == "Registro_Alteracoes":
+            continue  # o registro de alteracoes e somente acrescentado, nunca reescrito
         dados[aba_nome] = _gsheet_to_df(ws)
     return dados
 
 def _salvar_dados_gs(dados):
     """Salva dados no Google Sheets."""
-    spreadsheet = gc.open_by_key(GS_ID_FUNCIONARIOS)
+    spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS, GS_ID_DIARIAS)
     for aba_nome, df in dados.items():
+        if aba_nome == "Registro_Alteracoes":
+            continue
         try:
             ws = spreadsheet.worksheet(aba_nome)
         except gspread.exceptions.WorksheetNotFound:
@@ -1838,17 +1880,68 @@ def _salvar_dados_gs(dados):
                 pass
         _df_to_gsheet(df, ws)
 
+def _abrir_planilha_gs(id_preferido, id_reserva=None):
+    """Abre a planilha do Google pelo ID informado; se faltar, usa a reserva."""
+    alvo = (id_preferido or "").strip() or (id_reserva or "").strip()
+    if not alvo:
+        raise RuntimeError("nenhum ID de planilha do Google Sheets configurado")
+    return gc.open_by_key(alvo)
+
+def _aba_gs(spreadsheet, titulo, colunas=None):
+    """Devolve a aba pelo nome, criando-a com o cabecalho quando nao existir."""
+    try:
+        return spreadsheet.worksheet(titulo)
+    except Exception:
+        ws = spreadsheet.add_worksheet(title=titulo, rows=1000, cols=max(len(colunas or []), 10))
+        if colunas:
+            ws.update([list(colunas)])
+        return ws
+
 def _carregar_diarias_gs():
-    """Carrega diárias do Google Sheets."""
-    spreadsheet = gc.open_by_key(GS_ID_DIARIAS)
-    ws = spreadsheet.sheet1
+    """Carrega diárias do Google Sheets (aba Diarias)."""
+    spreadsheet = _abrir_planilha_gs(GS_ID_DIARIAS, GS_ID_FUNCIONARIOS)
+    try:
+        ws = spreadsheet.worksheet("Diarias")
+    except Exception:
+        ws = spreadsheet.sheet1
     return _gsheet_to_df(ws)
 
 def _salvar_diarias_gs(df):
-    """Salva diárias no Google Sheets."""
-    spreadsheet = gc.open_by_key(GS_ID_DIARIAS)
-    ws = spreadsheet.sheet1
+    """Salva diárias no Google Sheets (aba Diarias)."""
+    spreadsheet = _abrir_planilha_gs(GS_ID_DIARIAS, GS_ID_FUNCIONARIOS)
+    try:
+        ws = spreadsheet.worksheet("Diarias")
+    except Exception:
+        ws = spreadsheet.sheet1
+        try:
+            ws.update_title("Diarias")
+        except Exception:
+            pass
     _df_to_gsheet(df, ws)
+
+COLS_VIAGENS = [
+    "ID", "NUMERO_VIAGEM", "COLABORADOR", "LOJA", "ORIGEM", "DESTINO",
+    "MOTIVO", "DATA_SAIDA", "DATA_RETORNO", "VALOR_LIBERADO", "TOTAL_GASTO",
+    "RESTANTE", "STATUS", "OBSERVACOES", "DATA_CADASTRO"
+]
+
+def _carregar_viagens_gs():
+    """Carrega o registro de viagens do Google Sheets (aba Viagens)."""
+    spreadsheet = _abrir_planilha_gs(GS_ID_VIAGENS, GS_ID_FUNCIONARIOS)
+    ws = _aba_gs(spreadsheet, "Viagens", COLS_VIAGENS)
+    return _gsheet_to_df(ws)
+
+def _salvar_viagens_gs(df):
+    """Salva o registro de viagens no Google Sheets (aba Viagens)."""
+    spreadsheet = _abrir_planilha_gs(GS_ID_VIAGENS, GS_ID_FUNCIONARIOS)
+    ws = _aba_gs(spreadsheet, "Viagens", COLS_VIAGENS)
+    _df_to_gsheet(df, ws)
+
+def _registrar_log_gs(linha):
+    """Grava uma linha no registro de alteracoes dentro do Google Sheets."""
+    spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS, GS_ID_DIARIAS)
+    ws = _aba_gs(spreadsheet, "Registro_Alteracoes", ["DataHora", "Usuario", "Acao", "Detalhe"])
+    ws.append_row(list(linha), value_input_option="USER_ENTERED")
 
 
 # ====================== COMPRAS - GOOGLE SHEETS ======================
@@ -1988,7 +2081,7 @@ def _row_to_entrega(row):
 @st.cache_data(ttl=0, show_spinner=False)
 def _carregar_compras_gs():
     """Carrega dados de compras do Google Sheets."""
-    spreadsheet = gc.open_by_key(GS_ID_COMPRAS)
+    spreadsheet = _abrir_planilha_gs(GS_ID_COMPRAS, GS_ID_FUNCIONARIOS)
     abas = {ws.title: ws for ws in spreadsheet.worksheets()}
     solicitacoes = []
     entregas = []
@@ -2004,7 +2097,7 @@ def _carregar_compras_gs():
 
 def _salvar_compras_gs(solicitacoes, entregas):
     """Salva dados de compras no Google Sheets."""
-    spreadsheet = gc.open_by_key(GS_ID_COMPRAS)
+    spreadsheet = _abrir_planilha_gs(GS_ID_COMPRAS, GS_ID_FUNCIONARIOS)
     abas = {ws.title: ws for ws in spreadsheet.worksheets()}
 
     # Aba Solicitacoes
@@ -2062,14 +2155,46 @@ if GS_ENABLED:
             ],
             "Auxiliares": ["Loja", "Cargo"],
             "Docs_Lojas": ["Loja","Mes","Ano","NomeArquivo","Caminho","DataAnexado","Responsavel"],
-            "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"]
+            "Docs_Funcionarios": ["Matricula","Nome","TipoDoc","NomeArquivo","Caminho","DataAnexado"],
+            "Registro_Alteracoes": ["DataHora","Usuario","Acao","Detalhe"]
         }
-        spreadsheet = gc.open_by_key(GS_ID_FUNCIONARIOS)
+        spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS, GS_ID_DIARIAS)
         abas_existentes = {ws.title for ws in spreadsheet.worksheets()}
         for aba_nome, cols in padrao_func.items():
             if aba_nome not in abas_existentes:
                 ws = spreadsheet.add_worksheet(title=aba_nome, rows=1000, cols=len(cols))
                 ws.update([cols])
+    except Exception:
+        pass
+
+    # Garante a aba de diarias
+    try:
+        _aba_gs(_abrir_planilha_gs(GS_ID_DIARIAS, GS_ID_FUNCIONARIOS), "Diarias", [
+            "LOJA","NOME COLABORADOR","CPF","DATA EXECUCAO","QTDE DE DIARIAS","VALOR UNITARIO",
+            "VALOR TOTAL","DADOS BANCÁRIOS","SUBSTITUICAO","MOTIVO","DATA PAGAMENTO","SITUACAO",
+            "MES","SEMANA","ANO","CARGO","DATA CADASTRO","COMPROVANTE","OBSERVACAO"
+        ])
+    except Exception:
+        pass
+
+    # Garante a aba de viagens
+    try:
+        _aba_gs(_abrir_planilha_gs(GS_ID_VIAGENS, GS_ID_FUNCIONARIOS), "Viagens", COLS_VIAGENS)
+    except Exception:
+        pass
+
+    # Garante as abas de compras
+    try:
+        _pl_compras = _abrir_planilha_gs(GS_ID_COMPRAS, GS_ID_FUNCIONARIOS)
+        _aba_gs(_pl_compras, "Solicitacoes", [
+            "id","data","cliente","loja","tipo","solicitante","nomeFuncionario","encarregado",
+            "supervisor","dataUltimaBota","prioridade","previsao","observacoes","itens",
+            "valorTotal","anexos","status","dataCriacao"
+        ])
+        _aba_gs(_pl_compras, "Entregas", [
+            "idSolicitacao","loja","tipo","dataEnvio","dataPrevista","dataEntrega",
+            "transportadora","rastreio","status"
+        ])
     except Exception:
         pass
 
@@ -2088,21 +2213,32 @@ def carregar_dados():
             tem_conteudo = any(
                 isinstance(df, pd.DataFrame) and not df.empty for df in dados.values()
             )
-            if tem_conteudo:
+            if tem_conteudo and not GS_ONLY:
                 try:
                     _salvar_excel_seguro(ARQUIVO, dados)
                 except Exception:
                     pass
         except Exception as e:
-            st.warning(f"⚠️ Erro ao carregar do Google Sheets: {e}. Usando arquivo local.")
-            dados = None
+            if GS_ONLY:
+                st.error(
+                    "❌ Não foi possível ler a planilha do Google Sheets: "
+                    f"{e}. Verifique a conexão e as permissões de acesso."
+                )
+                dados = {}
+            else:
+                st.warning(f"⚠️ Erro ao carregar do Google Sheets: {e}. Usando arquivo local.")
+                dados = None
 
     if dados is None:
-        try:
-            dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
-        except Exception:
+        if GS_ONLY:
             dados = {}
-    _registrar_versao_lida(ARQUIVO)
+        else:
+            try:
+                dados = pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False)
+            except Exception:
+                dados = {}
+    if not GS_ONLY:
+        _registrar_versao_lida(ARQUIVO)
 
     padrao = {
         "Base_Dados": [
@@ -2158,19 +2294,25 @@ def carregar_diarias():
         try:
             df = _carregar_diarias_gs()
             # Espelha localmente somente quando a nuvem trouxe dados de verdade
-            if isinstance(df, pd.DataFrame) and not df.empty:
+            if isinstance(df, pd.DataFrame) and not df.empty and not GS_ONLY:
                 try:
                     _salvar_excel_seguro(ARQUIVO_DIARIAS, {"Diarias": df})
                 except Exception:
                     pass
         except Exception as e:
+            if GS_ONLY:
+                st.error(f"❌ Não foi possível ler as diárias no Google Sheets: {e}")
+                return pd.DataFrame(columns=cols_padrao)
             st.warning(f"⚠️ Erro ao carregar diárias do Google Sheets: {e}. Usando arquivo local.")
             df = None
 
     if df is None:
+        if GS_ONLY:
+            return pd.DataFrame(columns=cols_padrao)
         if not os.path.exists(ARQUIVO_DIARIAS):
             return pd.DataFrame(columns=cols_padrao)
-    _registrar_versao_lida(ARQUIVO_DIARIAS)
+    if not GS_ONLY:
+        _registrar_versao_lida(ARQUIVO_DIARIAS)
     
     # Mapeamento de colunas da planilha externa para o padrão do app
     rename_map = {
@@ -2253,7 +2395,17 @@ def carregar_diarias():
     return df
 
 def salvar_dados(dados):
-    """Salva a base de funcionários em disco (atomico + backup) e no Google Sheets."""
+    """Salva a base de funcionários. No modo 100% nuvem, grava só no Google Sheets."""
+    if GS_ONLY:
+        try:
+            _salvar_dados_gs(dados)
+            _registrar_log("SALVOU CADASTRO/EVENTOS")
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"❌ Não foi possível salvar no Google Sheets: {e}")
+            return False
+
     sucesso = False
     houve_conflito = _outro_usuario_alterou(ARQUIVO)
     try:
@@ -2282,11 +2434,18 @@ def salvar_dados(dados):
     return sucesso
 
 def salvar_diarias(df_diarias):
-    """Salva as diárias em disco (atomico + backup) e no Google Sheets.
+    """Salva as diárias. No modo 100% nuvem, grava só no Google Sheets."""
+    if GS_ONLY:
+        try:
+            _salvar_diarias_gs(df_diarias)
+            _registrar_log("SALVOU DIÁRIAS", f"{len(df_diarias)} registros")
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"❌ Não foi possível salvar as diárias no Google Sheets: {e}")
+            return False
 
-    CORRECAO: antes a falha na gravacao local era silenciosa (except: pass),
-    ou seja, o usuario via "salvo com sucesso" mesmo quando nada foi gravado.
-    """
+    """Salva as diárias em disco (atomico + backup) e no Google Sheets."""
     sucesso = False
     houve_conflito = _outro_usuario_alterou(ARQUIVO_DIARIAS)
     try:
@@ -2428,12 +2587,32 @@ def exportar_diarias_formatado(df, caminho):
 
 @st.cache_data(ttl=0, show_spinner=False)
 def carregar_viagens():
-    """Carrega o registro de viagens do arquivo Excel."""
-    cols_padrao = [
-        "ID", "NUMERO_VIAGEM", "COLABORADOR", "LOJA", "ORIGEM", "DESTINO",
-        "MOTIVO", "DATA_SAIDA", "DATA_RETORNO", "VALOR_LIBERADO", "TOTAL_GASTO",
-        "RESTANTE", "STATUS", "OBSERVACOES", "DATA_CADASTRO"
-    ]
+    """Carrega o registro de viagens (Google Sheets quando ativo)."""
+    cols_padrao = list(COLS_VIAGENS)
+
+    def _ajustar(df):
+        for col in cols_padrao:
+            if col not in df.columns:
+                df[col] = ""
+        for col in ["VALOR_LIBERADO", "TOTAL_GASTO", "RESTANTE"]:
+            df[col] = df[col].astype(str).str.strip().replace("", "0.00")
+        return df[cols_padrao]
+
+    if GS_ENABLED:
+        try:
+            df_gs = _carregar_viagens_gs()
+            if isinstance(df_gs, pd.DataFrame) and not df_gs.empty:
+                return _ajustar(df_gs)
+            if GS_ONLY:
+                return pd.DataFrame(columns=cols_padrao)
+        except Exception as e:
+            if GS_ONLY:
+                st.error(f"❌ Não foi possível ler as viagens no Google Sheets: {e}")
+                return pd.DataFrame(columns=cols_padrao)
+            st.warning(f"⚠️ Erro ao carregar viagens do Google Sheets: {e}. Usando arquivo local.")
+
+    if GS_ONLY:
+        return pd.DataFrame(columns=cols_padrao)
     _registrar_versao_lida(ARQUIVO_VIAGENS)
     if not os.path.exists(ARQUIVO_VIAGENS):
         return pd.DataFrame(columns=cols_padrao)
@@ -2441,17 +2620,21 @@ def carregar_viagens():
         df = pd.read_excel(ARQUIVO_VIAGENS, dtype=str, keep_default_na=False)
     except Exception:
         return pd.DataFrame(columns=cols_padrao)
-    for col in cols_padrao:
-        if col not in df.columns:
-            df[col] = ""
-    for col in ["VALOR_LIBERADO", "TOTAL_GASTO", "RESTANTE"]:
-        df[col] = df[col].astype(str).str.strip()
-        df[col] = df[col].replace("", "0.00")
-    return df[cols_padrao]
+    return _ajustar(df)
 
 
 def salvar_viagens(df_viagens):
-    """Salva o registro de viagens (atomico + backup) avisando em caso de erro."""
+    """Salva o registro de viagens. No modo 100% nuvem, grava só no Google Sheets."""
+    if GS_ONLY:
+        try:
+            _salvar_viagens_gs(df_viagens)
+            _registrar_log("SALVOU VIAGENS", f"{len(df_viagens)} registros")
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"❌ Não foi possível salvar as viagens no Google Sheets: {e}")
+            return False
+
     sucesso = False
     houve_conflito = _outro_usuario_alterou(ARQUIVO_VIAGENS)
     try:
@@ -2476,11 +2659,44 @@ def criar_backup_zip():
     """Cria um arquivo ZIP em memória com todos os dados e anexos."""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Arquivos Excel principais (nome relativo no ZIP)
-        for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS,
-                    os.path.join(DATA_DIR, "Registro_Alteracoes.csv")]:
-            if os.path.exists(arq):
-                zf.write(arq, os.path.basename(arq))
+        if GS_ONLY:
+            # No modo 100% nuvem nao existem planilhas locais: o backup e gerado
+            # na hora, a partir do que esta hoje no Google Sheets.
+            try:
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                    for aba, df in carregar_dados().items():
+                        df.to_excel(w, sheet_name=str(aba)[:31], index=False)
+                zf.writestr("dados_funcionarios.xlsx", buf.getvalue())
+            except Exception:
+                pass
+            try:
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                    carregar_diarias().to_excel(w, sheet_name="Diarias", index=False)
+                zf.writestr("controle_diarias.xlsx", buf.getvalue())
+            except Exception:
+                pass
+            try:
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                    carregar_viagens().to_excel(w, sheet_name="Viagens", index=False)
+                zf.writestr("registro_viagens.xlsx", buf.getvalue())
+            except Exception:
+                pass
+            try:
+                zf.writestr("dados_compras.json", json.dumps({
+                    "solicitacoes": st.session_state.get("compras_solicitacoes", []),
+                    "entregas": st.session_state.get("compras_entregas", []),
+                }, ensure_ascii=False, indent=2))
+            except Exception:
+                pass
+        else:
+            # Arquivos Excel principais (nome relativo no ZIP)
+            for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS,
+                        os.path.join(DATA_DIR, "Registro_Alteracoes.csv")]:
+                if os.path.exists(arq):
+                    zf.write(arq, os.path.basename(arq))
         # Pastas de documentos, fotos e comprovantes (caminho relativo ao BASE_DIR)
         for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
             if os.path.exists(pasta):
@@ -2521,6 +2737,24 @@ def restaurar_backup_zip(zip_file):
             arquivos_extraidos.append(nome)
     if ignorados:
         st.warning(f"⚠️ {len(ignorados)} item(ns) do ZIP foram ignorados por terem caminho inválido.")
+    if GS_ONLY:
+        # No modo 100% nuvem, o conteudo do backup precisa voltar para as planilhas
+        # do Google (os arquivos extraidos serviriam apenas de rascunho).
+        try:
+            if os.path.exists(ARQUIVO):
+                _salvar_dados_gs(pd.read_excel(ARQUIVO, sheet_name=None, dtype=str, keep_default_na=False))
+            if os.path.exists(ARQUIVO_DIARIAS):
+                _salvar_diarias_gs(pd.read_excel(ARQUIVO_DIARIAS, dtype=str, keep_default_na=False))
+            if os.path.exists(ARQUIVO_VIAGENS):
+                _salvar_viagens_gs(pd.read_excel(ARQUIVO_VIAGENS, dtype=str, keep_default_na=False))
+            if os.path.exists(ARQUIVO_COMPRAS):
+                with open(ARQUIVO_COMPRAS, "r", encoding="utf-8") as f_c:
+                    _d = json.load(f_c)
+                _salvar_compras_gs(_d.get("solicitacoes", []), _d.get("entregas", []))
+            st.cache_data.clear()
+            st.success("✅ Backup restaurado direto nas planilhas do Google Sheets.")
+        except Exception as e:
+            st.error(f"❌ O ZIP foi lido, mas houve falha ao enviar para o Google Sheets: {e}")
     return arquivos_extraidos
 
 def lista_lojas():
@@ -3029,6 +3263,19 @@ with aba1:
     # Opções do autocomplete: "MATRICULA - NOME"
     opcoes_auto = [f"{row['Matricula']} - {row['Nome']}" for _, row in base_auto.iterrows()]
     
+    # Versao do formulario: ao trocar, TODOS os campos sao recriados vazios.
+    # Isso e o que faz o botao LIMPAR e o "novo registro" realmente limparem a tela.
+    if "cad_form_ver" not in st.session_state:
+        st.session_state["cad_form_ver"] = 0
+    _v = st.session_state["cad_form_ver"]
+
+    def _limpar_formulario_cadastro():
+        """Zera a busca e todos os campos do cadastro."""
+        st.session_state["cad_form_ver"] = st.session_state.get("cad_form_ver", 0) + 1
+        for _k in ("autocomplete_func", "confirmar_exclusao", "chk_confirma_exclusao"):
+            if _k in st.session_state:
+                del st.session_state[_k]
+
     # Autocomplete - ao selecionar já carrega automaticamente
     sel_auto = st.selectbox(
         "Digite o nome ou matrícula e selecione:",
@@ -3114,10 +3361,10 @@ with aba1:
         term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
         situacao_val = "Ativo"
 
-    if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary"):
-        if "autocomplete_func" in st.session_state:
-            del st.session_state["autocomplete_func"]
+    if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary",
+                 on_click=_limpar_formulario_cadastro):
         st.rerun()
+    _kf = f"{_v}_{mat_sel or 'novo'}"  # identidade dos campos: muda ao limpar ou trocar colaborador
     with st.form("form_cadastro", clear_on_submit=False):
         st.subheader("Dados Básicos")
         col_foto, col_dados = st.columns([1,3])
@@ -3135,35 +3382,35 @@ with aba1:
             else:
                 st.info("Sem foto")
             
-            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{mat_sel}")
-            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False)
+            nova_foto = st.file_uploader("Enviar/Trocar foto", type=["jpg","jpeg","png"], key=f"foto_{_kf}")
+            excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False, key=f"exc_foto_{_kf}")
 
         with col_dados:
             c1,c2,c3 = st.columns(3)
             with c1:
-                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"))
-                nome = st.text_input("Nome Completo", value=val_campo("Nome"))
-                cpf = st.text_input("CPF", value=val_campo("CPF"))
-                rg = st.text_input("RG", value=val_campo("RG"))
-                pis = st.text_input("PIS", value=val_campo("PIS"))
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"), key=f"mat_{_kf}")
+                nome = st.text_input("Nome Completo", value=val_campo("Nome"), key=f"nome_{_kf}")
+                cpf = st.text_input("CPF", value=val_campo("CPF"), key=f"cpf_{_kf}")
+                rg = st.text_input("RG", value=val_campo("RG"), key=f"rg_{_kf}")
+                pis = st.text_input("PIS", value=val_campo("PIS"), key=f"pis_{_kf}")
             with c2:
-                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"))
-                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"))
-                telefone = st.text_input("Telefone", value=val_campo("Telefone"))
-                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"))
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"), key=f"nasc_{_kf}")
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"), key=f"adm_{_kf}")
+                telefone = st.text_input("Telefone", value=val_campo("Telefone"), key=f"tel_{_kf}")
+                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"), key=f"end_{_kf}")
             with c3:
                 lojas = lista_lojas()
                 idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
-                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja)
+                loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key=f"loja_{_kf}")
 
                 cargos = lista_cargos()
                 idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
-                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo)
+                cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key=f"cargo_{_kf}")
 
-                salario = st.text_input("Salário", value=val_campo("Salario"))
+                salario = st.text_input("Salário", value=val_campo("Salario"), key=f"sal_{_kf}")
 
                 idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
-                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit)
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sit_{_kf}")
 
         if prazos_exp:
             st.markdown("---")
@@ -3180,34 +3427,34 @@ with aba1:
         av1,av2,av3 = st.columns(3)
         with av1:
             st.markdown("**Aviso Prévio**")
-            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"))
-            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"))
-            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True)
+            dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"), key=f"dtav_{_kf}")
+            dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"), key=f"diav_{_kf}")
+            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key=f"tmav_{_kf}")
         with av2:
             st.markdown("**Licença**")
-            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"))
-            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"))
-            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True)
+            dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"), key=f"dtlic_{_kf}")
+            dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"), key=f"dilic_{_kf}")
+            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key=f"tmlic_{_kf}")
         with av3:
             st.markdown("**Férias**")
-            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"))
-            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"))
-            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True)
+            dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"), key=f"dtfer_{_kf}")
+            dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"), key=f"difer_{_kf}")
+            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key=f"rtfer_{_kf}")
 
         af1,af2 = st.columns(2)
         with af1:
             st.markdown("**Afastamento**")
-            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"))
-            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"))
-            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True)
-            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"])
+            dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"), key=f"dtaf_{_kf}")
+            dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"), key=f"diaf_{_kf}")
+            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key=f"rtaf_{_kf}")
+            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], key=f"tpaf_{_kf}")
         with af2:
             st.markdown("**Desligamento**")
-            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"))
-            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"))
-            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"))
-            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"))
-            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"))
+            dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"), key=f"dtped_{_kf}")
+            dt_res = st.text_input("Data Rescisão", value=val_campo("DataRescisao"), key=f"dtres_{_kf}")
+            dt_aband = st.text_input("Data Abandono", value=val_campo("DataAbandono"), key=f"dtab_{_kf}")
+            dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"dtdes_{_kf}")
+            dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"dttc_{_kf}")
 
         btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
         if btn_salvar:
@@ -3271,6 +3518,13 @@ with aba1:
                     st.stop()
                 add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
                 st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
+                # Depois de um NOVO cadastro os campos ficam vazios, prontos para o proximo.
+                if acao_hist == "Novo Cadastro":
+                    st.session_state["cad_form_ver"] = st.session_state.get("cad_form_ver", 0) + 1
+                    for _k in ("autocomplete_func", "confirmar_exclusao", "chk_confirma_exclusao"):
+                        if _k in st.session_state:
+                            del st.session_state[_k]
+                    st.info("🧹 Campos limpos — pode cadastrar o próximo colaborador.")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Erro ao salvar: {e}")
@@ -3903,6 +4157,20 @@ with aba8:
     # Gerenciamento de itens de diária (fora do form para permitir botões dinâmicos)
     if "itens_diaria" not in st.session_state:
         st.session_state.itens_diaria = [{"qtde": 1, "valor": 0.0}]
+    if "diaria_form_ver" not in st.session_state:
+        st.session_state["diaria_form_ver"] = 0
+
+    def _limpar_form_diaria():
+        """Zera os itens e todos os campos da nova diária."""
+        st.session_state.itens_diaria = [{"qtde": 1, "valor": 0.0}]
+        st.session_state["diaria_form_ver"] = st.session_state.get("diaria_form_ver", 0) + 1
+        for _k in list(st.session_state.keys()):
+            if str(_k).startswith(("qtde_item_d_", "valor_item_d_", "nova_")):
+                del st.session_state[_k]
+
+    _vd = st.session_state["diaria_form_ver"]
+    st.button("🧹 LIMPAR CAMPOS DA NOVA DIÁRIA", key=f"btn_limpar_diaria_{_vd}",
+              on_click=_limpar_form_diaria)
 
     st.markdown("**📋 Itens de Diária** — adicione quantos itens quiser com quantidades e valores diferentes:")
     for i, item in enumerate(st.session_state.itens_diaria):
@@ -3910,21 +4178,21 @@ with aba8:
         with cols[0]:
             item["qtde"] = st.number_input(
                 f"Qtde Item {i+1}", min_value=1, max_value=30, value=int(item["qtde"]),
-                key=f"qtde_item_d_{i}"
+                key=f"qtde_item_d_{_vd}_{i}"
             )
         with cols[1]:
             item["valor"] = st.number_input(
                 f"Valor Unit. Item {i+1} (R$)", min_value=0.0, format="%.2f", value=float(item["valor"]),
-                key=f"valor_item_d_{i}"
+                key=f"valor_item_d_{_vd}_{i}"
             )
         with cols[2]:
             st.markdown("<br>", unsafe_allow_html=True)
             if len(st.session_state.itens_diaria) > 1:
-                if st.button("🗑️ Remover", key=f"rm_item_d_{i}"):
+                if st.button("🗑️ Remover", key=f"rm_item_d_{_vd}_{i}"):
                     st.session_state.itens_diaria.pop(i)
                     st.rerun()
 
-    if st.button("➕ Adicionar Item de Diária", key="add_item_diaria"):
+    if st.button("➕ Adicionar Item de Diária", key=f"add_item_diaria_{_vd}"):
         st.session_state.itens_diaria.append({"qtde": 1, "valor": 0.0})
         st.rerun()
 
@@ -3939,21 +4207,21 @@ with aba8:
     with st.form("nova_diaria", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            loja_d = st.selectbox("Loja *", lista_lojas(), key="nova_loja_d")
-            mes_d = st.selectbox("Mês *", MESES[1:], key="nova_mes_d")
-            semana_d = st.selectbox("Semana *", SEMANAS[1:], key="nova_sem_d")
-            ano_d = st.selectbox("Ano *", ANOS, index=ANOS.index(str(datetime.now().year)), key="nova_ano_d")
+            loja_d = st.selectbox("Loja *", lista_lojas(), key=f"nova_loja_d_{_vd}")
+            mes_d = st.selectbox("Mês *", MESES[1:], key=f"nova_mes_d_{_vd}")
+            semana_d = st.selectbox("Semana *", SEMANAS[1:], key=f"nova_sem_d_{_vd}")
+            ano_d = st.selectbox("Ano *", ANOS, index=ANOS.index(str(datetime.now().year)), key=f"nova_ano_d_{_vd}")
         with c2:
-            nome_d = st.text_input("Nome do Colaborador *", key="nova_nome_d")
-            cpf_d = st.text_input("CPF *", key="nova_cpf_d")
-            cargo_d = st.text_input("Cargo", key="nova_cargo_d")
-            dados_bancarios_d = st.text_input("Dados Bancários (PIX / Banco / Ag / CC)", key="nova_dados_bancarios_d")
-            data_exec_d = st.text_input("Data da Execução (DD/MM/AAAA)", key="nova_data_exec_d")
+            nome_d = st.text_input("Nome do Colaborador *", key=f"nova_nome_d_{_vd}")
+            cpf_d = st.text_input("CPF *", key=f"nova_cpf_d_{_vd}")
+            cargo_d = st.text_input("Cargo", key=f"nova_cargo_d_{_vd}")
+            dados_bancarios_d = st.text_input("Dados Bancários (PIX / Banco / Ag / CC)", key=f"nova_dados_bancarios_d_{_vd}")
+            data_exec_d = st.text_input("Data da Execução (DD/MM/AAAA)", key=f"nova_data_exec_d_{_vd}")
         with c3:
-            data_pag_d = st.text_input("Data de Pagamento (DD/MM/AAAA)", key="nova_data_pag_d")
-            motivo_d = st.text_input("Motivo *", key="nova_motivo_d")
-            situacao_d = st.selectbox("Situação *", ["FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "PAGO"], key="nova_sit_d")
-        observacao_d = st.text_area("Observação (erros de pagamento, conta em nome de terceiro, conta incorreta, etc.)", key="nova_obs_d")
+            data_pag_d = st.text_input("Data de Pagamento (DD/MM/AAAA)", key=f"nova_data_pag_d_{_vd}")
+            motivo_d = st.text_input("Motivo *", key=f"nova_motivo_d_{_vd}")
+            situacao_d = st.selectbox("Situação *", ["FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "PAGO"], key=f"nova_sit_d_{_vd}")
+        observacao_d = st.text_area("Observação (erros de pagamento, conta em nome de terceiro, conta incorreta, etc.)", key=f"nova_obs_d_{_vd}")
         submitted = st.form_submit_button("💾 SALVAR DIÁRIA", type="primary")
         if submitted:
             erros = []
@@ -3995,7 +4263,8 @@ with aba8:
                 df_diarias = pd.concat([df_diarias, pd.DataFrame([nova_linha])], ignore_index=True)
                 if salvar_diarias(df_diarias):
                     st.session_state.itens_diaria = [{"qtde": 1, "valor": 0.0}]
-                    st.success("✅ Diária cadastrada com sucesso!")
+                    st.session_state["diaria_form_ver"] = st.session_state.get("diaria_form_ver", 0) + 1
+                    st.success("✅ Diária cadastrada com sucesso! Campos limpos para a próxima.")
                     st.rerun()
 
     # ---------- GERENCIAR COMPROVANTES ----------
@@ -4577,22 +4846,35 @@ with aba9:
 
         # --- CADASTRO ---
         with st.expander("➕ Cadastrar Nova Viagem", expanded=False):
-            with st.form("form_cadastro_viagem", clear_on_submit=True):
+            if "viagem_form_ver" not in st.session_state:
+                st.session_state["viagem_form_ver"] = 0
+
+            def _limpar_form_viagem():
+                """Zera todos os campos do cadastro de viagem."""
+                st.session_state["viagem_form_ver"] = st.session_state.get("viagem_form_ver", 0) + 1
+                for _k in list(st.session_state.keys()):
+                    if str(_k).startswith("cad_"):
+                        del st.session_state[_k]
+
+            _vv = st.session_state["viagem_form_ver"]
+            st.button("🧹 LIMPAR CAMPOS DA VIAGEM", key=f"btn_limpar_viagem_{_vv}",
+                      on_click=_limpar_form_viagem)
+            with st.form(f"form_cadastro_viagem_{_vv}", clear_on_submit=True):
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    num_viagem = st.text_input("Número da Viagem *", key="cad_num_viagem")
-                    colaborador_v = st.text_input("Colaborador *", key="cad_colab_viagem")
-                    loja_v = st.selectbox("Loja", lista_lojas(), key="cad_loja_viagem")
+                    num_viagem = st.text_input("Número da Viagem *", key=f"cad_num_viagem_{_vv}")
+                    colaborador_v = st.text_input("Colaborador *", key=f"cad_colab_viagem_{_vv}")
+                    loja_v = st.selectbox("Loja", lista_lojas(), key=f"cad_loja_viagem_{_vv}")
                 with c2:
-                    origem_v = st.text_input("Origem", key="cad_origem_viagem")
-                    destino_v = st.text_input("Destino", key="cad_destino_viagem")
-                    motivo_v = st.text_input("Motivo", key="cad_motivo_viagem")
+                    origem_v = st.text_input("Origem", key=f"cad_origem_viagem_{_vv}")
+                    destino_v = st.text_input("Destino", key=f"cad_destino_viagem_{_vv}")
+                    motivo_v = st.text_input("Motivo", key=f"cad_motivo_viagem_{_vv}")
                 with c3:
-                    data_saida_v = st.text_input("Data Saída (DD/MM/AAAA)", key="cad_dt_saida_v")
-                    data_retorno_v = st.text_input("Data Retorno (DD/MM/AAAA)", key="cad_dt_retorno_v")
-                    valor_liberado_v = st.number_input("Valor Liberado (R$)", min_value=0.0, step=0.01, format="%.2f", key="cad_valor_lib_v")
+                    data_saida_v = st.text_input("Data Saída (DD/MM/AAAA)", key=f"cad_dt_saida_v_{_vv}")
+                    data_retorno_v = st.text_input("Data Retorno (DD/MM/AAAA)", key=f"cad_dt_retorno_v_{_vv}")
+                    valor_liberado_v = st.number_input("Valor Liberado (R$)", min_value=0.0, step=0.01, format="%.2f", key=f"cad_valor_lib_v_{_vv}")
 
-                observacoes_v = st.text_area("Observações / Prestação de Conta", key="cad_obs_viagem")
+                observacoes_v = st.text_area("Observações / Prestação de Conta", key=f"cad_obs_viagem_{_vv}")
 
                 submitted_v = st.form_submit_button("💾 SALVAR VIAGEM", type="primary")
                 if submitted_v:
