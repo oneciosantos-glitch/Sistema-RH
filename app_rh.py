@@ -2757,8 +2757,10 @@ def restaurar_backup_zip(zip_file):
             st.error(f"❌ O ZIP foi lido, mas houve falha ao enviar para o Google Sheets: {e}")
     return arquivos_extraidos
 
-def lista_lojas():
-    return [
+# Lista inicial de lojas que ja vinha embutida no sistema. Agora ela serve
+# apenas como ponto de partida: as lojas de verdade ficam na aba Auxiliares e
+# podem ser cadastradas/excluidas pela tela "Lojas e Cargos".
+LOJAS_PADRAO = [
         "Assaí Atacadista Batista Campos",
         "Assaí Atacadista Almirante Barroso",
         "Assaí Atacadista Castanhal",
@@ -2787,8 +2789,46 @@ def lista_lojas():
         "Smart Fit Toequato Tapajós",
         "Self Fit Hiper DB Ponta Negra",
         "Self Fit Manaus Plaza Shopping",
-        "Self Fit Vieira Alves",
-    ]
+    "Self Fit Vieira Alves",
+]
+
+def _garantir_lojas_padrao():
+    """Na primeira vez, copia a lista inicial de lojas para a aba Auxiliares.
+
+    Sem isso, o sistema continuaria mostrando uma lista fixa e ignorando as
+    lojas cadastradas pelo usuario.
+    """
+    if st.session_state.get("_lojas_semeadas"):
+        return
+    st.session_state["_lojas_semeadas"] = True
+    try:
+        d = carregar_dados()
+        atuais = [str(l).strip() for l in d["Auxiliares"]["Loja"] if str(l).strip() != ""]
+        if atuais:
+            return  # ja existem lojas cadastradas, nada a fazer
+        d["Auxiliares"] = pd.concat(
+            [d["Auxiliares"], pd.DataFrame([{"Loja": l, "Cargo": ""} for l in LOJAS_PADRAO])],
+            ignore_index=True
+        )
+        salvar_dados(d)
+    except Exception:
+        pass
+
+def lista_lojas():
+    """Lojas cadastradas na aba Auxiliares + as que ja aparecem em algum cadastro."""
+    try:
+        d = carregar_dados()
+        registradas = [str(l).strip() for l in d["Auxiliares"]["Loja"] if str(l).strip() not in ("", "nan", "None")]
+        em_uso = [str(l).strip() for l in d["Base_Dados"]["Loja"] if str(l).strip() not in ("", "nan", "None")]
+        todas = sorted(set(registradas) | set(em_uso))
+        if todas:
+            return todas
+    except Exception:
+        pass
+    return list(LOJAS_PADRAO)
+
+def _lista_lojas_antiga():
+    return list(LOJAS_PADRAO)
 
 def lista_cargos():
     d = carregar_dados()
@@ -3176,6 +3216,14 @@ if "ferias_verificado" not in st.session_state:
 if "afastamentos_verificado" not in st.session_state:
     verificar_retorno_afastamentos_automatico()
     st.session_state["afastamentos_verificado"] = True
+
+# Garante que a lista de lojas exista na planilha Auxiliares (apenas 1x por sessao)
+if "lojas_padrao_ok" not in st.session_state:
+    try:
+        _garantir_lojas_padrao()
+    except Exception:
+        pass
+    st.session_state["lojas_padrao_ok"] = True
 
 # ⚠️ LINHA OBRIGATÓRIA: CRIA TODAS AS ABAS ANTES DE USÁ-LAS
 aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8, aba9, aba10, aba11, aba12 = st.tabs([
@@ -3896,17 +3944,19 @@ with aba7:
         st.markdown("**➕ Adicionar Loja**")
         nova_loja = st.text_input("Nova Loja")
         if st.button("➕ ADICIONAR LOJA", type="primary") and nova_loja.strip():
-            if not dados["Auxiliares"]["Loja"].str.strip().eq(nova_loja.strip()).any():
+            _lojas_atuais = dados["Auxiliares"]["Loja"].astype(str).str.strip().str.lower()
+            if not _lojas_atuais.eq(nova_loja.strip().lower()).any():
                 dados["Auxiliares"] = pd.concat([dados["Auxiliares"], pd.DataFrame([{"Loja": nova_loja.strip(), "Cargo": ""}])], ignore_index=True)
                 if not salvar_dados(dados):
                     st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
                     st.stop()
-                st.success("✅ Loja cadastrada!")
+                st.cache_data.clear()
+                st.success(f"✅ Loja '{nova_loja.strip()}' cadastrada! Ja pode ser escolhida no Cadastro, nas Diarias e nas Viagens.")
                 st.rerun()
             else: st.warning("⚠️ Já existe!")
         st.markdown("---")
         st.markdown("**🗑️ Excluir Loja**")
-        lojas_existentes = sorted([str(l).strip() for l in dados["Auxiliares"]["Loja"].unique() if str(l).strip() != ""])
+        lojas_existentes = sorted([str(l).strip() for l in dados["Auxiliares"]["Loja"].astype(str).unique() if str(l).strip() not in ("", "nan")])
         loja_sel_excluir = st.selectbox("Selecione a Loja", lojas_existentes if lojas_existentes else ["Nenhuma"])
         if st.button("🗑️ EXCLUIR LOJA", type="secondary") and loja_sel_excluir != "Nenhuma":
             # Verifica se tem funcionários vinculados
@@ -3918,7 +3968,8 @@ with aba7:
                 if not salvar_dados(dados):
                     st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
                     st.stop()
-                st.success(f"✅ Loja '{loja_sel_excluir}' excluída!")
+                st.cache_data.clear()
+                st.success(f"✅ Loja '{loja_sel_excluir}' excluida!")
                 st.rerun()
     with col2:
         st.markdown("**➕ Adicionar Cargo**")
@@ -3929,7 +3980,8 @@ with aba7:
                 if not salvar_dados(dados):
                     st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
                     st.stop()
-                st.success("✅ Cargo cadastrado!")
+                st.cache_data.clear()
+                st.success(f"✅ Cargo '{novo_cargo.strip()}' cadastrado!")
                 st.rerun()
             else: st.warning("⚠️ Já existe!")
         st.markdown("---")
@@ -3945,7 +3997,8 @@ with aba7:
                 if not salvar_dados(dados):
                     st.error("❌ Não foi possível salvar os dados. Verifique se o arquivo Excel não está aberto.")
                     st.stop()
-                st.success(f"✅ Cargo '{cargo_sel_excluir}' excluído!")
+                st.cache_data.clear()
+                st.success(f"✅ Cargo '{cargo_sel_excluir}' excluido!")
                 st.rerun()
 
 
