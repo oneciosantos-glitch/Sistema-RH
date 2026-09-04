@@ -1793,8 +1793,12 @@ SEMANAS = ["Todas", "1º Semana", "2º Semana", "3º Semana", "4º Semana"]
 SITUACOES_DIARIA = ["Todas", "FALTA ENVIAR AO FINANCEIRO", "ENVIADO/PENDENTE", "PAGO"]
 ANOS = [str(a) for a in range(2020, datetime.now().year + 2)]
 
+# Situacoes possiveis. "Aviso Previo", "Licenca" e "Afastamento" faltavam na
+# lista: o sistema calculava essas situacoes, mas como nao existiam aqui a tela
+# voltava para "Ativo" e parecia que o calculo nao tinha funcionado.
 SITUACOES = [
-    "Ativo", "Pré-cadastro", "Abandono", "Desistente", "Término de Contrato",
+    "Ativo", "Pré-cadastro", "Aviso Prévio", "Licença", "Afastamento",
+    "Abandono", "Desistente", "Término de Contrato",
     "Demitido S/JC", "Demitido C/JC", "Pedido de Conta",
     "Rescisão Indireta", "Férias", "Doença", "Acidente", "Maternidade"
 ]
@@ -2838,122 +2842,162 @@ def lista_cargos():
     ))
     return todas if todas else ["Sem Cargo"]
 
+def _data_evento(texto):
+    """Le uma data digitada de varias formas e devolve um date.
+
+    Aceita 05/03/2026, 5/3/2026, 05-03-2026, 05.03.2026, 05032026, 05/03/26 e
+    tambem o formato 2026-03-05. Devolve None quando o texto nao e uma data.
+    """
+    if texto is None:
+        return None
+    s = str(texto).strip()
+    if s == "" or s.lower() in ("nan", "none", "nat"):
+        return None
+    s = s.split(" ")[0].strip()
+    s = s.replace(".", "/").replace("-", "/")
+    if re.match(r"^\d{8}$", s):  # 05032026
+        s = f"{s[0:2]}/{s[2:4]}/{s[4:8]}"
+    if re.match(r"^\d{4}/\d{1,2}/\d{1,2}$", s):
+        try:
+            return datetime.strptime(s, "%Y/%m/%d").date()
+        except Exception:
+            return None
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})$", s)
+    if not m:
+        return None
+    dia, mes, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if ano < 100:
+        ano += 2000
+    try:
+        return date(ano, mes, dia)
+    except Exception:
+        return None
+
+
+def _dias_evento(texto):
+    """Le a quantidade de dias digitada e devolve um numero inteiro.
+
+    Aceita 30, 30.0, "30 dias" e espacos sobrando. Devolve None se nao houver
+    um numero utilizavel (ou se for zero/negativo).
+    """
+    if texto is None:
+        return None
+    s = str(texto).strip().lower().replace(",", ".")
+    if s in ("", "nan", "none"):
+        return None
+    m = re.search(r"\d+(\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        n = int(float(m.group(0)))
+    except Exception:
+        return None
+    return n if n > 0 else None
+
+
 def calcular_e_atualizar(form):
-    hoje = datetime.now().date()
+    """Calcula as datas finais dos eventos trabalhistas e ajusta a situacao.
 
-    # Aviso Prévio
-    if form.get("dt_aviso") and form.get("dias_aviso") and str(form["dias_aviso"]).isdigit():
-        try:
-            dt = datetime.strptime(form["dt_aviso"], "%d/%m/%Y")
-            form["termino_aviso"] = (dt + timedelta(days=int(form["dias_aviso"]) - 1)).strftime("%d/%m/%Y")
-            termino_aviso_date = datetime.strptime(form["termino_aviso"], "%d/%m/%Y").date()
-            # Se o aviso prévio venceu e não tem outro evento, muda para Demitido S/JC
-            if termino_aviso_date < hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip()
-            ]):
-                form["situacao"] = "Demitido S/JC"
-            elif termino_aviso_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip()
-            ]):
-                form["situacao"] = "Aviso Prévio"
-        except: form["termino_aviso"] = ""
-    else: form["termino_aviso"] = ""
+    Antes, qualquer data fora do padrao dd/mm/aaaa ou uma quantidade de dias
+    gravada como "30.0" faziam o calculo falhar em silencio (o campo de
+    termino ficava vazio e ninguem sabia por que). Agora as datas e os dias sao
+    interpretados com tolerancia e os problemas voltam em form["_avisos"].
+    """
+    hoje = date.today()
+    avisos = []
 
-    # Licença
-    if form.get("dt_lic") and form.get("dias_lic") and str(form["dias_lic"]).isdigit():
-        try:
-            dt = datetime.strptime(form["dt_lic"], "%d/%m/%Y")
-            form["termino_lic"] = (dt + timedelta(days=int(form["dias_lic"]) - 1)).strftime("%d/%m/%Y")
-            termino_lic_date = datetime.strptime(form["termino_lic"], "%d/%m/%Y").date()
-            # Se a licença venceu e não tem outro evento, volta para Ativo
-            if termino_lic_date < hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_fer","").strip(),
-                form.get("dt_af","").strip()
-            ]):
-                form["situacao"] = "Ativo"
-            elif termino_lic_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_fer","").strip(),
-                form.get("dt_af","").strip()
-            ]):
-                form["situacao"] = "Licença"
-        except: form["termino_lic"] = ""
-    else: form["termino_lic"] = ""
+    def _txt(chave):
+        return str(form.get(chave, "") or "").strip()
 
-    # Férias
-    if form.get("dt_fer") and form.get("dias_fer") and str(form["dias_fer"]).isdigit():
-        try:
-            dt = datetime.strptime(form["dt_fer"], "%d/%m/%Y")
-            form["retorno_fer"] = (dt + timedelta(days=int(form["dias_fer"]) - 1)).strftime("%d/%m/%Y")
-            retorno_date = datetime.strptime(form["retorno_fer"], "%d/%m/%Y").date()
-            if retorno_date < hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
-                form.get("dt_af","").strip()
-            ]):
-                form["situacao"] = "Ativo"
-            elif retorno_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
-                form.get("dt_af","").strip()
-            ]):
-                form["situacao"] = "Férias"
-        except:
-            form["retorno_fer"] = ""
+    campos_data = {
+        "dt_aviso": "Data do Aviso Previo",
+        "dt_lic": "Data da Licenca",
+        "dt_fer": "Inicio das Ferias",
+        "dt_af": "Data do Afastamento",
+        "dt_pedido": "Data do Pedido de Conta",
+        "dt_rescisao": "Data da Rescisao",
+        "dt_abandono": "Data do Abandono",
+        "dt_desistencia": "Data da Desistencia",
+        "dt_termino_cont": "Data de Termino de Contrato",
+    }
+    datas = {}
+    for chave, rotulo in campos_data.items():
+        bruto = _txt(chave)
+        if bruto == "":
+            datas[chave] = None
+            form[chave] = ""
+            continue
+        d = _data_evento(bruto)
+        datas[chave] = d
+        if d is None:
+            avisos.append(
+                f"{rotulo}: '{bruto}' nao foi entendido como data. Escreva dia/mes/ano, por exemplo 05/03/2026."
+            )
+        else:
+            form[chave] = d.strftime("%d/%m/%Y")
+
+    def _calcular(chave_data, chave_dias, chave_saida, rotulo):
+        d = datas.get(chave_data)
+        dias_bruto = _txt(chave_dias)
+        dias = _dias_evento(dias_bruto)
+        if dias is not None:
+            form[chave_dias] = str(dias)
+        elif dias_bruto == "":
+            form[chave_dias] = ""
+        if d is None:
+            form[chave_saida] = ""
+            return None
+        if dias is None:
+            form[chave_saida] = ""
+            if dias_bruto == "":
+                avisos.append(f"{rotulo}: informe a quantidade de dias para o sistema calcular a data final.")
+            else:
+                avisos.append(f"{rotulo}: '{dias_bruto}' nao e uma quantidade de dias valida.")
+            return None
+        fim = d + timedelta(days=dias - 1)
+        form[chave_saida] = fim.strftime("%d/%m/%Y")
+        return fim
+
+    fim_aviso = _calcular("dt_aviso", "dias_aviso", "termino_aviso", "Aviso Previo")
+    fim_lic = _calcular("dt_lic", "dias_lic", "termino_lic", "Licenca")
+    fim_fer = _calcular("dt_fer", "dias_fer", "retorno_fer", "Ferias")
+    fim_af = _calcular("dt_af", "dias_af", "retorno_af", "Afastamento")
+
+    # 1) Eventos definitivos mandam na situacao
+    situacao_definitiva = ""
+    for chave, nome in (
+        ("dt_termino_cont", "Término de Contrato"),
+        ("dt_pedido", "Pedido de Conta"),
+        ("dt_rescisao", "Rescisão Indireta"),
+        ("dt_abandono", "Abandono"),
+        ("dt_desistencia", "Desistente"),
+    ):
+        if _txt(chave):
+            situacao_definitiva = nome
+            break
+
+    if situacao_definitiva:
+        form["situacao"] = situacao_definitiva
     else:
-        form["retorno_fer"] = ""
+        tipo_af = str(form.get("tipo_af", "Nenhum") or "Nenhum").strip()
+        eventos = [
+            (fim_aviso, "Aviso Prévio"),
+            (fim_lic, "Licença"),
+            (fim_fer, "Férias"),
+            (fim_af, tipo_af if tipo_af not in ("", "Nenhum") else "Afastamento"),
+        ]
+        em_andamento = [(f, s) for f, s in eventos if f is not None and f >= hoje]
+        if em_andamento:
+            # se houver mais de um, vale o que termina primeiro
+            em_andamento.sort(key=lambda x: x[0])
+            form["situacao"] = em_andamento[0][1]
+        elif fim_aviso is not None and fim_aviso < hoje:
+            # aviso previo cumprido = desligamento sem justa causa
+            form["situacao"] = "Demitido S/JC"
+        elif any(f is not None for f, _ in eventos):
+            form["situacao"] = "Ativo"
 
-    # Afastamento
-    if form.get("dt_af") and form.get("dias_af") and str(form["dias_af"]).isdigit():
-        try:
-            dt = datetime.strptime(form["dt_af"], "%d/%m/%Y")
-            form["retorno_af"] = (dt + timedelta(days=int(form["dias_af"]) - 1)).strftime("%d/%m/%Y")
-            retorno_af_date = datetime.strptime(form["retorno_af"], "%d/%m/%Y").date()
-            tipo_af = form.get("tipo_af", "Nenhum")
-            if tipo_af != "Nenhum" and retorno_af_date < hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
-                form.get("dt_fer","").strip()
-            ]):
-                form["situacao"] = "Ativo"
-            elif tipo_af != "Nenhum" and retorno_af_date >= hoje and not any([
-                form.get("dt_pedido","").strip(), form.get("dt_rescisao","").strip(),
-                form.get("dt_abandono","").strip(), form.get("dt_desistencia","").strip(),
-                form.get("dt_termino_cont","").strip(),
-                form.get("dt_aviso","").strip(), form.get("dt_lic","").strip(),
-                form.get("dt_fer","").strip()
-            ]):
-                form["situacao"] = tipo_af
-        except: form["retorno_af"] = ""
-    else: form["retorno_af"] = ""
-
-    # Eventos definitivos (mantêm prioridade)
-    if form.get("dt_termino_cont") and form.get("dt_termino_cont").strip():
-        form["situacao"] = "Término de Contrato"
-    elif form.get("dt_pedido") and form.get("dt_pedido").strip():
-        form["situacao"] = "Pedido de Conta"
-    elif form.get("dt_rescisao") and form.get("dt_rescisao").strip():
-        form["situacao"] = "Rescisão Indireta"
-    elif form.get("dt_abandono") and form.get("dt_abandono").strip():
-        form["situacao"] = "Abandono"
-    elif form.get("dt_desistencia") and form.get("dt_desistencia").strip():
-        form["situacao"] = "Desistente"
-
+    form["_avisos"] = avisos
     return form
 
 def add_historico_auto(mat, nome, acao, dados_completos):
@@ -3049,8 +3093,8 @@ def verificar_retorno_ferias_automatico():
             if not retorno_str:
                 continue
             try:
-                retorno_date = datetime.strptime(retorno_str, "%d/%m/%Y").date()
-                if retorno_date < hoje:
+                retorno_date = _data_evento(retorno_str)
+                if retorno_date is not None and retorno_date < hoje:
                     # Já passou a data de retorno, volta para Ativo
                     base.at[idx, "Situacao"] = "Ativo"
                     alterados.append({
@@ -3092,7 +3136,7 @@ def verificar_retorno_afastamentos_automatico():
         dados = carregar_dados()
         hoje = datetime.now().date()
         base = dados["Base_Dados"]
-        situacoes_afastamento = ["Doença", "Acidente", "Maternidade"]
+        situacoes_afastamento = ["Doença", "Acidente", "Maternidade", "Afastamento"]
         alterados = []
         for idx, row in base.iterrows():
             if str(row.get("Situacao", "")).strip() not in situacoes_afastamento:
@@ -3101,8 +3145,8 @@ def verificar_retorno_afastamentos_automatico():
             if not retorno_str:
                 continue
             try:
-                retorno_date = datetime.strptime(retorno_str, "%d/%m/%Y").date()
-                if retorno_date < hoje:
+                retorno_date = _data_evento(retorno_str)
+                if retorno_date is not None and retorno_date < hoje:
                     # Já passou a data de retorno, volta para Ativo
                     base.at[idx, "Situacao"] = "Ativo"
                     alterados.append({
@@ -3375,44 +3419,59 @@ with aba1:
 
     val_campo = lambda nome: reg.iloc[0][nome] if not reg.empty else ""
 
-    prazos_exp = []
-    if not reg.empty and val_campo("Admissao").strip():
-        try:
-            dt_adm = datetime.strptime(val_campo("Admissao"), "%d/%m/%Y")
-            hoje = datetime.now()
-            dias_corridos = (hoje - dt_adm).days
-            for prazo in [30, 45, 60, 90]:
-                rest = prazo - dias_corridos
-                if rest > 0:
-                    status = f"Faltam {rest} dias"
-                elif rest == 0:
-                    status = "HOJE"
-                else:
-                    status = f"Vencido há {abs(rest)} dias"
-                prazos_exp.append([f"{prazo} dias", (dt_adm + timedelta(days=prazo - 1)).strftime("%d/%m/%Y"), status])
-        except:
-            pass
+    # Identidade dos campos: muda ao limpar o formulario ou trocar de colaborador
+    _kf = f"{_v}_{mat_sel or 'novo'}"
 
-    if not reg.empty:
-        temp = {
-            "dt_aviso": val_campo("DataAvisoPrevio"), "dias_aviso": val_campo("DiasAvisoPrevio"),
-            "dt_lic": val_campo("DataLicenca"), "dias_lic": val_campo("DiasLicenca"),
-            "dt_fer": val_campo("DataFeriasInicio"), "dias_fer": val_campo("DiasFerias"),
-            "dt_af": val_campo("DataAfastamento"), "dias_af": val_campo("DiasAfastamento"),
-            "dt_pedido": val_campo("DataPedidoConta"), "dt_rescisao": val_campo("DataRescisao"),
-            "dt_abandono": val_campo("DataAbandono"), "dt_termino_cont": val_campo("DataTerminoContrato"),
-            "situacao": val_campo("Situacao"), "caminho_foto": val_campo("CaminhoFoto")
-        }
-        temp = calcular_e_atualizar(temp)
-        term_aviso_val, term_lic_val, ret_fer_val, ret_af_val, situacao_val, caminho_foto_atual = temp["termino_aviso"], temp["termino_lic"], temp["retorno_fer"], temp["retorno_af"], temp["situacao"], temp["caminho_foto"]
-    else:
-        term_aviso_val = term_lic_val = ret_fer_val = ret_af_val = caminho_foto_atual = ""
-        situacao_val = "Ativo"
+    def _valor_atual(sufixo, coluna):
+        """Pega o que a pessoa digitou na tela; se ainda nao digitou, o que esta salvo."""
+        chave = f"{sufixo}_{_kf}"
+        if chave in st.session_state:
+            return str(st.session_state.get(chave) or "").strip()
+        return str(val_campo(coluna) or "").strip()
+
+    prazos_exp = []
+    _adm_txt = _valor_atual("adm", "Admissao")
+    _dt_adm = _data_evento(_adm_txt)
+    if _dt_adm is not None:
+        hoje_exp = date.today()
+        dias_corridos = (hoje_exp - _dt_adm).days
+        for prazo in [30, 45, 60, 90]:
+            rest = prazo - dias_corridos
+            if rest > 0:
+                status = f"Faltam {rest} dias"
+            elif rest == 0:
+                status = "HOJE"
+            else:
+                status = f"Vencido há {abs(rest)} dias"
+            prazos_exp.append([f"{prazo} dias", (_dt_adm + timedelta(days=prazo - 1)).strftime("%d/%m/%Y"), status])
+
+    # CORRECAO: o calculo dos eventos trabalhistas agora usa os valores que estao
+    # na tela (e nao apenas o que ja foi salvo), por isso ele responde assim que a
+    # pessoa clica em calcular ou salvar.
+    temp = calcular_e_atualizar({
+        "dt_aviso": _valor_atual("dtav", "DataAvisoPrevio"), "dias_aviso": _valor_atual("diav", "DiasAvisoPrevio"),
+        "dt_lic": _valor_atual("dtlic", "DataLicenca"), "dias_lic": _valor_atual("dilic", "DiasLicenca"),
+        "dt_fer": _valor_atual("dtfer", "DataFeriasInicio"), "dias_fer": _valor_atual("difer", "DiasFerias"),
+        "dt_af": _valor_atual("dtaf", "DataAfastamento"), "dias_af": _valor_atual("diaf", "DiasAfastamento"),
+        "tipo_af": st.session_state.get(f"tpaf_{_kf}", "Nenhum"),
+        "dt_pedido": _valor_atual("dtped", "DataPedidoConta"), "dt_rescisao": _valor_atual("dtres", "DataRescisao"),
+        "dt_abandono": _valor_atual("dtab", "DataAbandono"),
+        "dt_desistencia": _valor_atual("dtdes", "DataDesistencia"),
+        "dt_termino_cont": _valor_atual("dttc", "DataTerminoContrato"),
+        "situacao": str(val_campo("Situacao") or "").strip() or "Ativo",
+        "caminho_foto": val_campo("CaminhoFoto") if not reg.empty else "",
+    })
+    term_aviso_val = temp["termino_aviso"]
+    term_lic_val = temp["termino_lic"]
+    ret_fer_val = temp["retorno_fer"]
+    ret_af_val = temp["retorno_af"]
+    situacao_val = temp["situacao"] or "Ativo"
+    caminho_foto_atual = temp["caminho_foto"]
+    avisos_calculo = temp.get("_avisos", [])
 
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary",
                  on_click=_limpar_formulario_cadastro):
         st.rerun()
-    _kf = f"{_v}_{mat_sel or 'novo'}"  # identidade dos campos: muda ao limpar ou trocar colaborador
     with st.form("form_cadastro", clear_on_submit=False):
         st.subheader("Dados Básicos")
         col_foto, col_dados = st.columns([1,3])
@@ -3458,7 +3517,8 @@ with aba1:
                 salario = st.text_input("Salário", value=val_campo("Salario"), key=f"sal_{_kf}")
 
                 idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
-                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sit_{_kf}")
+                # a chave inclui a situacao calculada para o campo se atualizar sozinho
+                situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sit_{_kf}_{situacao_val}")
 
         if prazos_exp:
             st.markdown("---")
@@ -3472,30 +3532,40 @@ with aba1:
 
         st.markdown("---")
         st.subheader("Eventos Trabalhistas")
+        st.caption("Digite a data e a quantidade de dias. Clique em CALCULAR PRAZOS para ver as datas finais sem salvar.")
+        if avisos_calculo:
+            st.warning("⚠️ Verifique os eventos trabalhistas:\n\n- " + "\n- ".join(avisos_calculo))
         av1,av2,av3 = st.columns(3)
         with av1:
             st.markdown("**Aviso Prévio**")
             dt_aviso = st.text_input("Data Aviso", value=val_campo("DataAvisoPrevio"), key=f"dtav_{_kf}")
             dias_aviso = st.text_input("Dias Aviso", value=val_campo("DiasAvisoPrevio"), key=f"diav_{_kf}")
-            term_aviso = st.text_input("Término Aviso", value=term_aviso_val, disabled=True, key=f"tmav_{_kf}")
+            term_aviso = term_aviso_val
+            st.markdown(f"Término do Aviso: **{term_aviso_val or '— (informe data e dias)'}**")
         with av2:
             st.markdown("**Licença**")
             dt_lic = st.text_input("Data Licença", value=val_campo("DataLicenca"), key=f"dtlic_{_kf}")
             dias_lic = st.text_input("Dias Licença", value=val_campo("DiasLicenca"), key=f"dilic_{_kf}")
-            term_lic = st.text_input("Término Licença", value=term_lic_val, disabled=True, key=f"tmlic_{_kf}")
+            term_lic = term_lic_val
+            st.markdown(f"Término da Licença: **{term_lic_val or '— (informe data e dias)'}**")
         with av3:
             st.markdown("**Férias**")
             dt_fer = st.text_input("Início Férias", value=val_campo("DataFeriasInicio"), key=f"dtfer_{_kf}")
             dias_fer = st.text_input("Dias Férias", value=val_campo("DiasFerias"), key=f"difer_{_kf}")
-            ret_fer = st.text_input("Retorno Férias", value=ret_fer_val, disabled=True, key=f"rtfer_{_kf}")
+            ret_fer = ret_fer_val
+            st.markdown(f"Retorno das Férias: **{ret_fer_val or '— (informe data e dias)'}**")
 
         af1,af2 = st.columns(2)
         with af1:
             st.markdown("**Afastamento**")
             dt_af = st.text_input("Data Afastamento", value=val_campo("DataAfastamento"), key=f"dtaf_{_kf}")
             dias_af = st.text_input("Dias Afastamento", value=val_campo("DiasAfastamento"), key=f"diaf_{_kf}")
-            ret_af = st.text_input("Retorno Afastamento", value=ret_af_val, disabled=True, key=f"rtaf_{_kf}")
-            tipo_af = st.selectbox("Tipo Afastamento", ["Nenhum", "Doença", "Acidente", "Maternidade"], key=f"tpaf_{_kf}")
+            ret_af = ret_af_val
+            st.markdown(f"Retorno do Afastamento: **{ret_af_val or '— (informe data e dias)'}**")
+            _tipos_af = ["Nenhum", "Doença", "Acidente", "Maternidade"]
+            _sit_salva = str(val_campo("Situacao") or "").strip()
+            _idx_af = _tipos_af.index(_sit_salva) if _sit_salva in _tipos_af else 0
+            tipo_af = st.selectbox("Tipo Afastamento", _tipos_af, index=_idx_af, key=f"tpaf_{_kf}")
         with af2:
             st.markdown("**Desligamento**")
             dt_ped = st.text_input("Data Pedido Conta", value=val_campo("DataPedidoConta"), key=f"dtped_{_kf}")
@@ -3504,7 +3574,14 @@ with aba1:
             dt_desist = st.text_input("Data Desistência", value=val_campo("DataDesistencia"), key=f"dtdes_{_kf}")
             dt_termino_cont = st.text_input("📅 Data Término de Contrato", value=val_campo("DataTerminoContrato"), key=f"dttc_{_kf}")
 
-        btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
+        col_calc, col_salvar = st.columns([1, 2])
+        with col_calc:
+            btn_calcular = st.form_submit_button("🧮 CALCULAR PRAZOS", use_container_width=True)
+        with col_salvar:
+            btn_salvar = st.form_submit_button("💾 SALVAR CADASTRO", type="primary", use_container_width=True)
+        if btn_calcular and not btn_salvar:
+            # apenas recarrega a tela: os prazos sao recalculados com o que foi digitado
+            st.rerun()
         if btn_salvar:
             try:
                 matricula_tratada = str(matricula).strip()
@@ -3535,6 +3612,13 @@ with aba1:
                     "dt_pedido": dt_ped, "dt_rescisao": dt_res, "dt_abandono": dt_aband,
                     "dt_desistencia": dt_desist, "dt_termino_cont": dt_termino_cont
                 })
+                # padroniza nascimento e admissao no formato dd/mm/aaaa
+                for _c in ("nasc", "adm"):
+                    _d = _data_evento(dados_form.get(_c, ""))
+                    if _d is not None:
+                        dados_form[_c] = _d.strftime("%d/%m/%Y")
+                if dados_form.get("_avisos"):
+                    st.warning("⚠️ Alguns prazos não pôderam ser calculados:\n\n- " + "\n- ".join(dados_form["_avisos"]))
                 registro_final = {
                     "Matricula": dados_form["mat"], "Nome": dados_form["nome"], "CPF": dados_form["cpf"],
                     "RG": dados_form["rg"], "PIS": dados_form["pis"], "Nascimento": dados_form["nasc"],
@@ -3761,7 +3845,10 @@ with aba3:
     for _, func in dados["Base_Dados"].iterrows():
         if func["Situacao"] not in ["Ativo","Pré-cadastro"]: continue
         try:
-            dt_adm = datetime.strptime(str(func["Admissao"]).strip(), "%d/%m/%Y")
+            _d_adm = _data_evento(func["Admissao"])
+            if _d_adm is None:
+                continue
+            dt_adm = datetime.combine(_d_adm, datetime.min.time())
             dias = (hoje - dt_adm).days
             for p in [30,45,60,90]:
                 if 0 <= p - dias <=10:
@@ -3778,7 +3865,10 @@ with aba3:
         if f["Situacao"] not in ["Ativo","Pré-cadastro","Férias"]: continue
         if filtro_loja != "Todas" and str(f["Loja"]).strip() != filtro_loja.strip(): continue
         try:
-            dt = datetime.strptime(str(f["Admissao"]).strip(), "%d/%m/%Y")
+            _d_ad = _data_evento(f["Admissao"])
+            if _d_ad is None:
+                continue
+            dt = datetime.combine(_d_ad, datetime.min.time())
             if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
             meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
             # Mostra quem está no período 20-24 meses
@@ -3793,8 +3883,10 @@ with aba3:
                     ret_fer = str(f.get("DataRetornoFerias","")).strip()
                     if dt_fer and ret_fer:
                         try:
-                            ret_date = datetime.strptime(ret_fer, "%d/%m/%Y").date()
-                            if ret_date >= hoje.date():
+                            ret_date = _data_evento(ret_fer)
+                            if ret_date is None:
+                                status_fer = "🟢 Já Tirou"
+                            elif ret_date >= hoje.date():
                                 status_fer = "🟡 Em Férias"
                             else:
                                 status_fer = "🟢 Já Tirou"
