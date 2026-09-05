@@ -657,11 +657,14 @@ def _salvar_compras_automatico():
         try:
             _salvar_compras_gs(sols, ents)
             _registrar_log("SALVOU COMPRAS", f"{len(sols)} solicitacoes / {len(ents)} entregas")
+            espelhar_json("dados_compras.json", {"solicitacoes": sols, "entregas": ents})
         except Exception as e:
             st.error(f"❌ Não foi possível salvar as compras no Google Sheets: {e}")
         return
     # Sempre salva localmente para garantir persistência
     _salvar_compras_local(sols, ents)
+    espelhar_json("dados_compras.json", {"solicitacoes": sols, "entregas": ents})
+    espelhar_anexos()
     if not GS_ENABLED or not GS_ID_COMPRAS:
         return
     try:
@@ -1447,6 +1450,238 @@ os.makedirs(PASTA_FOTOS, exist_ok=True)
 os.makedirs(PASTA_COMPROVANTES, exist_ok=True)
 os.makedirs(PASTA_BACKUPS, exist_ok=True)
 
+# ------------------------------------------------------------------
+# PASTA ESPELHO (COPIA DE SEGURANCA AUTOMATICA - ex.: particao D:)
+#
+# Tudo o que o sistema grava (planilhas, JSON de compras, registro de
+# alteracoes, documentos das lojas, documentos e fotos dos funcionarios e
+# comprovantes) e copiado na hora para esta pasta. Se a pasta interna do
+# sistema for apagada/reiniciada, o sistema traz os dados de volta daqui
+# automaticamente ao abrir.
+#
+# Como escolher a pasta (na ordem):
+#   1) variavel de ambiente RH_ESPELHO_DIR
+#   2) segredo [dados] pasta_espelho = "D:/SISTEMA_RH_DADOS"
+#   3) automatico: D:\\SISTEMA_RH_DADOS (ou o disco D montado no Linux/Mac)
+# ------------------------------------------------------------------
+NOMES_ARQUIVOS_DADOS = [
+    "dados_funcionarios.xlsx",
+    "controle_diarias.xlsx",
+    "registro_viagens.xlsx",
+    "dados_compras.json",
+    "Registro_Alteracoes.csv",
+]
+NOMES_PASTAS_ANEXOS = [
+    "Documentos_Lojas",
+    "Documentos_Funcionarios",
+    "Fotos_Funcionarios",
+    "Comprovantes_Diarias",
+]
+
+
+def _pasta_gravavel(caminho):
+    try:
+        os.makedirs(caminho, exist_ok=True)
+        teste = os.path.join(caminho, "_teste_escrita.tmp")
+        with open(teste, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(teste)
+        return True
+    except Exception:
+        return False
+
+
+def _descobrir_pasta_espelho():
+    destino = os.environ.get("RH_ESPELHO_DIR", "").strip()
+    if not destino:
+        try:
+            destino = str(st.secrets.get("dados", {}).get("pasta_espelho", "")).strip()
+        except Exception:
+            destino = ""
+    if destino.lower() in ("nao", "não", "off", "false", "desligado"):
+        return ""
+    if not destino:
+        # tentativa automatica de achar o disco D
+        for raiz in ("D:\\", "D:/", "/mnt/d", "/media/d", "/Volumes/D"):
+            try:
+                if os.path.isdir(raiz):
+                    candidato = os.path.join(raiz, "SISTEMA_RH_DADOS")
+                    if _pasta_gravavel(candidato):
+                        destino = candidato
+                        break
+            except Exception:
+                continue
+    if not destino or not _pasta_gravavel(destino):
+        return ""
+    return os.path.abspath(destino)
+
+
+ESPELHO_DIR = _descobrir_pasta_espelho()
+ESPELHO_ATIVO = bool(ESPELHO_DIR) and os.path.abspath(ESPELHO_DIR) != os.path.abspath(DATA_DIR)
+if ESPELHO_ATIVO:
+    for _sub in NOMES_PASTAS_ANEXOS + ["Copias_Diarias"]:
+        try:
+            os.makedirs(os.path.join(ESPELHO_DIR, _sub), exist_ok=True)
+        except Exception:
+            pass
+
+
+def _copiar_arquivo(origem, destino):
+    """Copia o arquivo somente quando ele mudou. Devolve True se copiou."""
+    try:
+        if not os.path.exists(origem) or os.path.getsize(origem) == 0:
+            return False
+        if os.path.exists(destino):
+            o = os.stat(origem)
+            d = os.stat(destino)
+            if o.st_size == d.st_size and int(o.st_mtime) <= int(d.st_mtime):
+                return False
+        pasta = os.path.dirname(destino)
+        if pasta:
+            os.makedirs(pasta, exist_ok=True)
+        shutil.copy2(origem, destino)
+        return True
+    except Exception:
+        return False
+
+
+def espelhar_anexos():
+    """Copia todos os anexos (documentos, fotos e comprovantes) para o espelho."""
+    if not ESPELHO_ATIVO:
+        return 0
+    copiados = 0
+    for pasta in (PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES):
+        if not os.path.isdir(pasta):
+            continue
+        for raiz, _dirs, arquivos in os.walk(pasta):
+            for nome in arquivos:
+                origem = os.path.join(raiz, nome)
+                try:
+                    rel = os.path.relpath(origem, DATA_DIR)
+                except Exception:
+                    continue
+                if _copiar_arquivo(origem, os.path.join(ESPELHO_DIR, rel)):
+                    copiados += 1
+    return copiados
+
+
+def _marcar_data_copia():
+    try:
+        with open(os.path.join(ESPELHO_DIR, "ULTIMA_COPIA.txt"), "w", encoding="utf-8") as f:
+            f.write(
+                "Copia de seguranca do SISTEMA RH\n"
+                f"Ultima atualizacao: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+                "Esta pasta e atualizada automaticamente a cada salvamento.\n"
+            )
+    except Exception:
+        pass
+
+
+def espelhar_tudo(mostrar_aviso=False):
+    """Copia planilhas/JSON locais + todos os anexos para a pasta espelho."""
+    if not ESPELHO_ATIVO:
+        return 0
+    copiados = 0
+    for nome in NOMES_ARQUIVOS_DADOS:
+        if _copiar_arquivo(os.path.join(DATA_DIR, nome), os.path.join(ESPELHO_DIR, nome)):
+            copiados += 1
+    copiados += espelhar_anexos()
+    _marcar_data_copia()
+    _copia_do_dia()
+    if mostrar_aviso:
+        st.success(f"✅ Cópia de segurança atualizada ({copiados} arquivo(s)) em: {ESPELHO_DIR}")
+    return copiados
+
+
+def espelhar_planilha(nome_arquivo, abas):
+    """Grava no espelho uma planilha com o conteudo atual (serve tambem no modo nuvem)."""
+    if not ESPELHO_ATIVO:
+        return False
+    try:
+        caminho = os.path.join(ESPELHO_DIR, nome_arquivo)
+        # o arquivo temporario precisa terminar em .xlsx, senao o pandas recusa
+        temporario = caminho.replace(".xlsx", "_temp.xlsx")
+        with pd.ExcelWriter(temporario, engine="openpyxl") as w:
+            for aba, df in abas.items():
+                if isinstance(df, pd.DataFrame):
+                    df.to_excel(w, sheet_name=str(aba)[:31], index=False)
+        os.replace(temporario, caminho)
+        _marcar_data_copia()
+        return True
+    except Exception:
+        return False
+
+
+def espelhar_json(nome_arquivo, conteudo):
+    """Grava no espelho um arquivo JSON com o conteudo atual."""
+    if not ESPELHO_ATIVO:
+        return False
+    try:
+        caminho = os.path.join(ESPELHO_DIR, nome_arquivo)
+        temporario = caminho + ".tmp"
+        with open(temporario, "w", encoding="utf-8") as f:
+            json.dump(conteudo, f, ensure_ascii=False, indent=2)
+        os.replace(temporario, caminho)
+        _marcar_data_copia()
+        return True
+    except Exception:
+        return False
+
+
+def _copia_do_dia():
+    """Guarda uma copia datada por dia, para poder voltar no tempo se precisar."""
+    if not ESPELHO_ATIVO:
+        return
+    try:
+        pasta_dia = os.path.join(ESPELHO_DIR, "Copias_Diarias", datetime.now().strftime("%Y-%m-%d"))
+        os.makedirs(pasta_dia, exist_ok=True)
+        for nome in NOMES_ARQUIVOS_DADOS:
+            origem = os.path.join(ESPELHO_DIR, nome)
+            destino = os.path.join(pasta_dia, nome)
+            if os.path.exists(origem) and not os.path.exists(destino):
+                shutil.copy2(origem, destino)
+        # mantem no maximo 60 dias de copias
+        raiz = os.path.join(ESPELHO_DIR, "Copias_Diarias")
+        dias = sorted([d for d in os.listdir(raiz) if os.path.isdir(os.path.join(raiz, d))])
+        for velho in dias[:-60]:
+            shutil.rmtree(os.path.join(raiz, velho), ignore_errors=True)
+    except Exception:
+        pass
+
+
+def restaurar_do_espelho():
+    """Traz de volta o que faltar na pasta interna, usando a copia do espelho.
+
+    So substitui o que esta faltando ou vazio - nunca sobrescreve dado bom.
+    """
+    if not ESPELHO_ATIVO:
+        return []
+    voltaram = []
+    if not GS_ONLY:
+        for nome in NOMES_ARQUIVOS_DADOS:
+            origem = os.path.join(ESPELHO_DIR, nome)
+            destino = os.path.join(DATA_DIR, nome)
+            if not os.path.exists(origem) or os.path.getsize(origem) == 0:
+                continue
+            if os.path.exists(destino) and os.path.getsize(destino) > 0:
+                continue
+            if _copiar_arquivo(origem, destino):
+                voltaram.append(nome)
+    for sub in NOMES_PASTAS_ANEXOS:
+        pasta_esp = os.path.join(ESPELHO_DIR, sub)
+        if not os.path.isdir(pasta_esp):
+            continue
+        for raiz, _dirs, arquivos in os.walk(pasta_esp):
+            for nome in arquivos:
+                origem = os.path.join(raiz, nome)
+                rel = os.path.relpath(origem, ESPELHO_DIR)
+                destino = os.path.join(DATA_DIR, rel)
+                if os.path.exists(destino) and os.path.getsize(destino) > 0:
+                    continue
+                if _copiar_arquivo(origem, destino):
+                    voltaram.append(rel)
+    return voltaram
+
 # ====================== GRAVACAO SEGURA (NOVO) ======================
 MAX_BACKUPS_POR_ARQUIVO = 20
 
@@ -1679,7 +1914,23 @@ def _ambiente_efemero():
     return any(BASE_DIR.startswith(p) for p in pistas)
 
 def aviso_persistencia():
-    """Mostra um alerta claro quando os dados podem ser perdidos ao reiniciar."""
+    """Mostra um alerta claro sobre onde os dados estão sendo gravados."""
+    if ESPELHO_ATIVO:
+        st.sidebar.success(
+            "🗂️ **Cópia automática ligada**\n\n"
+            "Tudo o que você salva (planilhas e anexos) é copiado na hora para:\n\n"
+            f"`{ESPELHO_DIR}`\n\n"
+            "Se o sistema perder os arquivos, eles voltam sozinhos desta pasta."
+        )
+        _rest = st.session_state.get("_restaurados_espelho") or []
+        if _rest:
+            st.sidebar.info(f"♻️ {len(_rest)} arquivo(s) foram recuperados da cópia de segurança ao abrir o sistema.")
+    else:
+        st.sidebar.warning(
+            "🗂️ **Cópia automática desligada**\n\n"
+            "O sistema não encontrou a pasta de cópia (disco D). "
+            "Configure a pasta exclusiva para as cópias — veja o guia de configuração."
+        )
     if GS_ENABLED:
         if GS_ONLY:
             st.sidebar.success(
@@ -2399,11 +2650,16 @@ def carregar_diarias():
     return df
 
 def salvar_dados(dados):
-    """Salva a base de funcionários. No modo 100% nuvem, grava só no Google Sheets."""
+    """Salva a base de funcionários. No modo 100% nuvem, grava só no Google Sheets.
+
+    Em qualquer modo, uma copia completa vai para a pasta espelho (disco D).
+    """
     if GS_ONLY:
         try:
             _salvar_dados_gs(dados)
             _registrar_log("SALVOU CADASTRO/EVENTOS")
+            espelhar_planilha("dados_funcionarios.xlsx", dados)
+            espelhar_anexos()
             st.cache_data.clear()
             return True
         except Exception as e:
@@ -2434,6 +2690,9 @@ def salvar_dados(dados):
         except Exception as e:
             st.warning(f"⚠️ Erro ao salvar no Google Sheets: {e}")
 
+    if sucesso:
+        espelhar_tudo()
+
     st.cache_data.clear()
     return sucesso
 
@@ -2443,6 +2702,8 @@ def salvar_diarias(df_diarias):
         try:
             _salvar_diarias_gs(df_diarias)
             _registrar_log("SALVOU DIÁRIAS", f"{len(df_diarias)} registros")
+            espelhar_planilha("controle_diarias.xlsx", {"Diarias": df_diarias})
+            espelhar_anexos()
             st.cache_data.clear()
             return True
         except Exception as e:
@@ -2472,6 +2733,9 @@ def salvar_diarias(df_diarias):
             _salvar_diarias_gs(df_diarias)
         except Exception as e:
             st.warning(f"⚠️ Erro ao salvar diárias no Google Sheets: {e}")
+
+    if sucesso:
+        espelhar_tudo()
 
     st.cache_data.clear()
     return sucesso
@@ -2633,6 +2897,7 @@ def salvar_viagens(df_viagens):
         try:
             _salvar_viagens_gs(df_viagens)
             _registrar_log("SALVOU VIAGENS", f"{len(df_viagens)} registros")
+            espelhar_planilha("registro_viagens.xlsx", {"Viagens": df_viagens})
             st.cache_data.clear()
             return True
         except Exception as e:
@@ -2653,6 +2918,8 @@ def salvar_viagens(df_viagens):
             "gravada e a anterior ficou nos backups automáticos."
         )
         _registrar_log("CONFLITO", "viagens")
+    if sucesso:
+        espelhar_tudo()
     st.cache_data.clear()
     return sucesso
 
@@ -2660,55 +2927,85 @@ def salvar_viagens(df_viagens):
 import zipfile
 
 def criar_backup_zip():
-    """Cria um arquivo ZIP em memória com todos os dados e anexos."""
+    """Cria um ZIP com TUDO: planilhas, compras, registro de alteracoes e anexos.
+
+    CORRECAO: antes o ZIP era montado apenas com os arquivos que existissem na
+    pasta do sistema. Se a pasta tivesse sido apagada/reiniciada, o backup saia
+    quase vazio. Agora as planilhas sao geradas a partir dos dados que o sistema
+    tem em maos (arquivo local ou nuvem) e, alem disso, tudo o que existir em
+    disco tambem entra no pacote.
+    """
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        if GS_ONLY:
-            # No modo 100% nuvem nao existem planilhas locais: o backup e gerado
-            # na hora, a partir do que esta hoje no Google Sheets.
+        gravados = set()
+
+        def _por_dataframes(nome_zip, abas):
             try:
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                    for aba, df in carregar_dados().items():
-                        df.to_excel(w, sheet_name=str(aba)[:31], index=False)
-                zf.writestr("dados_funcionarios.xlsx", buf.getvalue())
+                    for aba, df in abas.items():
+                        if isinstance(df, pd.DataFrame):
+                            df.to_excel(w, sheet_name=str(aba)[:31], index=False)
+                zf.writestr(nome_zip, buf.getvalue())
+                gravados.add(nome_zip)
             except Exception:
                 pass
+
+        _por_dataframes("dados_funcionarios.xlsx", carregar_dados())
+        try:
+            _por_dataframes("controle_diarias.xlsx", {"Diarias": carregar_diarias()})
+        except Exception:
+            pass
+        try:
+            _por_dataframes("registro_viagens.xlsx", {"Viagens": carregar_viagens()})
+        except Exception:
+            pass
+        try:
+            zf.writestr("dados_compras.json", json.dumps({
+                "solicitacoes": st.session_state.get("compras_solicitacoes", []),
+                "entregas": st.session_state.get("compras_entregas", []),
+            }, ensure_ascii=False, indent=2, default=str))
+            gravados.add("dados_compras.json")
+        except Exception:
+            pass
+
+        # Arquivos que existirem em disco (inclui o registro de alteracoes)
+        for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS,
+                    os.path.join(DATA_DIR, "Registro_Alteracoes.csv")]:
             try:
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                    carregar_diarias().to_excel(w, sheet_name="Diarias", index=False)
-                zf.writestr("controle_diarias.xlsx", buf.getvalue())
+                nome = os.path.basename(arq)
+                if os.path.exists(arq) and os.path.getsize(arq) > 0:
+                    destino = nome if nome not in gravados else os.path.join("Arquivos_do_sistema", nome)
+                    zf.write(arq, destino)
+                    gravados.add(destino)
             except Exception:
-                pass
-            try:
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                    carregar_viagens().to_excel(w, sheet_name="Viagens", index=False)
-                zf.writestr("registro_viagens.xlsx", buf.getvalue())
-            except Exception:
-                pass
-            try:
-                zf.writestr("dados_compras.json", json.dumps({
-                    "solicitacoes": st.session_state.get("compras_solicitacoes", []),
-                    "entregas": st.session_state.get("compras_entregas", []),
-                }, ensure_ascii=False, indent=2))
-            except Exception:
-                pass
-        else:
-            # Arquivos Excel principais (nome relativo no ZIP)
-            for arq in [ARQUIVO, ARQUIVO_DIARIAS, ARQUIVO_VIAGENS, ARQUIVO_COMPRAS,
-                        os.path.join(DATA_DIR, "Registro_Alteracoes.csv")]:
-                if os.path.exists(arq):
-                    zf.write(arq, os.path.basename(arq))
-        # Pastas de documentos, fotos e comprovantes (caminho relativo ao BASE_DIR)
-        for pasta in [PASTA_DOCS, PASTA_DOCS_FUNC, PASTA_FOTOS, PASTA_COMPROVANTES]:
-            if os.path.exists(pasta):
-                for root, dirs, files in os.walk(pasta):
-                    for file in files:
-                        caminho_completo = os.path.join(root, file)
-                        caminho_zip = os.path.relpath(caminho_completo, start=DATA_DIR)
-                        zf.write(caminho_completo, caminho_zip)
+                continue
+
+        # Anexos: documentos das lojas, dos funcionarios, fotos e comprovantes.
+        # Procura tanto na pasta do sistema quanto na pasta de copia (espelho),
+        # assim nenhum anexo fica de fora do backup.
+        raizes = [DATA_DIR]
+        if ESPELHO_ATIVO:
+            raizes.append(ESPELHO_DIR)
+        for raiz_base in raizes:
+            for sub in NOMES_PASTAS_ANEXOS:
+                pasta = os.path.join(raiz_base, sub)
+                if not os.path.isdir(pasta):
+                    continue
+                for raiz, _dirs, arquivos in os.walk(pasta):
+                    for nome_arq in arquivos:
+                        caminho_completo = os.path.join(raiz, nome_arq)
+                        try:
+                            caminho_zip = os.path.relpath(caminho_completo, start=raiz_base).replace("\\", "/")
+                        except Exception:
+                            continue
+                        if caminho_zip in gravados:
+                            continue
+                        try:
+                            zf.write(caminho_completo, caminho_zip)
+                            gravados.add(caminho_zip)
+                        except Exception:
+                            continue
     zip_buffer.seek(0)
     return zip_buffer
 
@@ -3249,6 +3546,26 @@ def barra_usuario():
 
 exigir_login()
 barra_usuario()
+
+# Recupera arquivos que faltarem, usando a copia de seguranca (pasta espelho).
+# E o que impede a perda de dados/anexos quando o sistema e fechado ou reiniciado.
+if "_restaurados_espelho" not in st.session_state:
+    try:
+        st.session_state["_restaurados_espelho"] = restaurar_do_espelho()
+    except Exception:
+        st.session_state["_restaurados_espelho"] = []
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+# Ja no inicio garante que a copia de seguranca esteja igual ao sistema
+if "_espelho_inicial" not in st.session_state:
+    st.session_state["_espelho_inicial"] = True
+    try:
+        espelhar_tudo()
+    except Exception:
+        pass
 
 st.title("📋 SISTEMA RH COMPLETO")
 aviso_persistencia()
@@ -5360,7 +5677,43 @@ with aba9:
 # ================ ABA 10 - BACKUP / RESTAURAÇÃO ================
 with aba10:
     st.subheader("💾 BACKUP E RESTAURAÇÃO")
-    st.warning("⚠️ **IMPORTANTE:** No Streamlit Cloud, os dados são salvos localmente e podem ser perdidos ao atualizar o código. Use esta aba para fazer backup antes de qualquer atualização!")
+
+    st.markdown("### 🗂️ CÓPIA AUTOMÁTICA EM PASTA EXCLUSIVA")
+    if ESPELHO_ATIVO:
+        st.success(f"Ativa. Tudo o que é salvo também vai para: **{ESPELHO_DIR}**")
+        _dt_copia = ""
+        try:
+            _arq_marca = os.path.join(ESPELHO_DIR, "ULTIMA_COPIA.txt")
+            if os.path.exists(_arq_marca):
+                _dt_copia = datetime.fromtimestamp(os.path.getmtime(_arq_marca)).strftime("%d/%m/%Y %H:%M:%S")
+        except Exception:
+            pass
+        if _dt_copia:
+            st.caption(f"Última cópia: {_dt_copia}")
+        col_e1, col_e2 = st.columns(2)
+        with col_e1:
+            if st.button("🔄 COPIAR TUDO AGORA", use_container_width=True):
+                with st.spinner("Copiando planilhas e anexos..."):
+                    _n = espelhar_tudo(mostrar_aviso=True)
+                if _n == 0:
+                    st.info("ℹ️ A cópia já estava atualizada — nada novo para copiar.")
+        with col_e2:
+            if st.button("♻️ TRAZER DE VOLTA O QUE FALTAR", use_container_width=True):
+                with st.spinner("Procurando arquivos que faltam..."):
+                    _volta = restaurar_do_espelho()
+                st.cache_data.clear()
+                if _volta:
+                    st.success(f"✅ {len(_volta)} arquivo(s) recuperados da cópia de segurança.")
+                else:
+                    st.info("ℹ️ Nada faltando: o sistema já tem todos os arquivos da cópia.")
+        st.caption("A pasta guarda também uma cópia por dia dentro de 'Copias_Diarias' (últimos 60 dias).")
+    else:
+        st.error(
+            "Cópia automática **desligada** — o sistema não encontrou a pasta de cópia.\n\n"
+            "No seu PC (Windows), crie a pasta `D:\\SISTEMA_RH_DADOS` e abra o sistema de novo: "
+            "ele passa a copiar tudo para lá automaticamente. Para usar outra pasta, informe o "
+            "caminho em `pasta_espelho` no arquivo de configuração (veja o guia)."
+        )
 
     st.markdown("---")
     st.markdown("### 📥 FAZER BACKUP (Exportar tudo)")
@@ -5369,12 +5722,36 @@ with aba10:
     if st.button("💾 GERAR BACKUP COMPLETO", type="primary"):
         with st.spinner("Compactando todos os dados..."):
             zip_buffer = criar_backup_zip()
-        st.success("✅ Backup gerado com sucesso!")
+            _tam = len(zip_buffer.getvalue())
+            try:
+                _itens = len(zipfile.ZipFile(io.BytesIO(zip_buffer.getvalue())).namelist())
+            except Exception:
+                _itens = 0
+            # guarda tambem uma copia do ZIP na pasta de copia de seguranca
+            if ESPELHO_ATIVO:
+                try:
+                    _pasta_zip = os.path.join(ESPELHO_DIR, "Backups_ZIP")
+                    os.makedirs(_pasta_zip, exist_ok=True)
+                    with open(os.path.join(_pasta_zip, f"Backup_RH_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"), "wb") as _fz:
+                        _fz.write(zip_buffer.getvalue())
+                except Exception:
+                    pass
+        st.success(f"✅ Backup gerado com {_itens} arquivo(s) — {_tam/1024/1024:.2f} MB.")
+        if _itens <= 4:
+            st.warning("⚠️ O backup saiu pequeno. Confira se os documentos e fotos ainda estão no sistema antes de confiar somente nele.")
+        if ESPELHO_ATIVO:
+            st.caption(f"Uma cópia deste ZIP também foi guardada em {os.path.join(ESPELHO_DIR, 'Backups_ZIP')}")
+        # guarda o ZIP na sessao para o botao de download nao desaparecer
+        st.session_state["_zip_backup"] = zip_buffer.getvalue()
+        st.session_state["_zip_backup_nome"] = f"Backup_RH_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+
+    if st.session_state.get("_zip_backup"):
         st.download_button(
             label="⬇️ BAIXAR ARQUIVO ZIP",
-            data=zip_buffer,
-            file_name=f"Backup_RH_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            mime="application/zip"
+            data=st.session_state["_zip_backup"],
+            file_name=st.session_state.get("_zip_backup_nome", "Backup_RH.zip"),
+            mime="application/zip",
+            use_container_width=True,
         )
 
     st.markdown("---")
@@ -5394,6 +5771,10 @@ with aba10:
                     st.error(f"❌ Erro ao restaurar backup: {e}")
                     st.stop()
             st.success(f"✅ Backup restaurado com sucesso! {len(arquivos_restaurados)} arquivo(s) restaurado(s).")
+            try:
+                espelhar_tudo()
+            except Exception:
+                pass
             st.info("🔄 A página será atualizada em instantes para carregar os dados restaurados...")
             time.sleep(2)
             st.rerun()
