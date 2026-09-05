@@ -1511,6 +1511,21 @@ def _descobrir_pasta_espelho():
                         break
             except Exception:
                 continue
+    if not destino:
+        # Nao existe disco D: usa uma pasta exclusiva fora da pasta do programa
+        # (Windows: C:\SISTEMA_RH_DADOS  |  Linux/Mac: pasta pessoal do usuario)
+        for alternativa in (
+            os.path.join("C:\\", "SISTEMA_RH_DADOS") if os.name == "nt" else "",
+            os.path.join(os.path.expanduser("~"), "SISTEMA_RH_DADOS"),
+        ):
+            if not alternativa:
+                continue
+            try:
+                if _pasta_gravavel(alternativa):
+                    destino = alternativa
+                    break
+            except Exception:
+                continue
     if not destino or not _pasta_gravavel(destino):
         return ""
     return os.path.abspath(destino)
@@ -5709,10 +5724,15 @@ with aba10:
         st.caption("A pasta guarda também uma cópia por dia dentro de 'Copias_Diarias' (últimos 60 dias).")
     else:
         st.error(
-            "Cópia automática **desligada** — o sistema não encontrou a pasta de cópia.\n\n"
-            "No seu PC (Windows), crie a pasta `D:\\SISTEMA_RH_DADOS` e abra o sistema de novo: "
-            "ele passa a copiar tudo para lá automaticamente. Para usar outra pasta, informe o "
-            "caminho em `pasta_espelho` no arquivo de configuração (veja o guia)."
+            "Cópia automática **desligada** — o sistema não conseguiu criar nem usar "
+            "nenhuma pasta de cópia.\n\n"
+            "1) Rodando no seu PC (Windows): crie a pasta `D:\\SISTEMA_RH_DADOS` à mão "
+            "e abra o sistema de novo.\n\n"
+            "2) Se o seu PC não tem disco D: escreva a pasta que quiser em "
+            "`pasta_espelho` no arquivo de configuração, por exemplo "
+            "`pasta_espelho = \"C:/SISTEMA_RH_DADOS\"`.\n\n"
+            "3) Rodando na internet (nuvem): o disco do seu PC não pode ser alcançado — "
+            "use o Google Sheets e baixe o backup em ZIP (explicado no guia)."
         )
 
     st.markdown("---")
