@@ -17,11 +17,19 @@ import re
 from datetime import datetime, date, timedelta
 import pandas as pd
 
+# Leitura de PDF — pdfplumber (melhor) ou pypdf (fallback)
 try:
     import pdfplumber
-    TEM_PDFPLUMBER = True
+    TEM_LEITOR_PDF = True
+    LEITOR_PDF = "pdfplumber"
 except ImportError:
-    TEM_PDFPLUMBER = False
+    try:
+        import pypdf
+        TEM_LEITOR_PDF = True
+        LEITOR_PDF = "pypdf"
+    except ImportError:
+        TEM_LEITOR_PDF = False
+        LEITOR_PDF = None
 
 # ════════════════════════════════════════════════════════════════
 # BANCO DE DADOS SQLITE — TUDO DENTRO DO PRÓPRIO SISTEMA
@@ -174,27 +182,46 @@ _init_db()
 # LEITURA AUTOMÁTICA DE PDFs DE ADMISSÃO
 # ════════════════════════════════════════════════════════════════
 
-def extrair_campos_pdf(arquivo_pdf):
+def _ler_pdf_paginas(arquivo_pdf):
+    """Lê um PDF e retorna lista de textos por página (usa pdfplumber ou pypdf)."""
+    pdf_bytes = io.BytesIO(arquivo_pdf.read()) if hasattr(arquivo_pdf, "read") else arquivo_pdf
+    pdf_bytes.seek(0)
+    paginas = []
+
+    if LEITOR_PDF == "pdfplumber":
+        try:
+            pdf = pdfplumber.open(pdf_bytes)
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    paginas.append(t)
+            pdf.close()
+            return paginas
+        except Exception:
+            pdf_bytes.seek(0)
+
+    # Fallback: pypdf
+    if LEITOR_PDF == "pypdf":
+        try:
+            import pypdf as _pypdf
+            reader = _pypdf.PdfReader(pdf_bytes)
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    paginas.append(t)
+            return paginas
+        except Exception:
+            return []
+
+    return []
+
+
+def _extrair_campos_de_paginas(paginas):
     """
-    Recebe um arquivo PDF (UploadedFile ou BytesIO) e retorna dict
+    Recebe uma lista de textos de páginas de UM PDF e retorna dict
     com os campos extraídos da Ficha de Registro e/ou Contrato de Experiência.
     """
-    if not TEM_PDFPLUMBER:
-        return {"_erro": "Biblioteca de leitura de PDF não disponível neste servidor."}
-
     campos = {}
-    try:
-        pdf_bytes = io.BytesIO(arquivo_pdf.read()) if hasattr(arquivo_pdf, "read") else arquivo_pdf
-        pdf = pdfplumber.open(pdf_bytes)
-        paginas = []
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                paginas.append(t)
-        pdf.close()
-    except Exception as e:
-        return {"_erro": f"Erro ao ler PDF: {e}"}
-
     txt = "\n".join(paginas)
 
     # ── Detecta tipo de documento e separa texto por seção ──
@@ -218,12 +245,10 @@ def extrair_campos_pdf(arquivo_pdf):
         f = txt_ficha
 
         # --- Nome ---
-        # Layout DOCS: "Nome: ANA PAULA COSTA" (linha isolada com ":")
         m = re.search(r"^Nome:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)$", f, re.M)
         if m and m.group(1).strip():
             campos["nome"] = m.group(1).strip()
         else:
-            # Layout antigo: nome depois de "Empregado Beneficiários"
             m = re.search(r"(?:Empregado\s+Beneficiários|Empregado)\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
             if m and m.group(1).strip():
                 campos["nome"] = m.group(1).strip()
@@ -247,7 +272,6 @@ def extrair_campos_pdf(arquivo_pdf):
         if m:
             campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
         else:
-            # Layout antigo: "CTPS Série Data ... \n 7072300 1200"
             m = re.search(r"CTPS[\s\n]+S[eé]rie[^\n]*\n\s*(\d{4,})\s+(\d{3,})", f, re.I)
             if m:
                 campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
@@ -329,9 +353,7 @@ def extrair_campos_pdf(arquivo_pdf):
             if m_cep:
                 campos["cep"] = re.sub(r"[^0-9]", "", m_cep.group(1))
                 end_bloco = re.sub(r"CEP[:\s]*\d{2}\.?\d{3}[-]?\d{3}", "", end_bloco).strip()
-            # Cidade-UF — procura na última parte do bloco
             linhas = [l.strip() for l in end_bloco.split("\n") if l.strip()]
-            cidade_found = False
             for i, linha in enumerate(reversed(linhas)):
                 m_cid = re.search(r",\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)[,-]\s*([A-Z]{2})", linha)
                 if m_cid and len(m_cid.group(1).strip()) > 2:
@@ -339,13 +361,11 @@ def extrair_campos_pdf(arquivo_pdf):
                     campos["estado"] = m_cid.group(2).strip()
                     idx = len(linhas) - 1 - i
                     linhas = linhas[:idx]
-                    cidade_found = True
                     break
             endereco_limpo = "\n".join(linhas).strip()
             endereco_limpo = re.sub(r"[-,]?\s*$", "", endereco_limpo)
             campos["endereco"] = endereco_limpo.strip().rstrip(",")
         else:
-            # Layout DOCS: "Endereço: RUA UACARI..."
             m = re.search(r"Endereço[:\s]*([^\n]+)", f, re.I)
             if m:
                 end_line = m.group(1).strip()
@@ -375,13 +395,11 @@ def extrair_campos_pdf(arquivo_pdf):
                 campos["telefone"] = tel
 
         # --- Cargo e CBO ---
-        # Layout DOCS: "CBO/Cargo:514320-AUXILIAR DE SERVIOS GERAIS"
         m = re.search(r"CBO/Cargo[:\s]*(\d+)\s*[-]\s*([^\n]+)", f, re.I)
         if m:
             campos["cbo"] = m.group(1).strip()
             campos["cargo"] = m.group(2).strip()
         else:
-            # Layout antigo: "Cargo Função C.B.O.\n AUXILIAR DE SERVIÇOS GERAIS ... 514320"
             m = re.search(r"Cargo\s+Fun[çc][aã]o\s+C\.?B\.?O\.?[^\n]*\n\s*(.+?)\s*$", f, re.M)
             if m:
                 data_line = m.group(1).strip()
@@ -389,7 +407,6 @@ def extrair_campos_pdf(arquivo_pdf):
                 if m_cbo:
                     campos["cbo"] = m_cbo.group(1).strip()
                     data_line = data_line[:m_cbo.start()].strip()
-                # Se cargo e função são iguais e aparecem concatenados
                 words = data_line.split()
                 half = len(words) // 2
                 if half > 0:
@@ -420,7 +437,6 @@ def extrair_campos_pdf(arquivo_pdf):
             if m and not campos.get("salario"):
                 campos["salario"] = m.group(1).replace(".", "").replace(",", ".")
 
-        # --- Tipo Contrato (inferido da ficha) ---
         if not campos.get("tipo_contrato"):
             campos["tipo_contrato"] = "CLT"
 
@@ -428,7 +444,6 @@ def extrair_campos_pdf(arquivo_pdf):
     if eh_contrato and txt_contrato:
         c = txt_contrato
 
-        # --- Nome (do empregado) ---
         if not campos.get("nome"):
             m = re.search(r"Sr\.?\s*\(a\)\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:,|\s+domiciliado|\s+portador)", c, re.I)
             if m:
@@ -438,7 +453,6 @@ def extrair_campos_pdf(arquivo_pdf):
                 if m:
                     campos["nome"] = m.group(1).strip()
 
-        # --- CTPS do contrato ---
         if not campos.get("ctps"):
             m = re.search(r"CTPS[^:]*N[º°:]*\s*(\d[\d/]*)\s*[Ss][eé]rie[:\s]*(\d+)", c, re.I)
             if m:
@@ -448,26 +462,22 @@ def extrair_campos_pdf(arquivo_pdf):
                 if m:
                     campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
 
-        # --- Cargo ---
         if not campos.get("cargo"):
             m = re.search(r"(?:fun[çc][aã]o|fun[çc][õo]es)\s+de\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\s]+?)(?:\s+e\s+mais|\s*[,.]|\n)", c, re.I)
             if m:
                 campos["cargo"] = m.group(1).strip()
 
-        # --- Salário ---
         if not campos.get("salario"):
             m = re.search(r"remunera[çc][aã]o\s*(?:de)?\s*:?\s*R\$\s*([\d.,]+)", c, re.I)
             if m:
                 campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
 
-        # --- Data Início Experiência ---
         m = re.search(r"in[ií]cio\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
         if m:
             campos["inicio_experiencia"] = _converte_data(m.group(1))
             if not campos.get("data_admissao"):
                 campos["data_admissao"] = _converte_data(m.group(1))
 
-        # --- Data Fim Experiência ---
         m = re.search(r"t[eé]rmino\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
         if m:
             campos["fim_experiencia"] = _converte_data(m.group(1))
@@ -476,13 +486,11 @@ def extrair_campos_pdf(arquivo_pdf):
             if m:
                 campos["fim_experiencia"] = _converte_data(m.group(1))
 
-        # --- Endereço do empregado (do contrato) ---
         if not campos.get("endereco"):
             m = re.search(r"domiciliado\s+(?:na|no)\s+([^,]+?)\s*,", c, re.I)
             if m:
                 campos["endereco"] = m.group(1).strip()
 
-        # --- Cidade/UF (do contrato) ---
         if not campos.get("cidade"):
             m = re.search(r"cidade\s+de\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)[,-]\s*([A-Z]{2})", c, re.I)
             if m:
@@ -490,7 +498,6 @@ def extrair_campos_pdf(arquivo_pdf):
                 if not campos.get("estado"):
                     campos["estado"] = m.group(2).strip()
 
-        # --- Telefone ---
         if not campos.get("telefone"):
             m = re.search(r"(?:Fone|Telefone|Celular)[:\s]*([\d()\s-]+)", c, re.I)
             if m:
@@ -498,10 +505,9 @@ def extrair_campos_pdf(arquivo_pdf):
                 if len(re.sub(r"\D", "", tel)) >= 8:
                     campos["telefone"] = tel
 
-        # --- Tipo contrato ---
         campos["tipo_contrato"] = "Experiência"
 
-    # ═══ EXTRAÇÃO GENÉRICA (se não detectou tipo específico) ═══
+    # ═══ EXTRAÇÃO GENÉRICA ═══
     if not eh_ficha and not eh_contrato:
         m = re.search(r"Nome[:\s]+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", txt, re.I)
         if m and not campos.get("nome"):
@@ -526,6 +532,43 @@ def extrair_campos_pdf(arquivo_pdf):
         campos["_tipo_detectado"].append("Documento genérico")
 
     return campos
+
+
+def extrair_campos_pdf(arquivos_pdf):
+    """
+    Recebe UM arquivo PDF ou uma LISTA de arquivos PDF (UploadedFile ou BytesIO)
+    e retorna dict com os campos extraídos da Ficha de Registro e/ou Contrato de Experiência.
+    Aceita: 1 PDF só, vários PDFs separados (Ficha + Contrato), ou o formato
+    que junta tudo em um único arquivo (DOCS ADMISSIONAIS).
+    """
+    if not TEM_LEITOR_PDF:
+        return {"_erro": "Biblioteca de leitura de PDF não disponível neste servidor."
+                " Instale pdfplumber ou pypdf (pip install pdfplumber pypdf)."}
+
+    # Normaliza para lista
+    if not isinstance(arquivos_pdf, (list, tuple)):
+        arquivos_pdf = [arquivos_pdf]
+
+    # Coleta todas as páginas de todos os PDFs
+    todas_paginas = []
+    erros = []
+    for arq in arquivos_pdf:
+        try:
+            paginas = _ler_pdf_paginas(arq)
+            if paginas:
+                todas_paginas.extend(paginas)
+            else:
+                erros.append("PDF vazio ou ilegível")
+        except Exception as e:
+            erros.append(str(e))
+
+    if not todas_paginas:
+        msg = "Nenhum texto encontrado nos PDFs enviados."
+        if erros:
+            msg += f" Erros: {'; '.join(erros)}"
+        return {"_erro": msg}
+
+    return _extrair_campos_de_paginas(todas_paginas)
 
 
 def _converte_data(data_br):
@@ -641,20 +684,22 @@ if aba_sel == "👥 Cadastro":
     with col_b:
         # ── UPLOAD DE PDF PARA PREENCHIMENTO AUTOMÁTICO ──
         st.subheader("📄 Importar do PDF de Admissão")
-        st.caption("Faça upload da Ficha de Registro de Empregado e/ou do Contrato de Experiência. "
-                   "Os campos do cadastro serão preenchidos automaticamente.")
+        st.caption("Envie a Ficha de Registro de Empregado e/ou o Contrato de Experiência. "
+                   "Pode enviar os dois separados ou tudo junto em um único arquivo.")
 
-        pdf_upload = st.file_uploader(
-            "📎 Enviar PDF de admissão",
+        pdf_uploads = st.file_uploader(
+            "📎 Enviar PDF(s) de admissão",
             type=["pdf"],
             key="up_pdf_admissao",
-            help="Ficha de Registro de Empregado, Contrato de Experiência ou ambos em um único arquivo."
+            accept_multiple_files=True,
+            help="Ficha de Registro, Contrato de Experiência, ou os dois juntos (DOCS ADMISSIONAIS).\n"
+                 "Pode enviar mais de um arquivo — os dados serão mesclados automaticamente."
         )
 
         campos_pdf = {}
-        if pdf_upload:
-            with st.spinner("Lendo PDF..."):
-                campos_pdf = extrair_campos_pdf(pdf_upload)
+        if pdf_uploads:
+            with st.spinner(f"Lendo {len(pdf_uploads)} PDF(s)..."):
+                campos_pdf = extrair_campos_pdf(pdf_uploads)
 
             if "_erro" in campos_pdf:
                 st.error(campos_pdf["_erro"])
@@ -662,10 +707,9 @@ if aba_sel == "👥 Cadastro":
             elif campos_pdf:
                 tipos = ", ".join(campos_pdf.get("_tipo_detectado", ["PDF"]))
                 qtd = len([k for k in campos_pdf if not k.startswith("_")])
-                st.success(f"✅ {qtd} campo(s) extraído(s) — {tipos}")
+                st.success(f"✅ {qtd} campo(s) extraído(s) de {len(pdf_uploads)} arquivo(s) — {tipos}")
 
-                # Mostra resumo dos campos extraídos
-                with st.expander("📋 Campos extraídos do PDF", expanded=True):
+                with st.expander("📋 Campos extraídos do(s) PDF(s)", expanded=True):
                     campos_lista = {k: v for k, v in campos_pdf.items() if not k.startswith("_")}
                     for k, v in campos_lista.items():
                         rotulo = k.replace("_", " ").title()
@@ -1518,11 +1562,11 @@ elif aba_sel == "⚙️ Configurações":
 
     st.markdown("---")
     st.subheader("📄 Importação de PDFs")
-    if TEM_PDFPLUMBER:
-        st.success("✅ Biblioteca de leitura de PDF disponível — a importação automática está funcionando.")
+    if TEM_LEITOR_PDF:
+        st.success(f"✅ Biblioteca de leitura de PDF disponível ({LEITOR_PDF}) — a importação automática está funcionando.")
     else:
-        st.warning("⚠️ Biblioteca de leitura de PDF não disponível. A importação automática não funcionará.\n"
-                    "Contate o administrador do servidor para instalar a biblioteca.")
+        st.warning("⚠️ Nenhuma biblioteca de leitura de PDF disponível. A importação automática não funcionará.\n"
+                    "Instale pdfplumber ou pypdf: `pip install pdfplumber pypdf`")
 
     st.markdown("---")
     st.subheader("📋 Informações do Banco")
