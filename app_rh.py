@@ -3738,6 +3738,20 @@ def extrair_dados_registro_empregado(pdf_bytes):
         m = re.search(r'CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})', texto_mono)
         if m:
             resultado["CPF"] = m.group(1).strip()
+        else:
+            # Layout B: CPF aparece na linha de valores após header "CTPS ... CPF ..."
+            for i, linha in enumerate(linhas):
+                if 'CTPS' in linha and 'CPF' in linha and i + 1 < len(linhas):
+                    # Procurar CPF na linha de valores (padrão XXX.XXX.XXX-XX)
+                    m = re.search(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', linhas[i + 1])
+                    if m:
+                        resultado["CPF"] = m.group(1).strip()
+                        break
+            if "CPF" not in resultado:
+                # Fallback: qualquer padrão de CPF no texto
+                m = re.search(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', texto_mono)
+                if m:
+                    resultado["CPF"] = m.group(1).strip()
         
         # =============================================================
         # RG
@@ -3771,6 +3785,26 @@ def extrair_dados_registro_empregado(pdf_bytes):
             val = m.group(1).strip()
             if val not in ('.', '..', '...', '000.00000.00-0') and not re.match(r'^[.\s]+$', val):
                 resultado["PIS"] = val
+        if "PIS" not in resultado:
+            # Layout B: PIS aparece após "PROGRAMA DE INTEGRAÇÃO SOCIAL - PIS"
+            # Linha: "Cadastrado em Sob nº Domicílio bancário"
+            # Linha seguinte: "000.00000.00-0" (placeholder)
+            for i, linha in enumerate(linhas):
+                if 'INTEGRAÇÃO SOCIAL' in linha and 'PIS' in linha and i + 1 < len(linhas):
+                    # Procurar PIS na linha seguinte (formato XXX.XXXXX.XX-X)
+                    m = re.search(r'(\d{3}\.\d{5}\.\d{2}-\d)', linhas[i + 1])
+                    if m:
+                        val = m.group(1).strip()
+                        if val != '000.00000.00-0':
+                            resultado["PIS"] = val
+                    # Se não encontrou formato padrão, buscar qualquer número PIS-like
+                    elif 'Sob' in linha and i + 1 < len(linhas):
+                        m = re.search(r'(\d[\d.]+-\d)', linhas[i + 1])
+                        if m:
+                            val = m.group(1).strip()
+                            if val != '000.00000.00-0' and not re.match(r'^[.\s]+$', val):
+                                resultado["PIS"] = val
+                    break
         
         # =============================================================
         # DATA DE NASCIMENTO
@@ -3893,16 +3927,8 @@ def extrair_dados_registro_empregado(pdf_bytes):
                     endereco_raw = ', '.join(endereco_parts)
                     # Limpar: remover trailing commas e "CEP: XXXXX-XXX"
                     endereco_raw = re.sub(r',\s*,', ',', endereco_raw)
-                    # Extrair bairro e cidade da string
-                    # Formato: "Avenida JOSE FERREIRA CHUCRE, 2669, JARDIM FELICIDADE, MACAPA, AP, - CEP: 68909-115"
-                    m = re.match(r'(.+?),\s*([A-ZÀ-Ú\s]+?),\s*([A-Z]{2}),\s*-?\s*CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', endereco_raw)
-                    if m:
-                        resultado["Endereco"] = m.group(1).strip()
-                        resultado["Bairro"] = m.group(2).strip()
-                        resultado["Cidade"] = m.group(3).strip().capitalize()
-                        resultado["UF"] = m.group(4)  # Wait, that's CEP
-                    # Reparse corretamente
-                    # "Avenida JOSE FERREIRA CHUCRE, 2669, JARDIM FELICIDADE, MACAPA, AP, - CEP: 68909-115"
+                    # Extrair bairro, cidade, UF e CEP da string
+                    # Formato esperado: "Rua X, 123, BAIRRO, CIDADE, UF, - CEP: 00000-000"
                     # Grupos: (endereço),(número),(bairro),(cidade),(UF),- CEP: (cep)
                     m = re.match(r'(.+?),\s*(\d+),\s*([A-ZÀ-Ú\s]+?),\s*([A-ZÀ-Ú]+),\s*([A-Z]{2}),\s*-?\s*CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', endereco_raw)
                     if m:
@@ -3912,8 +3938,33 @@ def extrair_dados_registro_empregado(pdf_bytes):
                         resultado["UF"] = m.group(5).strip()
                         resultado["CEP"] = m.group(6).strip()
                     else:
-                        # Fallback: pelo menos o endereço
-                        resultado["Endereco"] = endereco_parts[0] if endereco_parts else ""
+                        # Fallback 1: extrair componentes separadamente (parse de trás p/ frente)
+                        # Extrair CEP primeiro
+                        m_cep = re.search(r'CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', endereco_raw)
+                        if m_cep:
+                            resultado["CEP"] = m_cep.group(1).strip()
+                        # Extrair UF (2 letras maiúsculas antes do CEP)
+                        m_uf = re.search(r',\s*([A-Z]{2}),\s*-?\s*CEP', endereco_raw)
+                        if m_uf:
+                            resultado["UF"] = m_uf.group(1).strip()
+                        # Extrair Cidade (antes da UF)
+                        m_cid = re.search(r',\s*([A-ZÀ-Ú]+),\s*[A-Z]{2},', endereco_raw)
+                        if m_cid:
+                            resultado["Cidade"] = m_cid.group(1).strip().capitalize()
+                        # Extrair Bairro (antes da Cidade)
+                        if m_cid:
+                            pre_cidade = endereco_raw[:m_cid.start()]
+                            # Pegar o último segmento separado por vírgula antes da cidade
+                            bairro_parts = [p.strip() for p in pre_cidade.split(',') if p.strip()]
+                            if len(bairro_parts) >= 3:
+                                resultado["Bairro"] = bairro_parts[-1]
+                                resultado["Endereco"] = ', '.join(bairro_parts[:-1])
+                            elif len(bairro_parts) >= 2:
+                                resultado["Endereco"] = ', '.join(bairro_parts)
+                            elif len(bairro_parts) == 1:
+                                resultado["Endereco"] = bairro_parts[0]
+                        if "Endereco" not in resultado:
+                            resultado["Endereco"] = endereco_parts[0] if endereco_parts else ""
                     break
         
         # Layout A: Vale-Transporte "Residir a RUA ..." ou "Endereço:" após "Dados Pessoais"
@@ -4113,11 +4164,22 @@ def extrair_dados_registro_empregado(pdf_bytes):
         if "Cargo" not in resultado:
             for i, linha in enumerate(linhas):
                 if 'Cargo' in linha and 'Função' in linha and 'C.B.O.' in linha and i + 1 < len(linhas):
-                    texto_cargo = re.sub(r'\d+$', '', linhas[i + 1]).strip()
-                    metade = len(texto_cargo) // 2
-                    cargo_cand = texto_cargo[:metade].strip()
-                    funcao_cand = texto_cargo[metade:].strip()
-                    if cargo_cand == funcao_cand:
+                    # Remover CBO (6 dígitos) do final
+                    texto_cargo = re.sub(r'\d{6}\s*$', '', linhas[i + 1]).strip()
+                    # Dividir ao meio - quando Cargo e Função são iguais
+                    palavras = texto_cargo.split()
+                    metade = len(palavras) // 2
+                    cargo_cand = ' '.join(palavras[:metade]).strip()
+                    funcao_cand = ' '.join(palavras[metade:]).strip()
+                    # Se as duas metades são iguais, usar qualquer uma
+                    if cargo_cand and funcao_cand and cargo_cand == funcao_cand:
+                        resultado["Cargo"] = cargo_cand
+                        resultado["Funcao"] = funcao_cand
+                    elif cargo_cand and not funcao_cand:
+                        resultado["Cargo"] = cargo_cand
+                        resultado["Funcao"] = cargo_cand
+                    elif cargo_cand and funcao_cand:
+                        # São diferentes — provavelmente Cargo e Função distintos
                         resultado["Cargo"] = cargo_cand
                         resultado["Funcao"] = funcao_cand
                     else:
@@ -4283,11 +4345,19 @@ def extrair_dados_contrato_experiencia(pdf_bytes):
         
         # ============ ENDEREÇO DO EMPREGADO ============
         # Prioridade 1: "domiciliado na Avenida JOSE FERREIRA CHUCRE, 2669, , Bairro: JARDIM FELICIDADE, CEP: 68.909-115, cidade de MACAPA-AP"
-        m = re.search(r'domiciliado\s*(?:na|no)\s*([A-Za-zÀ-ú0-9\s,.\-]+?)(?:,\s*Bairro|,\s*CEP|\s+portador)', texto_mono)
+        # Capturar tudo entre "domiciliado na/no" e "Bairro:" para depois separar rua+numero
+        m = re.search(r'domiciliado\s+(?:na|no)\s+(.*?)Bairro[:\s]*', texto_mono)
         if m:
-            resultado["Endereco"] = m.group(1).strip().rstrip(',').strip()
-            # Limpar vírgulas duplas
-            resultado["Endereco"] = re.sub(r',\s*,', ',', resultado["Endereco"])
+            addr_raw = m.group(1).strip().rstrip(',').strip()
+            # Limpar vírgulas duplas e trailing commas
+            addr_raw = re.sub(r',\s*,', ',', addr_raw).rstrip(',').strip()
+            # Separar Rua e Número: "Avenida JOSE FERREIRA CHUCRE, 2669"
+            m2 = re.match(r'(.*?),\s*(\d+)\s*$', addr_raw)
+            if m2:
+                resultado["Endereco"] = m2.group(1).strip()
+                resultado["Numero"] = m2.group(2).strip()
+            else:
+                resultado["Endereco"] = addr_raw
         
         # Prioridade 2: Vale-Transporte "Residir a RUA ..."
         if "Endereco" not in resultado:
@@ -4296,10 +4366,10 @@ def extrair_dados_contrato_experiencia(pdf_bytes):
                 resultado["Endereco"] = m.group(1).strip().rstrip(',')
         
         # ============ BAIRRO ============
-        # Do contrato: "Bairro: JARDIM FELICIDADE"
-        m = re.search(r'Bairro[:\s]*([A-ZÀ-Úa-z\s]+?)(?:,|CEP|\s+cidade|\n)', texto_mono)
-        if m:
-            resultado["Bairro"] = m.group(1).strip()
+        # Do contrato: usar ÚLTIMA ocorrência (empregado, não empregadora)
+        matches_bairro = list(re.finditer(r'Bairro[:\s]*([A-ZÀ-Úa-z\s]+?)(?:,|CEP|\s+cidade|\n)', texto_mono))
+        if matches_bairro:
+            resultado["Bairro"] = matches_bairro[-1].group(1).strip()
         else:
             # Vale-Transporte: "Bairro CIDADE DE DEUS"
             m = re.search(r'Bairro\s+([A-ZÀ-Úa-z\s]+?)(?:,|CEP|\n)', texto_completo)
@@ -4414,7 +4484,7 @@ def mesclar_dados_pdf(dados_registro, dados_contrato, campos_atuais=None):
     for k in list(mesclado.keys()):
         if k.startswith("_") or k in ("CNPJEmpresa", "CNPPEmpresa", "Empresa", "PrazoExperienciaDias",
                                        "DataTerminoExperiencia", "LocalTrabalho", "HorarioTrabalho",
-                                       "LojaRaw", "Funcao"):
+                                       "LojaRaw"):
             del mesclado[k]
     
     return mesclado
