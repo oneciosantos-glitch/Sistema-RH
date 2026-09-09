@@ -216,13 +216,56 @@ def _ler_pdf_paginas(arquivo_pdf):
     return []
 
 
+def _normalizar_texto_pdf(txt):
+    """Normaliza texto de PDF para regex: insere espaço entre letras e números
+    grudados (pypdf faz isso), separa palavras grudadas (CamelCase), etc."""
+    # Insere espaço entre dígito e letra, ou letra e dígito, grudados
+    # Ex: "27/06/1979Nascimento:" -> "27/06/1979 Nascimento:"
+    #     "Naturalidade:Santarém" -> "Naturalidade: Santarém"
+    #     "15132986RG Número:" -> "15132986 RG Número:"
+    txt = re.sub(r'(\d)([A-Za-zÀ-ÿ])', r'\1 \2', txt)
+    txt = re.sub(r'([a-zÀ-ÿ])(\d)', r'\1 \2', txt, flags=re.I)
+    # Insere espaço depois de ":" se grudado com texto (sem espaço)
+    txt = re.sub(r':([A-Za-zÀ-ÿ])', r': \1', txt)
+    # Separa minúscula+MAIÚSCULA grudadas (pypdf colunas)
+    # Mas NÃO separa se a maiúscula é acentuada (parte da mesma palavra)
+    # Ex: "GERAISCBO/Cargo:" -> "GERAIS CBO/Cargo:"
+    #     "Admissão:MensalForma" -> "Admissão: Mensal Forma"
+    #     NÃO separar: "Santarém" -> fica "Santarém"
+    # Detecta CamelCase real: minúscula seguida de MAIÚSCULA sem acento
+    txt = re.sub(r'([a-zà-ÿ])([A-Z])', r'\1 \2', txt)
+    # Normaliza espaços múltiplos
+    txt = re.sub(r'[ \t]+', ' ', txt)
+    return txt
+
+
+def _extrair_campo(txt, padrao_rotulo, padrao_valor, flags=re.I):
+    """Busca campo de 3 formas: (1) rótulo:valor (pdfplumber),
+    (2) valor\nrótulo (pypdf invertido), (3) valorRÓTULO (pypdf grudado).
+    Retorna o valor encontrado ou None."""
+    # Forma 1: rótulo seguido de valor (padrão normal)
+    m = re.search(padrao_rotulo + padrao_valor, txt, flags)
+    if m:
+        return m.group(1).strip()
+    # Forma 2: valor grudado ANTES do rótulo (pypdf inverte ordem)
+    # Ex: "15132986 RG Número:" ou "27/06/1979 Nascimento:"
+    m = re.search(padrao_valor + r'\s*' + padrao_rotulo, txt, flags)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
 def _extrair_campos_de_paginas(paginas):
     """
     Recebe uma lista de textos de páginas de UM PDF e retorna dict
     com os campos extraídos da Ficha de Registro e/ou Contrato de Experiência.
+    Funciona com texto extraído por pdfplumber OU pypdf.
     """
     campos = {}
-    txt = "\n".join(paginas)
+
+    # ── Normaliza texto (corrige grudações do pypdf) ──
+    paginas_norm = [_normalizar_texto_pdf(p) for p in paginas]
+    txt = "\n".join(paginas_norm)
 
     # ── Detecta tipo de documento e separa texto por seção ──
     eh_ficha = bool(re.search(r"REGISTRO DE EMPREGADO|FICHA DE REGISTRO", txt, re.I))
@@ -230,13 +273,13 @@ def _extrair_campos_de_paginas(paginas):
 
     # Texto isolado da ficha (última página que contém REGISTRO DE EMPREGADO)
     txt_ficha = ""
-    for p in paginas:
+    for p in paginas_norm:
         if re.search(r"REGISTRO DE EMPREGADO|FICHA DE REGISTRO", p, re.I):
             txt_ficha = p
 
     # Texto isolado do contrato (primeira página com CONTRATO DE EXPERIÊNCIA)
     txt_contrato = ""
-    for p in paginas:
+    for p in paginas_norm:
         if re.search(r"CONTRATO DE EXPERI[ÊE]NCIA", p, re.I) and not txt_contrato:
             txt_contrato = p
 
@@ -244,7 +287,107 @@ def _extrair_campos_de_paginas(paginas):
     if eh_ficha and txt_ficha:
         f = txt_ficha
 
+        # Detecta se é ficha antiga (layout tabular, sem "Dados Pessoais")
+        eh_ficha_antiga = not bool(re.search(r'Dados Pessoais|Código:', f, re.I))
+        # Ficha antiga também costuma ter "Cédula de Identidade"
+        eh_ficha_antiga = eh_ficha_antiga or bool(re.search(r'C[eé]dula de Identidade', f, re.I))
+        # Mas se tem "Dados Pessoais", é ficha nova
+        if re.search(r'Dados Pessoais', f, re.I):
+            eh_ficha_antiga = False
+
+        # ── EXTRAÇÃO TABULAR FICHA ANTIGA ──
+        # Na ficha antiga, rótulos ficam numa linha e valores na próxima
+        # Ex: "Data de nascimento Local do nascimento País da nacionalidade Estado civil"
+        #     "25/12/1977 ABADIA DE GOIAS - GO BRASIL Solteiro"
+        if eh_ficha_antiga:
+            # Data de nascimento + Naturalidade + UF + País + Estado Civil
+            m = re.search(r'Data de nascimento\s+Local do nascimento[^\n]*\n\s*(\d{2}/\d{2}/\d{4})\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\'\s]+?)\s*[-–]\s*([A-Z]{2})\s+([A-Za-zÀ-ÿ]+)\s+(Solteiro|Casado|Divorciado|Vi[uú]vo|Uni[aã]o Est[aá]vel)', f, re.I)
+            if m:
+                if not campos.get('data_nascimento'):
+                    campos['data_nascimento'] = _converte_data(m.group(1))
+                if not campos.get('naturalidade'):
+                    campos['naturalidade'] = m.group(2).strip()
+                if not campos.get('estado_civil'):
+                    campos['estado_civil'] = m.group(5).strip().capitalize()
+            else:
+                # Tentar sem estado civil (caso não esteja na mesma linha)
+                m = re.search(r'Data de nascimento[^\n]*\n\s*(\d{2}/\d{2}/\d{4})\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\'\s]+?)\s*[-–]\s*([A-Z]{2})', f, re.I)
+                if m:
+                    if not campos.get('data_nascimento'):
+                        campos['data_nascimento'] = _converte_data(m.group(1))
+                    if not campos.get('naturalidade'):
+                        campos['naturalidade'] = m.group(2).strip()
+                else:
+                    # Só data
+                    m = re.search(r'Data de nascimento[^\n]*\n\s*(\d{2}/\d{2}/\d{4})', f, re.I)
+                    if m and not campos.get('data_nascimento'):
+                        campos['data_nascimento'] = _converte_data(m.group(1))
+
+            # CPF — na ficha antiga aparece na linha do CTPS
+            # "CTPS Série Data de expedição da CTPS UF CTPS CPF ..."
+            # "7072300 1200 04/05/2022 AP 707.230.012-00"
+            m = re.search(r'UF\s+CTPS\s+CPF[^\n]*\n[^\n]*?(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})', f, re.I)
+            if m and not campos.get('cpf'):
+                cpf_val = re.sub(r'[^0-9]', '', m.group(1))
+                if len(cpf_val) == 11:
+                    campos['cpf'] = cpf_val
+
+            # Cor/Sexo/Grau Instrução — ficha antiga
+            # "Doc. militar Categoria Cor Sexo Grau de instrução"
+            # "Parda Feminino Ensino Médio Completo"
+            m = re.search(r'Cor\s+Sexo\s+Grau de instru[çc][aã]o[^\n]*\n\s*(Branca?|Preta?|Parda?|Ind[ií]gena|Amarela?)\s+(Feminino|Masculino|F|M)\s+(Ensino[^\n]+|Analfabeto|Fundamental[^\n]*|M[ée]dio[^\n]*|Superior[^\n]*)', f, re.I)
+            if m:
+                if not campos.get('raca_cor'):
+                    val = m.group(1).strip()
+                    if val.lower().startswith('pard'):
+                        campos['raca_cor'] = 'Parda'
+                    elif val.lower().startswith('branc'):
+                        campos['raca_cor'] = 'Branca'
+                    elif val.lower().startswith('pret'):
+                        campos['raca_cor'] = 'Preta'
+                    else:
+                        campos['raca_cor'] = val.capitalize()
+                if not campos.get('sexo'):
+                    val = m.group(2).strip()
+                    if val.upper() == 'F':
+                        campos['sexo'] = 'Feminino'
+                    elif val.upper() == 'M':
+                        campos['sexo'] = 'Masculino'
+                    else:
+                        campos['sexo'] = val
+                if not campos.get('grau_instrucao'):
+                    campos['grau_instrucao'] = m.group(3).strip()
+
+            # Telefone — ficha antiga
+            # "Deficiência Telefone Residencial Telefone Celular"
+            # "Não 96-999145198"
+            m = re.search(r'Telefone\s+(?:Residencial\s+)?Telefone\s+Celular[^\n]*\n[^\n]*?(\d[\d\-]+\d)', f, re.I)
+            if m and not campos.get('telefone'):
+                tel = m.group(1).strip()
+                if len(re.sub(r'\D', '', tel)) >= 8:
+                    campos['telefone'] = tel
+
+            # Data de Admissão — ficha antiga
+            # "Data de Admissão Salário Por ..."
+            # "09/09/2026 R$ 1.649,48 Mês ..."
+            m = re.search(r'Data de Admiss[aã]o[^\n]*\n\s*(\d{2}/\d{2}/\d{4})', f, re.I)
+            if m and not campos.get('data_admissao'):
+                campos['data_admissao'] = _converte_data(m.group(1))
+
+            # PIS — ficha antiga
+            # "PROGRAMA DE INTEGRAÇÃO SOCIAL - PIS"
+            # "Cadastrado em Sob nº Domicílio bancário"
+            # "000.00000.00-0"
+            m = re.search(r'PIS[^\n]*\n[^\n]*\n\s*([\d.]+-\d)', f, re.I)
+            if m and not campos.get('pis'):
+                pis_val = m.group(1).strip()
+                if pis_val and not re.match(r'^[.\s-]+$', pis_val) :
+                    campos['pis'] = pis_val
+
         # --- Nome ---
+        # pdfplumber: "Nome: ANA PAULA COSTA"
+        # pypdf ficha antiga: "Empregado\nResidência\nBeneficiários\nCLENILZA PANTOJA PALMERIM"
+        # pypdf DOCS: "Nome:\nANA PAULA COSTA" (rótulo antes)
         m = re.search(r"^Nome:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)$", f, re.M)
         if m and m.group(1).strip():
             campos["nome"] = m.group(1).strip()
@@ -252,50 +395,107 @@ def _extrair_campos_de_paginas(paginas):
             m = re.search(r"(?:Empregado\s+Beneficiários|Empregado)\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
             if m and m.group(1).strip():
                 campos["nome"] = m.group(1).strip()
+        # pypdf ficha antiga: Nome aparece após "Beneficiários" em linha isolada
+        if not campos.get("nome"):
+            m = re.search(r"Benefici[áa]rios\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
+            if m and m.group(1).strip() and len(m.group(1).strip()) > 5:
+                campos["nome"] = m.group(1).strip()
 
         # --- CPF ---
-        m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", f)
-        if m:
-            campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
+        # pdfplumber: "CPF: 652.079.982-34"
+        # pypdf ficha antiga: "04/05/2022 707.230.012-00\nCPF" (invertido, CPF depois)
+        # IMPORTANTE: NÃO sobrescrever CPF já encontrado pelo regex tabular (ficha antiga)
+        if not campos.get('cpf'):
+            m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", f)
+            if m:
+                campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
+            else:
+                # pypdf invertido: número de CPF ANTES de "CPF"
+                m = re.search(r"(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})\s*CPF\b", f)
+                if m:
+                    campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
+        # Validação: CPF deve ter 11 dígitos
+        if campos.get("cpf") and len(campos["cpf"]) != 11:
+            del campos["cpf"]
 
         # --- RG ---
-        m = re.search(r"RG\s*Número[:\s]*(\d+)", f, re.I)
+        # Se CPF == RG (mesmos dígitos), o regex tabular já pegou o CPF formatado correto
+        # O RG é outro número (Cédula de Identidade)
+        # pdfplumber: "RG Número: 15132986"
+        # pypdf (normalizado): "15132986 RG Número:" (invertido)
+        # Ficha antiga pdfplumber: "Cédula de Identidade...\n70723001200 29/03/2025 PC/AP"
+        # Ficha antiga pypdf: "Cédula de Identidade Data de emissão..." + RG em linha separada
+        m = re.search(r"RG\s*Número[:\s]*(\d{4,})", f, re.I)
         if m:
             campos["rg"] = m.group(1).strip()
         else:
-            m = re.search(r"C[eé]dula de Identidade[^\n]*\n\s*(\d[\d.-]+)", f, re.I)
+            # pypdf invertido: "15132986 RG Número:" ou "15132986 RG"
+            m = re.search(r"(\d{5,})\s*RG\b", f)
             if m:
-                campos["rg"] = m.group(1).strip().rstrip(".")
+                campos["rg"] = m.group(1).strip()
+            else:
+                # Cédula de Identidade — busca número na próxima linha
+                m = re.search(r"C[eé]dula de Identidade[^\n]*\n\s*(\d[\d.-]+)", f, re.I)
+                if m:
+                    campos["rg"] = m.group(1).strip().rstrip(".")
+                else:
+                    # pypdf ficha antiga: RG aparece como número longo sozinho após "Cédula de Identidade"
+                    m = re.search(r"C[eé]dula de Identidade[^\n]*\n(?:[^\n]*\n){0,3}[^\d]*(\d{8,})", f, re.I)
+                    if m:
+                        campos["rg"] = m.group(1).strip()
 
         # --- CTPS + Série ---
+        # pdfplumber: "CTPS Número: 00006520799 Série:08234"
         m = re.search(r"CTPS\s*Número[:\s]*(\d[\d/]*)\s*S[eé]rie[:\s]*(\d+)", f, re.I)
         if m:
             campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
         else:
-            m = re.search(r"CTPS[\s\n]+S[eé]rie[^\n]*\n\s*(\d{4,})\s+(\d{3,})", f, re.I)
+            # pypdf: "00006520799 CTPS Número:" + "08234 Série:"
+            m = re.search(r"(\d{5,})\s*CTPS\s*Número", f, re.I)
             if m:
-                campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
+                ctps_num = m.group(1).strip()
+                m2 = re.search(r"(\d{3,})\s*S[eé]rie", f, re.I)
+                if m2:
+                    campos["ctps"] = f"{ctps_num}/{m2.group(1).strip()}"
+            else:
+                # Layout antigo: "CTPS Série Data ... \n 7072300 1200"
+                m = re.search(r"CTPS[\s\n]+S[eé]rie[^\n]*\n\s*(\d{4,})\s+(\d{3,})", f, re.I)
+                if m:
+                    campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
 
         # --- PIS ---
+        # pdfplumber: "PIS/PASEP: . . ." (vazio) ou "PIS/PASEP: 123.456"
         m = re.search(r"PIS\s*/?\s*PASEP[:\s]*([\d.\-]+)", f, re.I)
         if m:
             pis_val = m.group(1).strip().rstrip(".")
-            if pis_val and not pis_val.replace(".", "").replace("-", "").startswith("000"):
+            # Descarta se for só pontos (vazio) ou zeros
+            if pis_val and not re.match(r'^[.\s-]+$', pis_val) and not pis_val.replace(".", "").replace("-", "").startswith("000"):
                 campos["pis"] = pis_val
 
         # --- Data Nascimento ---
-        m = re.search(r"(?:Data de nascimento|Nascimento)[:\s]*(\d{2}/\d{2}/\d{4})", f, re.I)
-        if m:
-            campos["data_nascimento"] = _converte_data(m.group(1))
+        # pdfplumber: "Nascimento: 27/06/1979"
+        # pypdf: "27/06/1979 Nascimento:" (invertido)
+        val = _extrair_campo(f,
+            r"(?:Data de )?Nascimento[:\s]*",
+            r"(\d{2}/\d{2}/\d{4})")
+        if val:
+            campos["data_nascimento"] = _converte_data(val)
 
         # --- Naturalidade ---
-        m = re.search(r"Naturalidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\n)", f, re.I)
+        # pdfplumber: "Naturalidade: Santarém UF: PA"
+        # pypdf: "Naturalidade: Santarém" (grudado)
+        m = re.search(r"Naturalidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\s+Estado|\n)", f, re.I)
         if m:
             campos["naturalidade"] = m.group(1).strip().rstrip(" -")
         else:
-            m = re.search(r"Local do nascimento[^\n]*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*[-–]\s*([A-Z]{2})", f, re.I)
+            # Tenta sem delimitador (pypdf pode grudar com próximo campo)
+            m = re.search(r"Naturalidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:[A-Z][a-z])", f, re.I)
             if m:
-                campos["naturalidade"] = m.group(1).strip()
+                campos["naturalidade"] = m.group(1).strip().rstrip(" -")
+            else:
+                m = re.search(r"Local do nascimento[^\n]*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*[-–]\s*([A-Z]{2})", f, re.I)
+                if m:
+                    campos["naturalidade"] = m.group(1).strip()
 
         # --- Estado Civil ---
         m = re.search(r"Estado\s*[Cc]ivil[:\s]*(Solteiro|Casado|Divorciado|Vi[uú]vo|Uni[ãa]o Est[áa]vel)", f, re.I)
@@ -303,6 +503,8 @@ def _extrair_campos_de_paginas(paginas):
             campos["estado_civil"] = m.group(1).strip()
 
         # --- Sexo ---
+        # pdfplumber: "Sexo: Feminino"
+        # pypdf: "Feminino" sozinho na linha, ou "Sexo: Feminino"
         m = re.search(r"Sexo[:\s]*(Feminino|Masculino|F|M)\b", f, re.I)
         if m:
             val = m.group(1).strip()
@@ -312,9 +514,16 @@ def _extrair_campos_de_paginas(paginas):
                 campos["sexo"] = "Masculino"
             else:
                 campos["sexo"] = val
+        else:
+            # pypdf: "Feminino" numa linha isolada perto de Instrução/Nascimento
+            m = re.search(r"^\s*(Feminino|Masculino)\s*$", f, re.M)
+            if m:
+                campos["sexo"] = m.group(1).strip()
 
         # --- Raça/Cor ---
-        m = re.search(r"(?:Etnia ou Ra[çc]a|Cor)[:\s]*(Branca?|Preta?|Parda?|Ind[ií]gena|Amarela?)\b", f, re.I)
+        # pdfplumber: "Etnia ou Raça: Parda"
+        # pypdf: "Etnia ou Raça: Parda" (grudado)
+        m = re.search(r"(?:Etnia ou Ra[çc]a|Ra[çc]a/Cor|Cor)[:\s]*(Branca?|Preta?|Parda?|Ind[ií]gena|Amarela?)\b", f, re.I)
         if m:
             val = m.group(1).strip()
             if val.lower().startswith("pard"):
@@ -327,6 +536,8 @@ def _extrair_campos_de_paginas(paginas):
                 campos["raca_cor"] = val.capitalize()
 
         # --- Grau Instrução ---
+        # pdfplumber: "Instrução: Ensino Médio completo"
+        # pypdf: "Instrução: Ensino Médio completo" (grudado)
         m = re.search(r"Instru[çc][aã]o[:\s]*(Ensino[^\n,]+|Analfabeto|Fundamental[^\n]*|M[ée]dio[^\n]*|Superior[^\n]*)", f, re.I)
         if m:
             campos["grau_instrucao"] = m.group(1).strip()
@@ -339,14 +550,17 @@ def _extrair_campos_de_paginas(paginas):
                 campos["filiacao_pai"] = val
 
         # --- Filiação Mãe ---
-        m = re.search(r"M[ãa]e[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\n|C[eé]dula|CTPS|RG)", f)
+        m = re.search(r"M[ãa]e[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\n|C[eé]dula|CTPS|RG|Código)", f)
         if m:
             val = m.group(1).strip()
             if val:
                 campos["filiacao_mae"] = val
 
         # --- Endereço (Residência) ---
-        m = re.search(r"Resid[eê]ncia\s*\n([\s\S]+?)(?:\n\s*\n|Data de nascimento)", f, re.I)
+        # Na ficha nova (DOCS), há 2 "Endereço:": um da empresa e um do funcionário.
+        # O do funcionário vem DEPOIS de "Dados Pessoais" e ANTES de "Cidade:"
+        # Na ficha antiga, vem após "Residência"
+        m = re.search(r"Resid[eê]ncia\s*\n([\s\S]+?)(?:\n\s*\n|Data de nascimento|Nascimento)", f, re.I)
         if m:
             end_bloco = m.group(1).strip()
             m_cep = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", end_bloco)
@@ -366,76 +580,161 @@ def _extrair_campos_de_paginas(paginas):
             endereco_limpo = re.sub(r"[-,]?\s*$", "", endereco_limpo)
             campos["endereco"] = endereco_limpo.strip().rstrip(",")
         else:
-            m = re.search(r"Endereço[:\s]*([^\n]+)", f, re.I)
+            # Layout DOCS/Novo: Múltiplos "Endereço:" — precisa pegar o do funcionário
+            # O endereço da empresa vem ANTES de "Dados Pessoais"
+            # O endereço do funcionário vem DEPOIS de "Dados Pessoais"
+            pos_dados = f.find('Dados Pessoais')
+            if pos_dados > 0:
+                # Trabalhar só com o texto APÓS "Dados Pessoais"
+                f_pos_dados = f[pos_dados:]
+            else:
+                f_pos_dados = f
+
+            # Endereço do funcionário (após Dados Pessoais)
+            # DOCS: "Endereço: RUA UACARI, 246 AME 246 Bairro: CIDADE DE DEUS"
+            m = re.search(r"Endereço[:\s]*([^\n]+?)(?:\s+Bairro[:\s]+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?))?\s*(?:Cidade|\n)", f_pos_dados, re.I)
             if m:
                 end_line = m.group(1).strip()
-                end_line = re.sub(r"Código\s+Município:.*", "", end_line).strip()
-                campos["endereco"] = end_line.rstrip(",")
-            m = re.search(r"Cidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\n)", f, re.I)
+                end_line = re.sub(r"\s*Código\s+Município:.*", "", end_line).strip()
+                bairro = m.group(2).strip() if m.group(2) else ""
+                if bairro:
+                    campos["endereco"] = f"{end_line}, {bairro}".rstrip(",")
+                else:
+                    campos["endereco"] = end_line.rstrip(",")
+
+            # Cidade do funcionário (após Dados Pessoais)
+            # Exigir "Cidade:" como rótulo para não capturar "CIDADE DE DEUS" do bairro
+            m = re.search(r"Cidade:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\n)", f_pos_dados, re.I)
             if m:
                 campos["cidade"] = m.group(1).strip()
             else:
-                m = re.search(r"Cidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", f, re.I)
+                m = re.search(r"Cidade:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", f_pos_dados, re.I)
                 if m:
                     cidade_raw = m.group(1).strip()
                     cidade_raw = re.sub(r"\s*UF:.*", "", cidade_raw).strip()
                     campos["cidade"] = cidade_raw
-            m = re.search(r"UF[:\s]*([A-Z]{2})", f)
+
+            # UF do funcionário (após Dados Pessoais) — validar contra lista oficial
+            UFS_VALIDAS = {'AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'}
+            m = re.search(r"UF[:\s]*([A-Z]{2})", f_pos_dados)
             if m:
-                campos["estado"] = m.group(1).strip()
-            m = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", f)
+                ufs = [x for x in re.findall(r"UF[:\s]*([A-Z]{2})", f_pos_dados) if x in UFS_VALIDAS]
+                if not campos.get("estado") and ufs:
+                    campos["estado"] = ufs[-1] if len(ufs) > 1 else ufs[0]
+
+            # CEP do funcionário (após Dados Pessoais)
+            m = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", f_pos_dados)
             if m:
                 campos["cep"] = re.sub(r"[^0-9]", "", m.group(1))
 
+            # Se não encontrou endereço após Dados Pessoais, tenta fallback com múltiplos Endereço:
+            if not campos.get("endereco"):
+                enderecos = list(re.finditer(r"Endereço[:\s]*([^\n]+)", f, re.I))
+                end_pessoal = None
+                for em in enderecos:
+                    end_line = em.group(1).strip()
+                    if end_line and not re.match(r'^(Bairro|\s*)$', end_line, re.I):
+                        pos = em.start()
+                        pos_dados_all = f.find('Dados Pessoais')
+                        if pos_dados_all > 0 and pos > pos_dados_all:
+                            end_pessoal = end_line
+                        elif not end_pessoal:
+                            end_pessoal = end_line
+                if end_pessoal:
+                    end_pessoal = re.sub(r"Código\s+Município:.*", "", end_pessoal).strip()
+                    campos["endereco"] = end_pessoal.rstrip(",")
+
         # --- Telefone ---
-        m = re.search(r"(?:Fone|Celular)[:\s]*([\d()\s-]+)", f, re.I)
+        # pdfplumber: "Fone: 92 985277054 Celular: Email:"
+        # pypdf: "Fone: Celular: Email: 92 985277054" (desordenado)
+        m = re.search(r"(?:Fone|Telefone)[:\s]*([\d()\s-]+)", f, re.I)
         if m:
             tel = m.group(1).strip()
             if len(re.sub(r"\D", "", tel)) >= 8:
                 campos["telefone"] = tel
+        if not campos.get("telefone"):
+            # Busca celular
+            m = re.search(r"Celular[:\s]*([\d()\s-]+)", f, re.I)
+            if m:
+                tel = m.group(1).strip()
+                if len(re.sub(r"\D", "", tel)) >= 8:
+                    campos["telefone"] = tel
+        if not campos.get("telefone"):
+            # pypdf gruda Fone/Celular/Email — busca número após "Fone:" ou "Celular:"
+            m = re.search(r"(?:Fone|Celular)[:\s]*Email[:\s]*(\d[\d\s-]+)", f, re.I)
+            if m:
+                tel = m.group(1).strip()
+                if len(re.sub(r"\D", "", tel)) >= 8:
+                    campos["telefone"] = tel
 
         # --- Cargo e CBO ---
+        # pdfplumber: "CBO/Cargo:514320-AUXILIAR DE SERVIOS GERAIS"
+        # pypdf (normalizado): "514320-AUXILIAR DE SERVIOS GERAIS CBO/Cargo:"
+        # pypdf ficha antiga: "Cargo\n AUXILIAR DE SERVIÇOS GERAIS \nFunção"
         m = re.search(r"CBO/Cargo[:\s]*(\d+)\s*[-]\s*([^\n]+)", f, re.I)
         if m:
             campos["cbo"] = m.group(1).strip()
             campos["cargo"] = m.group(2).strip()
         else:
-            m = re.search(r"Cargo\s+Fun[çc][aã]o\s+C\.?B\.?O\.?[^\n]*\n\s*(.+?)\s*$", f, re.M)
+            # pypdf invertido: "514320-AUXILIAR DE SERVIOS GERAIS CBO/Cargo:"
+            m = re.search(r"(\d{4,})\s*[-]\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*CBO/Cargo[:\s]*", f, re.I)
             if m:
-                data_line = m.group(1).strip()
-                m_cbo = re.search(r"(\d{4,})\s*$", data_line)
-                if m_cbo:
-                    campos["cbo"] = m_cbo.group(1).strip()
-                    data_line = data_line[:m_cbo.start()].strip()
-                words = data_line.split()
-                half = len(words) // 2
-                if half > 0:
-                    first_half = " ".join(words[:half])
-                    second_half = " ".join(words[half:])
-                    if first_half == second_half:
-                        campos["cargo"] = first_half
-                    else:
-                        campos["cargo"] = data_line
-                elif data_line:
-                    campos["cargo"] = data_line
+                campos["cbo"] = m.group(1).strip()
+                campos["cargo"] = m.group(2).strip()
             else:
-                m = re.search(r"Fun[çc][aã]o[:\s]*([^\n]+)", f, re.I)
+                # Layout antigo: "Cargo Função C.B.O.\n AUXILIAR DE SERVIÇOS GERAIS ... 514320"
+                m = re.search(r"Cargo\s+Fun[çc][aã]o\s+C\.?B\.?O\.?[^\n]*\n\s*(.+?)\s*$", f, re.M)
                 if m:
-                    campos["cargo"] = m.group(1).strip()
+                    data_line = m.group(1).strip()
+                    m_cbo = re.search(r"(\d{4,})\s*$", data_line)
+                    if m_cbo:
+                        campos["cbo"] = m_cbo.group(1).strip()
+                        data_line = data_line[:m_cbo.start()].strip()
+                    words = data_line.split()
+                    half = len(words) // 2
+                    if half > 0:
+                        first_half = " ".join(words[:half])
+                        second_half = " ".join(words[half:])
+                        if first_half == second_half:
+                            campos["cargo"] = first_half
+                        else:
+                            campos["cargo"] = data_line
+                    elif data_line:
+                        campos["cargo"] = data_line
+                else:
+                    # pypdf ficha antiga: "Cargo\nAUXILIAR..." separado
+                    m = re.search(r"Cargo\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
+                    if m and len(m.group(1).strip()) > 5:
+                        campos["cargo"] = m.group(1).strip()
+                    else:
+                        m = re.search(r"Fun[çc][aã]o[:\s]*([^\n]+)", f, re.I)
+                        if m:
+                            cargo_raw = m.group(1).strip()
+                            # Evita capturar rótulo de seção
+                            if cargo_raw and not re.match(r'Hist[óo]rico|F[ée]rias|Rescis', cargo_raw, re.I):
+                                campos["cargo"] = cargo_raw
 
         # --- Data Admissão ---
-        m = re.search(r"(?:Data de )?Admiss[aã]o[:\s]*(\d{2}/\d{2}/\d{4})", f, re.I)
-        if m:
-            campos["data_admissao"] = _converte_data(m.group(1))
+        # pdfplumber: "Admissão: 03/09/2026"
+        # pypdf: "03/09/2026 Admissão:" (invertido)
+        val = _extrair_campo(f,
+            r"(?:Data de )?Admiss[aã]o[:\s]*",
+            r"(\d{2}/\d{2}/\d{4})")
+        if val:
+            campos["data_admissao"] = _converte_data(val)
 
         # --- Salário ---
         m = re.search(r"(?:Sal[aá]rio|Admiss[aã]o)[^\n]*R\$\s*([\d.,]+)", f, re.I)
         if m:
             campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
         else:
-            m = re.search(r"R\$\s*([\d.,]+)", f)
+            m = re.search(r"Valor[:\s]*([\d.,]+)", f, re.I)
             if m and not campos.get("salario"):
-                campos["salario"] = m.group(1).replace(".", "").replace(",", ".")
+                campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
+            else:
+                m = re.search(r"R\$\s*([\d.,]+)", f)
+                if m and not campos.get("salario"):
+                    campos["salario"] = m.group(1).replace(".", "").replace(",", ".")
 
         if not campos.get("tipo_contrato"):
             campos["tipo_contrato"] = "CLT"
@@ -472,12 +771,28 @@ def _extrair_campos_de_paginas(paginas):
             if m:
                 campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
 
+        # --- Data Início Experiência ---
         m = re.search(r"in[ií]cio\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
         if m:
             campos["inicio_experiencia"] = _converte_data(m.group(1))
             if not campos.get("data_admissao"):
                 campos["data_admissao"] = _converte_data(m.group(1))
+        else:
+            # Busca data do contrato na assinatura: "Igarassu, 3 de setembro de 2026"
+            m = re.search(r"\b(\d{1,2})\s+de\s+(jan\w*|fev\w*|mar\w*|abr\w*|mai\w*|jun\w*|jul\w*|ago\w*|set\w*|out\w*|nov\w*|dez\w*)\s+de\s+(\d{4})\b", c, re.I)
+            if m:
+                dia = m.group(1)
+                mes_nome = m.group(2)
+                ano = m.group(3)
+                meses = {"jan":1,"fev":2,"mar":3,"abr":4,"mai":5,"jun":6,"jul":7,"ago":8,"set":9,"out":10,"nov":11,"dez":12}
+                mes_num = next((v for k,v in meses.items() if mes_nome.lower().startswith(k)), None)
+                if mes_num:
+                    data_fmt = f"{int(dia):02d}/{mes_num:02d}/{ano}"
+                    campos["inicio_experiencia"] = _converte_data(data_fmt)
+                    if not campos.get("data_admissao"):
+                        campos["data_admissao"] = _converte_data(data_fmt)
 
+        # --- Data Fim Experiência ---
         m = re.search(r"t[eé]rmino\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
         if m:
             campos["fim_experiencia"] = _converte_data(m.group(1))
@@ -505,7 +820,25 @@ def _extrair_campos_de_paginas(paginas):
                 if len(re.sub(r"\D", "", tel)) >= 8:
                     campos["telefone"] = tel
 
+        # Tipo contrato — se a ficha já preencheu como CLT, atualiza para Experiência
         campos["tipo_contrato"] = "Experiência"
+
+    # ═══ EXTRAÇÃO DO VALE-TRANSPORTE (complementar) ═══
+    # A página do Vale-Transporte pode ter RG e CPF mais legíveis
+    for p in paginas_norm:
+        if re.search(r"VALE.?TRANSPORTE|COMPROMISSO DE VALE", p, re.I):
+            vt = p
+            # CPF
+            if not campos.get("cpf"):
+                m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", vt)
+                if m:
+                    campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
+            # RG
+            if not campos.get("rg"):
+                m = re.search(r"RG[:\s]*(\d{5,})", vt, re.I)
+                if m:
+                    campos["rg"] = m.group(1).strip()
+            break
 
     # ═══ EXTRAÇÃO GENÉRICA ═══
     if not eh_ficha and not eh_contrato:
