@@ -15,7 +15,6 @@ import base64
 import hashlib
 from datetime import datetime, date, timedelta
 import pandas as pd
-import plotly.express as px
 
 # ════════════════════════════════════════════════════════════════
 # BANCO DE DADOS SQLITE — TUDO DENTRO DO PRÓPRIO SISTEMA
@@ -774,8 +773,8 @@ elif aba_sel == "📊 Painel":
 
     if funcs_por_loja:
         df_graf = pd.DataFrame([dict(r) for r in funcs_por_loja])
-        fig = px.bar(df_graf, x="loja", y="qtd", title="Funcionários por Loja", labels={"loja": "Loja", "qtd": "Qtd"})
-        st.plotly_chart(fig, use_container_width=True)
+        st.bar_chart(df_graf.set_index("loja")["qtd"], use_container_width=True)
+        st.caption("Funcionários por Loja")
 
     con = _conn()
     sit_por_situacao = con.execute("""
@@ -784,8 +783,8 @@ elif aba_sel == "📊 Painel":
     con.close()
     if sit_por_situacao:
         df_sit = pd.DataFrame([dict(r) for r in sit_por_situacao])
-        fig2 = px.pie(df_sit, names="situacao", values="qtd", title="Situação dos Funcionários")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.dataframe(df_sit, use_container_width=True, hide_index=True)
+        st.caption("Situação dos Funcionários")
 
 # ════════════════════════════════════════════════════════════════
 # ABA 7 — DOCUMENTOS
