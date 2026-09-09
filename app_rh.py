@@ -2,7 +2,7 @@
 """
 Sistema RH — Diárias · Viagens · Compras · Lojas · Eventos Trabalhistas
 Banco de dados SQLite embutido: TODOS os dados ficam no próprio sistema.
-Nenhum arquivo externo, nenhuma pasta para configurar.
+Leitura automática de PDFs de admissão (Ficha Registro + Contrato Experiência).
 """
 
 import streamlit as st
@@ -13,8 +13,15 @@ import io
 import zipfile
 import base64
 import hashlib
+import re
 from datetime import datetime, date, timedelta
 import pandas as pd
+
+try:
+    import pdfplumber
+    TEM_PDFPLUMBER = True
+except ImportError:
+    TEM_PDFPLUMBER = False
 
 # ════════════════════════════════════════════════════════════════
 # BANCO DE DADOS SQLITE — TUDO DENTRO DO PRÓPRIO SISTEMA
@@ -37,9 +44,12 @@ def _init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nome TEXT NOT NULL, cpf TEXT, rg TEXT, data_nascimento TEXT,
         estado_civil TEXT, endereco TEXT, cidade TEXT, estado TEXT,
-        cep TEXT, telefone TEXT, email TEXT, pix TEXT,
-        cargo TEXT, departamento TEXT, loja TEXT, data_admissao TEXT,
-        salario REAL, banco TEXT, agencia TEXT, conta TEXT,
+        cep TEXT, telefone TEXT,
+        cargo TEXT, loja TEXT, data_admissao TEXT,
+        salario REAL, banco TEXT,
+        ctps TEXT, pis TEXT, cbo TEXT,
+        naturalidade TEXT, sexo TEXT, raca_cor TEXT,
+        grau_instrucao TEXT, filiacao_pai TEXT, filiacao_mae TEXT,
         tipo_contrato TEXT, situacao TEXT DEFAULT 'Ativo',
         data_demissao TEXT, motivo_demissao TEXT,
         inicio_experiencia TEXT, fim_experiencia TEXT,
@@ -130,9 +140,403 @@ def _init_db():
     );
     """)
     con.commit()
+
+    # ── Migração: adicionar colunas novas se não existirem ──
+    _migrar_banco(con)
     con.close()
 
+def _migrar_banco(con):
+    """Adiciona colunas novas em bancos já existentes e remove obsoletas."""
+    existing = {r[1] for r in con.execute("PRAGMA table_info(funcionarios)").fetchall()}
+    novas = {
+        "ctps": "TEXT", "pis": "TEXT", "cbo": "TEXT",
+        "naturalidade": "TEXT", "sexo": "TEXT", "raca_cor": "TEXT",
+        "grau_instrucao": "TEXT", "filiacao_pai": "TEXT", "filiacao_mae": "TEXT",
+    }
+    for col, tipo in novas.items():
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE funcionarios ADD COLUMN {col} {tipo}")
+            except Exception:
+                pass
+    # Colunas obsoletas que podem existir em bancos antigos
+    obsoletas = ["email", "pix", "departamento", "agencia", "conta"]
+    for col in obsoletas:
+        if col in existing:
+            # SQLite não suporta DROP COLUMN em versões antigas;
+            # mantemos a coluna mas removemos do formulário
+            pass
+    con.commit()
+
 _init_db()
+
+# ════════════════════════════════════════════════════════════════
+# LEITURA AUTOMÁTICA DE PDFs DE ADMISSÃO
+# ════════════════════════════════════════════════════════════════
+
+def extrair_campos_pdf(arquivo_pdf):
+    """
+    Recebe um arquivo PDF (UploadedFile ou BytesIO) e retorna dict
+    com os campos extraídos da Ficha de Registro e/ou Contrato de Experiência.
+    """
+    if not TEM_PDFPLUMBER:
+        return {"_erro": "Biblioteca de leitura de PDF não disponível neste servidor."}
+
+    campos = {}
+    try:
+        pdf_bytes = io.BytesIO(arquivo_pdf.read()) if hasattr(arquivo_pdf, "read") else arquivo_pdf
+        pdf = pdfplumber.open(pdf_bytes)
+        paginas = []
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                paginas.append(t)
+        pdf.close()
+    except Exception as e:
+        return {"_erro": f"Erro ao ler PDF: {e}"}
+
+    txt = "\n".join(paginas)
+
+    # ── Detecta tipo de documento e separa texto por seção ──
+    eh_ficha = bool(re.search(r"REGISTRO DE EMPREGADO|FICHA DE REGISTRO", txt, re.I))
+    eh_contrato = bool(re.search(r"CONTRATO DE EXPERI[ÊE]NCIA", txt, re.I))
+
+    # Texto isolado da ficha (última página que contém REGISTRO DE EMPREGADO)
+    txt_ficha = ""
+    for p in paginas:
+        if re.search(r"REGISTRO DE EMPREGADO|FICHA DE REGISTRO", p, re.I):
+            txt_ficha = p
+
+    # Texto isolado do contrato (primeira página com CONTRATO DE EXPERIÊNCIA)
+    txt_contrato = ""
+    for p in paginas:
+        if re.search(r"CONTRATO DE EXPERI[ÊE]NCIA", p, re.I) and not txt_contrato:
+            txt_contrato = p
+
+    # ═══ EXTRAÇÃO DA FICHA DE REGISTRO ═══
+    if eh_ficha and txt_ficha:
+        f = txt_ficha
+
+        # --- Nome ---
+        # Layout DOCS: "Nome: ANA PAULA COSTA" (linha isolada com ":")
+        m = re.search(r"^Nome:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)$", f, re.M)
+        if m and m.group(1).strip():
+            campos["nome"] = m.group(1).strip()
+        else:
+            # Layout antigo: nome depois de "Empregado Beneficiários"
+            m = re.search(r"(?:Empregado\s+Beneficiários|Empregado)\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
+            if m and m.group(1).strip():
+                campos["nome"] = m.group(1).strip()
+
+        # --- CPF ---
+        m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", f)
+        if m:
+            campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
+
+        # --- RG ---
+        m = re.search(r"RG\s*Número[:\s]*(\d+)", f, re.I)
+        if m:
+            campos["rg"] = m.group(1).strip()
+        else:
+            m = re.search(r"C[eé]dula de Identidade[^\n]*\n\s*(\d[\d.-]+)", f, re.I)
+            if m:
+                campos["rg"] = m.group(1).strip().rstrip(".")
+
+        # --- CTPS + Série ---
+        m = re.search(r"CTPS\s*Número[:\s]*(\d[\d/]*)\s*S[eé]rie[:\s]*(\d+)", f, re.I)
+        if m:
+            campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
+        else:
+            # Layout antigo: "CTPS Série Data ... \n 7072300 1200"
+            m = re.search(r"CTPS[\s\n]+S[eé]rie[^\n]*\n\s*(\d{4,})\s+(\d{3,})", f, re.I)
+            if m:
+                campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
+
+        # --- PIS ---
+        m = re.search(r"PIS\s*/?\s*PASEP[:\s]*([\d.\-]+)", f, re.I)
+        if m:
+            pis_val = m.group(1).strip().rstrip(".")
+            if pis_val and not pis_val.replace(".", "").replace("-", "").startswith("000"):
+                campos["pis"] = pis_val
+
+        # --- Data Nascimento ---
+        m = re.search(r"(?:Data de nascimento|Nascimento)[:\s]*(\d{2}/\d{2}/\d{4})", f, re.I)
+        if m:
+            campos["data_nascimento"] = _converte_data(m.group(1))
+
+        # --- Naturalidade ---
+        m = re.search(r"Naturalidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\n)", f, re.I)
+        if m:
+            campos["naturalidade"] = m.group(1).strip().rstrip(" -")
+        else:
+            m = re.search(r"Local do nascimento[^\n]*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*[-–]\s*([A-Z]{2})", f, re.I)
+            if m:
+                campos["naturalidade"] = m.group(1).strip()
+
+        # --- Estado Civil ---
+        m = re.search(r"Estado\s*[Cc]ivil[:\s]*(Solteiro|Casado|Divorciado|Vi[uú]vo|Uni[ãa]o Est[áa]vel)", f, re.I)
+        if m:
+            campos["estado_civil"] = m.group(1).strip()
+
+        # --- Sexo ---
+        m = re.search(r"Sexo[:\s]*(Feminino|Masculino|F|M)\b", f, re.I)
+        if m:
+            val = m.group(1).strip()
+            if val.upper() == "F":
+                campos["sexo"] = "Feminino"
+            elif val.upper() == "M":
+                campos["sexo"] = "Masculino"
+            else:
+                campos["sexo"] = val
+
+        # --- Raça/Cor ---
+        m = re.search(r"(?:Etnia ou Ra[çc]a|Cor)[:\s]*(Branca?|Preta?|Parda?|Ind[ií]gena|Amarela?)\b", f, re.I)
+        if m:
+            val = m.group(1).strip()
+            if val.lower().startswith("pard"):
+                campos["raca_cor"] = "Parda"
+            elif val.lower().startswith("branc"):
+                campos["raca_cor"] = "Branca"
+            elif val.lower().startswith("pret"):
+                campos["raca_cor"] = "Preta"
+            else:
+                campos["raca_cor"] = val.capitalize()
+
+        # --- Grau Instrução ---
+        m = re.search(r"Instru[çc][aã]o[:\s]*(Ensino[^\n,]+|Analfabeto|Fundamental[^\n]*|M[ée]dio[^\n]*|Superior[^\n]*)", f, re.I)
+        if m:
+            campos["grau_instrucao"] = m.group(1).strip()
+
+        # --- Filiação Pai ---
+        m = re.search(r"Pai[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\n|Mãe|FILIA)", f)
+        if m:
+            val = m.group(1).strip()
+            if val and val != "FILIAÇÃO":
+                campos["filiacao_pai"] = val
+
+        # --- Filiação Mãe ---
+        m = re.search(r"M[ãa]e[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\n|C[eé]dula|CTPS|RG)", f)
+        if m:
+            val = m.group(1).strip()
+            if val:
+                campos["filiacao_mae"] = val
+
+        # --- Endereço (Residência) ---
+        m = re.search(r"Resid[eê]ncia\s*\n([\s\S]+?)(?:\n\s*\n|Data de nascimento)", f, re.I)
+        if m:
+            end_bloco = m.group(1).strip()
+            m_cep = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", end_bloco)
+            if m_cep:
+                campos["cep"] = re.sub(r"[^0-9]", "", m_cep.group(1))
+                end_bloco = re.sub(r"CEP[:\s]*\d{2}\.?\d{3}[-]?\d{3}", "", end_bloco).strip()
+            # Cidade-UF — procura na última parte do bloco
+            linhas = [l.strip() for l in end_bloco.split("\n") if l.strip()]
+            cidade_found = False
+            for i, linha in enumerate(reversed(linhas)):
+                m_cid = re.search(r",\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)[,-]\s*([A-Z]{2})", linha)
+                if m_cid and len(m_cid.group(1).strip()) > 2:
+                    campos["cidade"] = m_cid.group(1).strip().rstrip(",")
+                    campos["estado"] = m_cid.group(2).strip()
+                    idx = len(linhas) - 1 - i
+                    linhas = linhas[:idx]
+                    cidade_found = True
+                    break
+            endereco_limpo = "\n".join(linhas).strip()
+            endereco_limpo = re.sub(r"[-,]?\s*$", "", endereco_limpo)
+            campos["endereco"] = endereco_limpo.strip().rstrip(",")
+        else:
+            # Layout DOCS: "Endereço: RUA UACARI..."
+            m = re.search(r"Endereço[:\s]*([^\n]+)", f, re.I)
+            if m:
+                end_line = m.group(1).strip()
+                end_line = re.sub(r"Código\s+Município:.*", "", end_line).strip()
+                campos["endereco"] = end_line.rstrip(",")
+            m = re.search(r"Cidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\n)", f, re.I)
+            if m:
+                campos["cidade"] = m.group(1).strip()
+            else:
+                m = re.search(r"Cidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", f, re.I)
+                if m:
+                    cidade_raw = m.group(1).strip()
+                    cidade_raw = re.sub(r"\s*UF:.*", "", cidade_raw).strip()
+                    campos["cidade"] = cidade_raw
+            m = re.search(r"UF[:\s]*([A-Z]{2})", f)
+            if m:
+                campos["estado"] = m.group(1).strip()
+            m = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", f)
+            if m:
+                campos["cep"] = re.sub(r"[^0-9]", "", m.group(1))
+
+        # --- Telefone ---
+        m = re.search(r"(?:Fone|Celular)[:\s]*([\d()\s-]+)", f, re.I)
+        if m:
+            tel = m.group(1).strip()
+            if len(re.sub(r"\D", "", tel)) >= 8:
+                campos["telefone"] = tel
+
+        # --- Cargo e CBO ---
+        # Layout DOCS: "CBO/Cargo:514320-AUXILIAR DE SERVIOS GERAIS"
+        m = re.search(r"CBO/Cargo[:\s]*(\d+)\s*[-]\s*([^\n]+)", f, re.I)
+        if m:
+            campos["cbo"] = m.group(1).strip()
+            campos["cargo"] = m.group(2).strip()
+        else:
+            # Layout antigo: "Cargo Função C.B.O.\n AUXILIAR DE SERVIÇOS GERAIS ... 514320"
+            m = re.search(r"Cargo\s+Fun[çc][aã]o\s+C\.?B\.?O\.?[^\n]*\n\s*(.+?)\s*$", f, re.M)
+            if m:
+                data_line = m.group(1).strip()
+                m_cbo = re.search(r"(\d{4,})\s*$", data_line)
+                if m_cbo:
+                    campos["cbo"] = m_cbo.group(1).strip()
+                    data_line = data_line[:m_cbo.start()].strip()
+                # Se cargo e função são iguais e aparecem concatenados
+                words = data_line.split()
+                half = len(words) // 2
+                if half > 0:
+                    first_half = " ".join(words[:half])
+                    second_half = " ".join(words[half:])
+                    if first_half == second_half:
+                        campos["cargo"] = first_half
+                    else:
+                        campos["cargo"] = data_line
+                elif data_line:
+                    campos["cargo"] = data_line
+            else:
+                m = re.search(r"Fun[çc][aã]o[:\s]*([^\n]+)", f, re.I)
+                if m:
+                    campos["cargo"] = m.group(1).strip()
+
+        # --- Data Admissão ---
+        m = re.search(r"(?:Data de )?Admiss[aã]o[:\s]*(\d{2}/\d{2}/\d{4})", f, re.I)
+        if m:
+            campos["data_admissao"] = _converte_data(m.group(1))
+
+        # --- Salário ---
+        m = re.search(r"(?:Sal[aá]rio|Admiss[aã]o)[^\n]*R\$\s*([\d.,]+)", f, re.I)
+        if m:
+            campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
+        else:
+            m = re.search(r"R\$\s*([\d.,]+)", f)
+            if m and not campos.get("salario"):
+                campos["salario"] = m.group(1).replace(".", "").replace(",", ".")
+
+        # --- Tipo Contrato (inferido da ficha) ---
+        if not campos.get("tipo_contrato"):
+            campos["tipo_contrato"] = "CLT"
+
+    # ═══ EXTRAÇÃO DO CONTRATO DE EXPERIÊNCIA ═══
+    if eh_contrato and txt_contrato:
+        c = txt_contrato
+
+        # --- Nome (do empregado) ---
+        if not campos.get("nome"):
+            m = re.search(r"Sr\.?\s*\(a\)\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:,|\s+domiciliado|\s+portador)", c, re.I)
+            if m:
+                campos["nome"] = m.group(1).strip()
+            else:
+                m = re.search(r"[,\s]+(?:e)\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s+(?:portador|domiciliado)", c, re.I)
+                if m:
+                    campos["nome"] = m.group(1).strip()
+
+        # --- CTPS do contrato ---
+        if not campos.get("ctps"):
+            m = re.search(r"CTPS[^:]*N[º°:]*\s*(\d[\d/]*)\s*[Ss][eé]rie[:\s]*(\d+)", c, re.I)
+            if m:
+                campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
+            else:
+                m = re.search(r"Carteira Profissional\s*No\.?[:\s]*(\d+)[/ ]+S[eé]rie[:\s]*(\d+)", c, re.I)
+                if m:
+                    campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
+
+        # --- Cargo ---
+        if not campos.get("cargo"):
+            m = re.search(r"(?:fun[çc][aã]o|fun[çc][õo]es)\s+de\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\s]+?)(?:\s+e\s+mais|\s*[,.]|\n)", c, re.I)
+            if m:
+                campos["cargo"] = m.group(1).strip()
+
+        # --- Salário ---
+        if not campos.get("salario"):
+            m = re.search(r"remunera[çc][aã]o\s*(?:de)?\s*:?\s*R\$\s*([\d.,]+)", c, re.I)
+            if m:
+                campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
+
+        # --- Data Início Experiência ---
+        m = re.search(r"in[ií]cio\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
+        if m:
+            campos["inicio_experiencia"] = _converte_data(m.group(1))
+            if not campos.get("data_admissao"):
+                campos["data_admissao"] = _converte_data(m.group(1))
+
+        # --- Data Fim Experiência ---
+        m = re.search(r"t[eé]rmino\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
+        if m:
+            campos["fim_experiencia"] = _converte_data(m.group(1))
+        else:
+            m = re.search(r"(?:prorrogado|vencer|terminar).*?(\d{2}/\d{2}/\d{4})", c, re.I)
+            if m:
+                campos["fim_experiencia"] = _converte_data(m.group(1))
+
+        # --- Endereço do empregado (do contrato) ---
+        if not campos.get("endereco"):
+            m = re.search(r"domiciliado\s+(?:na|no)\s+([^,]+?)\s*,", c, re.I)
+            if m:
+                campos["endereco"] = m.group(1).strip()
+
+        # --- Cidade/UF (do contrato) ---
+        if not campos.get("cidade"):
+            m = re.search(r"cidade\s+de\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)[,-]\s*([A-Z]{2})", c, re.I)
+            if m:
+                campos["cidade"] = m.group(1).strip()
+                if not campos.get("estado"):
+                    campos["estado"] = m.group(2).strip()
+
+        # --- Telefone ---
+        if not campos.get("telefone"):
+            m = re.search(r"(?:Fone|Telefone|Celular)[:\s]*([\d()\s-]+)", c, re.I)
+            if m:
+                tel = m.group(1).strip()
+                if len(re.sub(r"\D", "", tel)) >= 8:
+                    campos["telefone"] = tel
+
+        # --- Tipo contrato ---
+        campos["tipo_contrato"] = "Experiência"
+
+    # ═══ EXTRAÇÃO GENÉRICA (se não detectou tipo específico) ═══
+    if not eh_ficha and not eh_contrato:
+        m = re.search(r"Nome[:\s]+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", txt, re.I)
+        if m and not campos.get("nome"):
+            campos["nome"] = m.group(1).strip()
+        m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", txt)
+        if m and not campos.get("cpf"):
+            campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
+
+    # Limpeza final
+    for k, v in list(campos.items()):
+        if isinstance(v, str):
+            campos[k] = v.strip().strip(".,;: ")
+            if not campos[k]:
+                del campos[k]
+
+    campos["_tipo_detectado"] = []
+    if eh_ficha:
+        campos["_tipo_detectado"].append("Ficha de Registro")
+    if eh_contrato:
+        campos["_tipo_detectado"].append("Contrato de Experiência")
+    if not eh_ficha and not eh_contrato:
+        campos["_tipo_detectado"].append("Documento genérico")
+
+    return campos
+
+
+def _converte_data(data_br):
+    """Converte DD/MM/AAAA para AAAA-MM-DD."""
+    if not data_br:
+        return ""
+    try:
+        return datetime.strptime(data_br.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return data_br
+
 
 # ════════════════════════════════════════════════════════════════
 # FUNÇÕES AUXILIARES BANCO
@@ -191,7 +595,7 @@ st.set_page_config(
 with st.sidebar:
     st.markdown("## 🏢 Sistema RH")
     st.success("✅ Banco de dados integrado — dados salvos no próprio sistema")
-    st.caption("Nenhum arquivo externo. Nenhuma configuração de pasta.\nTudo fica em `rh_dados.db` ao lado do programa.")
+    st.caption("Nenhum arquivo externo. Nenhuma configuração de pasta.\nTudo fica no banco de dados do próprio sistema.")
 
     abas_disponiveis = [
         "👥 Cadastro",
@@ -207,7 +611,7 @@ with st.sidebar:
     ]
     aba_sel = st.radio("Navegação", abas_disponiveis, index=0)
     st.markdown("---")
-    st.caption(f"Versão 2.0 — Banco integrado — {_agora()}")
+    st.caption(f"Versão 3.0 — Leitura automática de PDF — {_agora()}")
 
 # ════════════════════════════════════════════════════════════════
 # ABA 1 — CADASTRO DE FUNCIONÁRIOS
@@ -235,49 +639,160 @@ if aba_sel == "👥 Cadastro":
             f = None
 
     with col_b:
+        # ── UPLOAD DE PDF PARA PREENCHIMENTO AUTOMÁTICO ──
+        st.subheader("📄 Importar do PDF de Admissão")
+        st.caption("Faça upload da Ficha de Registro de Empregado e/ou do Contrato de Experiência. "
+                   "Os campos do cadastro serão preenchidos automaticamente.")
+
+        pdf_upload = st.file_uploader(
+            "📎 Enviar PDF de admissão",
+            type=["pdf"],
+            key="up_pdf_admissao",
+            help="Ficha de Registro de Empregado, Contrato de Experiência ou ambos em um único arquivo."
+        )
+
+        campos_pdf = {}
+        if pdf_upload:
+            with st.spinner("Lendo PDF..."):
+                campos_pdf = extrair_campos_pdf(pdf_upload)
+
+            if "_erro" in campos_pdf:
+                st.error(campos_pdf["_erro"])
+                campos_pdf = {}
+            elif campos_pdf:
+                tipos = ", ".join(campos_pdf.get("_tipo_detectado", ["PDF"]))
+                qtd = len([k for k in campos_pdf if not k.startswith("_")])
+                st.success(f"✅ {qtd} campo(s) extraído(s) — {tipos}")
+
+                # Mostra resumo dos campos extraídos
+                with st.expander("📋 Campos extraídos do PDF", expanded=True):
+                    campos_lista = {k: v for k, v in campos_pdf.items() if not k.startswith("_")}
+                    for k, v in campos_lista.items():
+                        rotulo = k.replace("_", " ").title()
+                        st.write(f"**{rotulo}**: {v}")
+
+        # ── FORMULÁRIO DE CADASTRO ──
         with st.form("form_funcionario"):
-            st.subheader("Dados do Funcionário")
+            st.subheader("Dados Pessoais")
             c1, c2, c3 = st.columns(3)
 
-            nome = c1.text_input("Nome *", value=f["nome"] if f else "")
-            cpf = c2.text_input("CPF", value=f["cpf"] if f else "")
-            rg = c3.text_input("RG", value=f["rg"] if f else "")
-            data_nascimento = c1.text_input("Data Nascimento", value=f["data_nascimento"] if f else "")
-            estado_civil = c2.selectbox("Estado Civil", ["Solteiro","Casado","Divorciado","Viúvo","União Estável"],
-                index=["Solteiro","Casado","Divorciado","Viúvo","União Estável"].index(f["estado_civil"]) if f and f["estado_civil"] else 0)
-            endereco = c3.text_input("Endereço", value=f["endereco"] if f else "")
-            cidade = c1.text_input("Cidade", value=f["cidade"] if f else "")
-            estado = c2.text_input("Estado", value=f["estado"] if f else "")
-            cep = c3.text_input("CEP", value=f["cep"] if f else "")
-            telefone = c1.text_input("Telefone", value=f["telefone"] if f else "")
-            email = c2.text_input("E-mail", value=f["email"] if f else "")
-            pix = c3.text_input("Chave PIX", value=f["pix"] if f else "")
+            nome_val = campos_pdf.get("nome", f["nome"] if f else "")
+            cpf_val = campos_pdf.get("cpf", f["cpf"] if f else "")
+            rg_val = campos_pdf.get("rg", f["rg"] if f else "")
+
+            nome = c1.text_input("Nome *", value=nome_val)
+            cpf = c2.text_input("CPF", value=cpf_val)
+            rg = c3.text_input("RG", value=rg_val)
+
+            nasc_val = campos_pdf.get("data_nascimento", f["data_nascimento"] if f else "")
+            nat_val = campos_pdf.get("naturalidade", f["naturalidade"] if f and "naturalidade" in f.keys() else "")
+            ec_val = campos_pdf.get("estado_civil", f["estado_civil"] if f else "")
+
+            data_nascimento = c1.text_input("Data Nascimento (AAAA-MM-DD)", value=nasc_val)
+            naturalidade = c2.text_input("Naturalidade", value=nat_val)
+
+            ec_opcoes = ["Solteiro","Casado","Divorciado","Viúvo","União Estável"]
+            ec_idx = ec_opcoes.index(ec_val) if ec_val in ec_opcoes else (ec_opcoes.index(f["estado_civil"]) if f and f["estado_civil"] else 0)
+            estado_civil = c3.selectbox("Estado Civil", ec_opcoes, index=ec_idx)
+
+            sexo_val = campos_pdf.get("sexo", f["sexo"] if f and "sexo" in f.keys() else "")
+            raca_val = campos_pdf.get("raca_cor", f["raca_cor"] if f and "raca_cor" in f.keys() else "")
+            gi_val = campos_pdf.get("grau_instrucao", f["grau_instrucao"] if f and "grau_instrucao" in f.keys() else "")
+
+            sexo_opcoes = ["", "Feminino", "Masculino"]
+            sexo_idx = sexo_opcoes.index(sexo_val) if sexo_val in sexo_opcoes else 0
+            sexo = c1.selectbox("Sexo", sexo_opcoes, index=sexo_idx)
+
+            raca_opcoes = ["", "Branca", "Preta", "Parda", "Amarela", "Indígena"]
+            raca_idx = raca_opcoes.index(raca_val) if raca_val in raca_opcoes else 0
+            raca_cor = c2.selectbox("Raça/Cor", raca_opcoes, index=raca_idx)
+
+            gi_opcoes = ["", "Analfabeto", "Ensino Fundamental Incompleto", "Ensino Fundamental Completo",
+                         "Ensino Médio Incompleto", "Ensino Médio Completo", "Ensino Superior Incompleto",
+                         "Ensino Superior Completo", "Pós-Graduação"]
+            gi_idx = gi_opcoes.index(gi_val) if gi_val in gi_opcoes else 0
+            grau_instrucao = c3.selectbox("Grau Instrução", gi_opcoes, index=gi_idx)
+
+            end_val = campos_pdf.get("endereco", f["endereco"] if f else "")
+            cid_val = campos_pdf.get("cidade", f["cidade"] if f else "")
+            est_val = campos_pdf.get("estado", f["estado"] if f else "")
+            cep_val = campos_pdf.get("cep", f["cep"] if f else "")
+            tel_val = campos_pdf.get("telefone", f["telefone"] if f else "")
+
+            endereco = c1.text_input("Endereço", value=end_val)
+            cidade = c2.text_input("Cidade", value=cid_val)
+            estado = c3.text_input("UF", value=est_val)
+            cep = c1.text_input("CEP", value=cep_val)
+            telefone = c2.text_input("Telefone", value=tel_val)
+
+            ctps_val = campos_pdf.get("ctps", f["ctps"] if f and "ctps" in f.keys() else "")
+            pis_val = campos_pdf.get("pis", f["pis"] if f and "pis" in f.keys() else "")
+            cbo_val = campos_pdf.get("cbo", f["cbo"] if f and "cbo" in f.keys() else "")
+
+            ctps = c3.text_input("CTPS (Nº/Série)", value=ctps_val)
+            pis = c1.text_input("PIS/PASEP", value=pis_val)
+            cbo = c2.text_input("CBO", value=cbo_val)
+
+            pai_val = campos_pdf.get("filiacao_pai", f["filiacao_pai"] if f and "filiacao_pai" in f.keys() else "")
+            mae_val = campos_pdf.get("filiacao_mae", f["filiacao_mae"] if f and "filiacao_mae" in f.keys() else "")
+
+            filiacao_pai = c3.text_input("Filiação (Pai)", value=pai_val)
+            filiacao_mae = c1.text_input("Filiação (Mãe)", value=mae_val)
 
             st.markdown("---")
             st.subheader("Dados Profissionais")
-            cargo = c1.text_input("Cargo", value=f["cargo"] if f else "")
-            departamento = c2.text_input("Departamento", value=f["departamento"] if f else "")
+            c1, c2, c3 = st.columns(3)
+
+            cargo_val = campos_pdf.get("cargo", f["cargo"] if f else "")
+            adm_val = campos_pdf.get("data_admissao", f["data_admissao"] if f else "")
+            sal_val = campos_pdf.get("salario", "")
+            if not sal_val and f and f["salario"]:
+                sal_val = str(float(f["salario"]))
+
+            cargo = c1.text_input("Cargo", value=cargo_val)
             lojas_lista = _lista_lojas()
-            loja_sel = c3.selectbox("Loja", lojas_lista if lojas_lista else ["Sem loja cadastrada"],
+            loja_sel = c2.selectbox("Loja", lojas_lista if lojas_lista else ["Sem loja cadastrada"],
                 index=lojas_lista.index(f["loja"]) if f and f["loja"] in lojas_lista else 0)
-            data_admissao = c1.text_input("Data Admissão", value=f["data_admissao"] if f else "")
-            salario = c2.number_input("Salário (R$)", value=float(f["salario"]) if f and f["salario"] else 0.0, min_value=0.0, format="%.2f")
-            tipo_contrato = c3.selectbox("Tipo Contrato", ["CLT","PJ","Estágio","Temporário","Outro"],
-                index=["CLT","PJ","Estágio","Temporário","Outro"].index(f["tipo_contrato"]) if f and f["tipo_contrato"] else 0)
-            situacao = c1.selectbox("Situação", ["Ativo","Demitido C/JC","Demitido S/JC","Pedido de Conta","Término de Contrato","Rescisão","Abandono","Desistência","Aviso Prévio"],
-                index=["Ativo","Demitido C/JC","Demitido S/JC","Pedido de Conta","Término de Contrato","Rescisão","Abandono","Desistência","Aviso Prévio"].index(f["situacao"]) if f and f["situacao"] else 0)
+            data_admissao = c3.text_input("Data Admissão (AAAA-MM-DD)", value=adm_val)
+
+            sal_float = 0.0
+            if sal_val:
+                try:
+                    sal_float = float(sal_val)
+                except (ValueError, TypeError):
+                    pass
+            elif f and f["salario"]:
+                sal_float = float(f["salario"])
+
+            salario = c1.number_input("Salário (R$)", value=sal_float, min_value=0.0, format="%.2f")
+
+            tc_val = campos_pdf.get("tipo_contrato", f["tipo_contrato"] if f else "")
+            tc_opcoes = ["CLT","PJ","Estágio","Temporário","Experiência","Outro"]
+            tc_idx = tc_opcoes.index(tc_val) if tc_val in tc_opcoes else 0
+            tipo_contrato = c2.selectbox("Tipo Contrato", tc_opcoes, index=tc_idx)
+
+            sit_opcoes = ["Ativo","Demitido C/JC","Demitido S/JC","Pedido de Conta",
+                          "Término de Contrato","Rescisão","Abandono","Desistência","Aviso Prévio"]
+            sit_val = f["situacao"] if f else "Ativo"
+            sit_idx = sit_opcoes.index(sit_val) if sit_val in sit_opcoes else 0
+            situacao = c3.selectbox("Situação", sit_opcoes, index=sit_idx)
 
             st.markdown("---")
             st.subheader("Dados Bancários")
-            banco = c1.text_input("Banco", value=f["banco"] if f else "")
-            agencia = c2.text_input("Agência", value=f["agencia"] if f else "")
-            conta = c3.text_input("Conta", value=f["conta"] if f else "")
+            b1, b2 = st.columns(2)
+            banco = b1.text_input("Banco", value=f["banco"] if f else "")
 
             st.markdown("---")
-            st.subheader("Eventos / Prazos")
+            st.subheader("Período de Experiência")
             e1, e2, e3 = st.columns(3)
-            inicio_experiencia = e1.text_input("Início Experiência", value=f["inicio_experiencia"] if f else "")
-            fim_experiencia = e2.text_input("Fim Experiência", value=f["fim_experiencia"] if f else "")
+            ie_val = campos_pdf.get("inicio_experiencia", f["inicio_experiencia"] if f else "")
+            fe_val = campos_pdf.get("fim_experiencia", f["fim_experiencia"] if f else "")
+            inicio_experiencia = e1.text_input("Início Experiência", value=ie_val)
+            fim_experiencia = e2.text_input("Fim Experiência", value=fe_val)
+
+            st.markdown("---")
+            st.subheader("Outros Eventos / Prazos")
+            e1, e2, e3 = st.columns(3)
             inicio_ferias = e1.text_input("Início Férias", value=f["inicio_ferias"] if f else "")
             dias_ferias = e2.number_input("Dias Férias", value=int(f["dias_ferias"]) if f and f["dias_ferias"] else 0, min_value=0)
             inicio_licenca = e1.text_input("Início Licença", value=f["inicio_licenca"] if f else "")
@@ -327,9 +842,12 @@ if aba_sel == "👥 Cadastro":
                 if f:  # atualizar
                     con.execute("""UPDATE funcionarios SET
                         nome=?, cpf=?, rg=?, data_nascimento=?, estado_civil=?,
-                        endereco=?, cidade=?, estado=?, cep=?, telefone=?, email=?, pix=?,
-                        cargo=?, departamento=?, loja=?, data_admissao=?, salario=?,
-                        banco=?, agencia=?, conta=?, tipo_contrato=?, situacao=?,
+                        endereco=?, cidade=?, estado=?, cep=?, telefone=?,
+                        cargo=?, loja=?, data_admissao=?, salario=?,
+                        banco=?, ctps=?, pis=?, cbo=?,
+                        naturalidade=?, sexo=?, raca_cor=?, grau_instrucao=?,
+                        filiacao_pai=?, filiacao_mae=?,
+                        tipo_contrato=?, situacao=?,
                         inicio_experiencia=?, fim_experiencia=?,
                         inicio_ferias=?, dias_ferias=?, fim_ferias=?,
                         inicio_licenca=?, dias_licenca=?, fim_licenca=?,
@@ -338,9 +856,12 @@ if aba_sel == "👥 Cadastro":
                         observacoes=?, atualizado_em=?
                         WHERE id=?""",
                         (nome.strip(), cpf, rg, data_nascimento, estado_civil,
-                         endereco, cidade, estado, cep, telefone, email, pix,
-                         cargo, departamento, loja_sel, data_admissao, salario,
-                         banco, agencia, conta, tipo_contrato, situacao,
+                         endereco, cidade, estado, cep, telefone,
+                         cargo, loja_sel, data_admissao, salario,
+                         banco, ctps, pis, cbo,
+                         naturalidade, sexo, raca_cor, grau_instrucao,
+                         filiacao_pai, filiacao_mae,
+                         tipo_contrato, situacao,
                          inicio_experiencia, fim_experiencia,
                          inicio_ferias, int(dias_ferias), fim_ferias,
                          inicio_licenca, int(dias_licenca), fim_licenca,
@@ -352,20 +873,26 @@ if aba_sel == "👥 Cadastro":
                 else:  # novo
                     con.execute("""INSERT INTO funcionarios (
                         nome, cpf, rg, data_nascimento, estado_civil,
-                        endereco, cidade, estado, cep, telefone, email, pix,
-                        cargo, departamento, loja, data_admissao, salario,
-                        banco, agencia, conta, tipo_contrato, situacao,
+                        endereco, cidade, estado, cep, telefone,
+                        cargo, loja, data_admissao, salario,
+                        banco, ctps, pis, cbo,
+                        naturalidade, sexo, raca_cor, grau_instrucao,
+                        filiacao_pai, filiacao_mae,
+                        tipo_contrato, situacao,
                         inicio_experiencia, fim_experiencia,
                         inicio_ferias, dias_ferias, fim_ferias,
                         inicio_licenca, dias_licenca, fim_licenca,
                         inicio_afastamento, dias_afastamento, fim_afastamento,
                         inicio_aviso, dias_aviso, fim_aviso,
                         observacoes, criado_em, atualizado_em
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (nome.strip(), cpf, rg, data_nascimento, estado_civil,
-                         endereco, cidade, estado, cep, telefone, email, pix,
-                         cargo, departamento, loja_sel, data_admissao, salario,
-                         banco, agencia, conta, tipo_contrato, situacao,
+                         endereco, cidade, estado, cep, telefone,
+                         cargo, loja_sel, data_admissao, salario,
+                         banco, ctps, pis, cbo,
+                         naturalidade, sexo, raca_cor, grau_instrucao,
+                         filiacao_pai, filiacao_mae,
+                         tipo_contrato, situacao,
                          inicio_experiencia, fim_experiencia,
                          inicio_ferias, int(dias_ferias), fim_ferias,
                          inicio_licenca, int(dias_licenca), fim_licenca,
@@ -527,7 +1054,6 @@ elif aba_sel == "✈️ Diárias":
         qtd_dias = d1.number_input("Quantidade de Dias", value=1, min_value=1)
         obs_diaria = d2.text_area("Observações")
 
-        # busca id do funcionário
         fid_diaria = None
         for f in func_ativos:
             if f[1] == func_nome:
@@ -648,7 +1174,7 @@ elif aba_sel == "🧳 Viagens":
                  data_saida, data_retorno, transporte, hospedagem,
                  valor_estimado, observacoes, status, criado_em, atualizado_em)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (fid_v, func_nome_v, destino.strip(), motivo_v,
+                (fid_v, func_nome_v, destino_v.strip(), motivo_v,
                  data_saida_v, data_retorno_v, transporte_v, hospedagem_v,
                  valor_v, obs_v, "Pendente", _agora(), _agora()))
             con.commit(); con.close()
@@ -687,7 +1213,6 @@ elif aba_sel == "🛒 Compras":
         data_compra = co1.text_input("Data Compra (AAAA-MM-DD)", value=_hoje())
         obs_c = co2.text_area("Observações")
 
-        # busca id da loja
         lid_c = None
         if lojas_lista:
             con = _conn()
@@ -762,7 +1287,6 @@ elif aba_sel == "📊 Painel":
 
     st.markdown("---")
 
-    # Gráficos
     con = _conn()
     funcs_por_loja = con.execute("""
         SELECT loja, COUNT(*) as qtd FROM funcionarios
@@ -806,7 +1330,6 @@ elif aba_sel == "📎 Documentos":
                     fid_doc = f[0]
                     break
 
-            # FOTO
             st.subheader("📸 Foto do Funcionário")
             foto_up = st.file_uploader("Enviar foto", type=["jpg","jpeg","png"], key="up_foto")
             if foto_up and fid_doc:
@@ -824,7 +1347,6 @@ elif aba_sel == "📎 Documentos":
             if foto_row:
                 st.image(io.BytesIO(foto_row["conteudo"]), caption=foto_row["nome_arquivo"], width=200)
 
-            # DOCUMENTOS
             st.subheader("📄 Documentos")
             doc_up = st.file_uploader("Enviar documento", type=["pdf","jpg","jpeg","png","doc","docx"], key="up_doc_func")
             if doc_up and fid_doc:
@@ -848,7 +1370,8 @@ elif aba_sel == "📎 Documentos":
                         b64 = base64.b64encode(doc['conteudo']).decode()
                         ext = doc['nome_arquivo'].rsplit('.', 1)[-1].lower()
                         mime = "application/pdf" if ext == "pdf" else "image/jpeg" if ext in ("jpg","jpeg") else "image/png" if ext == "png" else "application/octet-stream"
-                        st.markdown(f'<a href="data:{mime};base64,{b64}" download="{doc["nome_arquivo"]}">⬇️ Baixar</a>', unsafe_allow_html=True)
+                        dl_name = doc['nome_arquivo']
+                        st.markdown(f'<a href="data:{mime};base64,{b64}" download="{dl_name}">⬇️ Baixar</a>', unsafe_allow_html=True)
                     with c2:
                         if st.button("🗑️", key=f"exc_doc_func_{doc['id']}"):
                             con = _conn()
@@ -890,7 +1413,8 @@ elif aba_sel == "📎 Documentos":
                             b64 = base64.b64encode(doc['conteudo']).decode()
                             ext = doc['nome_arquivo'].rsplit('.', 1)[-1].lower()
                             mime = "application/pdf" if ext == "pdf" else "image/jpeg" if ext in ("jpg","jpeg") else "image/png" if ext == "png" else "application/octet-stream"
-                            st.markdown(f'<a href="data:{mime};base64,{b64}" download="{doc["nome_arquivo"]}">⬇️ Baixar</a>', unsafe_allow_html=True)
+                            dl_name = doc['nome_arquivo']
+                            st.markdown(f'<a href="data:{mime};base64,{b64}" download="{dl_name}">⬇️ Baixar</a>', unsafe_allow_html=True)
                         with c2:
                             if st.button("🗑️", key=f"exc_doc_loja_v_{doc['id']}"):
                                 con = _conn()
@@ -943,7 +1467,6 @@ elif aba_sel == "⏱️ Eventos Trabalhistas":
                 con.execute("INSERT INTO eventos_trabalhistas (funcionario_id, tipo, data_inicio, data_fim, dias, observacoes, criado_em) VALUES (?,?,?,?,?,?,?)",
                     (fid_ev, tipo_ev, data_inicio_ev, data_fim_ev, int(dias_ev), obs_ev, _agora()))
 
-                # atualiza campos no cadastro do funcionário
                 if tipo_ev == "Férias":
                     con.execute("UPDATE funcionarios SET inicio_ferias=?, dias_ferias=?, fim_ferias=?, atualizado_em=? WHERE id=?",
                         (data_inicio_ev, int(dias_ev), data_fim_ev, _agora(), fid_ev))
@@ -967,7 +1490,6 @@ elif aba_sel == "⏱️ Eventos Trabalhistas":
                 st.success(f"✅ Evento '{tipo_ev}' registrado para {func_ev}!")
                 st.rerun()
 
-        # LISTA DE EVENTOS
         st.markdown("---")
         st.subheader("📋 Eventos Registrados")
         con = _conn()
@@ -991,8 +1513,16 @@ elif aba_sel == "⏱️ Eventos Trabalhistas":
 elif aba_sel == "⚙️ Configurações":
     st.header("⚙️ Configurações do Sistema")
 
-    st.success("✅ Todos os dados são salvos automaticamente no banco de dados integrado (`rh_dados.db`).")
+    st.success("✅ Todos os dados são salvos automaticamente no banco de dados integrado.")
     st.info("Não é preciso configurar pasta externa, Google Sheets ou qualquer outra coisa.\nO banco de dados fica ao lado do programa e nunca se perde ao fechar e reabrir.")
+
+    st.markdown("---")
+    st.subheader("📄 Importação de PDFs")
+    if TEM_PDFPLUMBER:
+        st.success("✅ Biblioteca de leitura de PDF disponível — a importação automática está funcionando.")
+    else:
+        st.warning("⚠️ Biblioteca de leitura de PDF não disponível. A importação automática não funcionará.\n"
+                    "Contate o administrador do servidor para instalar a biblioteca.")
 
     st.markdown("---")
     st.subheader("📋 Informações do Banco")
@@ -1034,7 +1564,6 @@ elif aba_sel == "💾 Backup":
 
     if st.button("💾 GERAR BACKUP COMPLETO", type="primary", use_container_width=True):
         with st.spinner("Preparando cópia..."):
-            # lê o arquivo .db inteiro
             with open(DB_PATH, "rb") as f:
                 dados_db = f.read()
             nome_zip = f"backup_rh_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
@@ -1061,11 +1590,10 @@ elif aba_sel == "💾 Backup":
             with zipfile.ZipFile(io.BytesIO(arq_rest.read()), "r") as zf:
                 nomes = zf.namelist()
                 if "rh_dados.db" not in nomes:
-                    st.error("❌ Este ZIP não contém o banco de dados (`rh_dados.db`). Não é um backup válido.")
+                    st.error("❌ Este ZIP não contém o banco de dados. Não é um backup válido.")
                 else:
                     if st.button("✅ CONFIRMAR RESTAURAÇÃO", type="primary", use_container_width=True):
                         conteudo_db = zf.read("rh_dados.db")
-                        # substitui o banco atual
                         with open(DB_PATH, "wb") as f:
                             f.write(conteudo_db)
                         st.success("✅ Backup restaurado com sucesso! Feche e abra o sistema para ver os dados.")
@@ -1084,7 +1612,6 @@ elif aba_sel == "💾 Backup":
                 try:
                     rows = con.execute(f"SELECT * FROM {t}").fetchall()
                     df_exp = pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
-                    # remover colunas blob
                     for col_b in ["conteudo","fotos","anexos"]:
                         if col_b in df_exp.columns:
                             df_exp = df_exp.drop(columns=[col_b])
