@@ -19,6 +19,13 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# ====================== EXTRAÇÃO DE DADOS DE PDFs ======================
+try:
+    import pdfplumber
+    PDFPLUMBER_OK = True
+except ImportError:
+    PDFPLUMBER_OK = False
+
 # ============================================================
 # CACHE DE DADOS — evita recarregar arquivo JSON a cada rerun
 # ============================================================
@@ -2520,7 +2527,13 @@ def carregar_dados():
             "DataTerminoContrato",
             "DataLicenca","DiasLicenca","DataTerminoLicenca",
             "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-            "CaminhoFoto"
+            "CaminhoFoto",
+            "Sexo","EstadoCivil","Etnia","GrauInstrucao",
+            "Naturalidade","Nacionalidade","UF","Cidade","Bairro","CEP",
+            "NomePai","NomeMae","CTPSNumero","CTPSSerie",
+            "TituloEleitor","CBO","MatriculaeSocial","Email",
+            "Funcao","Setor","HorarioTrabalho","FormaPgto",
+            "DataTerminoExperiencia","PrazoExperienciaDias"
         ],
         "Historico": [
             "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -3340,7 +3353,13 @@ def gerar_ficha_individual(fd, fh, mr):
         "DataTerminoContrato",
         "DataLicenca","DiasLicenca","DataTerminoLicenca",
         "DataAfastamento","DiasAfastamento","DataRetornoAfastamento",
-        "CaminhoFoto"
+        "CaminhoFoto",
+        "Sexo","EstadoCivil","Etnia","GrauInstrucao",
+        "Naturalidade","Nacionalidade","UF","Cidade","Bairro","CEP",
+        "NomePai","NomeMae","CTPSNumero","CTPSSerie",
+        "TituloEleitor","CBO","MatriculaeSocial","Email",
+        "Funcao","Setor","HorarioTrabalho","FormaPgto",
+        "DataTerminoExperiencia","PrazoExperienciaDias"
     ]
     colunas_historico = [
         "DataEvento","TipoEvento","Matricula","Nome","CPF","RG","PIS",
@@ -3666,6 +3685,743 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
+
+
+# ====================== FUNÇÕES DE EXTRAÇÃO DE DADOS DE PDFs ======================
+
+def extrair_dados_registro_empregado(pdf_bytes):
+    """Extrai dados da Ficha de Registro de Empregado (PDF).
+    
+    Suporta dois layouts principais:
+      - Layout A (FG FACILITIES): formato "Rótulo: Valor" em cada linha
+      - Layout B (FG SERVICES): rótulos numa linha, valores na linha seguinte
+    Retorna dict com os campos encontrados.
+    """
+    import pdfplumber
+    resultado = {}
+    
+    try:
+        with pdfplumber.open(pdf_bytes) as pdf:
+            texto_completo = ""
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    texto_completo += t + "\n"
+        
+        linhas = texto_completo.split('\n')
+        texto_mono = re.sub(r'\s+', ' ', texto_completo)
+        
+        # ============ DETECÇÃO DE LAYOUT ============
+        layout_a = bool(re.search(r'Nome:\s*[A-ZÀ-Ú]', texto_completo))
+        # Layout B tem "Residência" seguido de endereço do empregado
+        layout_b_residencia = bool(re.search(r'Resid[êe]ncia', texto_completo))
+        
+        # =============================================================
+        # NOME
+        # =============================================================
+        if layout_a:
+            m = re.search(r'Nome:\s*([A-ZÀ-Ú][A-ZÀ-Ú\s]+?)(?:\n|Pai|Código|Matrícula|Sexo)', texto_completo)
+            if m and len(m.group(1).strip()) > 2:
+                resultado["Nome"] = m.group(1).strip()
+        else:
+            # Layout B: nome em linha isolada após "Empregado"
+            for i, linha in enumerate(linhas):
+                if re.match(r'Empregado\s', linha) and i + 1 < len(linhas):
+                    nome_cand = linhas[i + 1].strip()
+                    if re.match(r'^[A-ZÀ-Ú][A-ZÀ-Ú\s]+$', nome_cand) and len(nome_cand) > 3:
+                        resultado["Nome"] = nome_cand
+                        break
+        
+        # =============================================================
+        # CPF
+        # =============================================================
+        m = re.search(r'CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})', texto_mono)
+        if m:
+            resultado["CPF"] = m.group(1).strip()
+        
+        # =============================================================
+        # RG
+        # =============================================================
+        m = re.search(r'RG\s*N[oº]?mero[:\s]*(\d+)', texto_mono)
+        if m:
+            resultado["RG"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Cédula de Identidade' in linha and i + 1 < len(linhas):
+                    m = re.match(r'(\d+)\s+(\d{2}/\d{2}/\d{4})\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)', linhas[i + 1].strip())
+                    if m:
+                        resultado["RG"] = m.group(1)
+                        resultado["TituloEleitor"] = m.group(4)
+                    else:
+                        m = re.search(r'^(\d{5,})', linhas[i + 1].strip())
+                        if m:
+                            resultado["RG"] = m.group(1)
+                    break
+        
+        if "RG" not in resultado:
+            m = re.search(r'(?:Identidade|RG)[:\s]*(\d[\d.-]+\d)', texto_mono)
+            if m:
+                resultado["RG"] = m.group(1).strip().rstrip('.')
+        
+        # =============================================================
+        # PIS/PASEP
+        # =============================================================
+        m = re.search(r'PIS(?:/PASEP)?[:\s]*(\d[\d.-]+\d)', texto_mono)
+        if m:
+            val = m.group(1).strip()
+            if val not in ('.', '..', '...', '000.00000.00-0') and not re.match(r'^[.\s]+$', val):
+                resultado["PIS"] = val
+        
+        # =============================================================
+        # DATA DE NASCIMENTO
+        # =============================================================
+        m = re.search(r'Nascimento[:\s]*(\d{2}/\d{2}/\d{4})', texto_mono)
+        if m:
+            resultado["Nascimento"] = m.group(1)
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Data de nascimento' in linha and i + 1 < len(linhas):
+                    m = re.search(r'(\d{2}/\d{2}/\d{4})', linhas[i + 1])
+                    if m:
+                        resultado["Nascimento"] = m.group(1)
+                        break
+        
+        # =============================================================
+        # NATURALIDADE
+        # =============================================================
+        m = re.search(r'Naturalidade[:\s]*([A-ZÀ-Úa-z][A-ZÀ-Úa-z\s]+?)(?:\s+UF[:\s]|\n)', texto_completo)
+        if m:
+            resultado["Naturalidade"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Local do nascimento' in linha and i + 1 < len(linhas):
+                    m = re.search(r'([A-ZÀ-Ú][A-ZÀ-Ú\s]+?)\s*[-–]\s*([A-Z]{2})', linhas[i + 1])
+                    if m:
+                        resultado["Naturalidade"] = m.group(1).strip()
+                        break
+        
+        # =============================================================
+        # NACIONALIDADE
+        # =============================================================
+        m = re.search(r'Nacionalidade[:\s]*(Brasilei[roa]\w*)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["Nacionalidade"] = "Brasileira"
+        else:
+            for i, linha in enumerate(linhas):
+                if 'nacionalidade' in linha.lower() and i + 1 < len(linhas):
+                    m = re.search(r'(BRASIL|Brasilei[roa]\w*)', linhas[i + 1])
+                    if m:
+                        resultado["Nacionalidade"] = "Brasileira"
+                        break
+        
+        # =============================================================
+        # SEXO
+        # =============================================================
+        m = re.search(r'Sexo[:\s]*(Feminino|Masculino)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["Sexo"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Sexo' in linha and 'Grau' in linha and i + 1 < len(linhas):
+                    partes = linhas[i + 1].strip().split()
+                    for p in partes:
+                        if p in ('Feminino', 'Masculino'):
+                            resultado["Sexo"] = p
+                            break
+        
+        # =============================================================
+        # ESTADO CIVIL
+        # =============================================================
+        m = re.search(r'Estado\s*[Cc]ivil[:\s]*(Solteiro|Casado|Divorciado|Vi[uú]vo|Separado|União Estável)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["EstadoCivil"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Estado civil' in linha:
+                    m = re.search(r'\b(Solteiro|Casado|Divorciado|Vi[uú]vo|Separado)\b', linha)
+                    if m:
+                        resultado["EstadoCivil"] = m.group(1).strip()
+                    elif i + 1 < len(linhas):
+                        m = re.search(r'\b(Solteiro|Casado|Divorciado|Vi[uú]vo|Separado)\b', linhas[i + 1])
+                        if m:
+                            resultado["EstadoCivil"] = m.group(1).strip()
+        
+        # =============================================================
+        # ETNIA/RAÇA
+        # =============================================================
+        m = re.search(r'(?:Etnia|Raça)[:\s]*(Branca|Preta|Parda|Amarela|Ind[ií]gena|Não declarado)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["Etnia"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if re.search(r'(Cor|Etnia)', linha) and i + 1 < len(linhas):
+                    m = re.search(r'\b(Branca|Preta|Parda|Amarela|Ind[ií]gena)\b', linhas[i + 1])
+                    if m:
+                        resultado["Etnia"] = m.group(1).strip()
+                        break
+        
+        # =============================================================
+        # GRAU DE INSTRUÇÃO
+        # =============================================================
+        if layout_a:
+            m = re.search(r'(?:Instru[cç][aã]o|Grau de instru[cç][aã]o)[:\s]*(Ensino\s+\w+[\s\w]*?(?:Completo|Incompleto))', texto_mono, re.IGNORECASE)
+            if m:
+                resultado["GrauInstrucao"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Grau de instrução' in linha and i + 1 < len(linhas):
+                    m = re.search(r'(Ensino\s+\w+[\s\w]*?(?:Completo|Incompleto))', linhas[i + 1], re.IGNORECASE)
+                    if m:
+                        resultado["GrauInstrucao"] = m.group(1).strip()
+                        break
+        
+        # =============================================================
+        # ENDEREÇO DO EMPREGADO
+        # =============================================================
+        # Layout B: "Residência" label → endereço nas linhas seguintes
+        if layout_b_residencia:
+            for i, linha in enumerate(linhas):
+                if re.search(r'Resid[êe]ncia', linha) and i + 1 < len(linhas):
+                    # Juntar até 3 linhas para capturar endereço completo
+                    endereco_parts = []
+                    for j in range(i + 1, min(i + 4, len(linhas))):
+                        prox = linhas[j].strip()
+                        # Parar se chegou em outra seção
+                        if re.search(r'^(Data de|Pai|Mãe|Cédula|CTPS|Doc\.|Cargo)', prox):
+                            break
+                        endereco_parts.append(prox)
+                    endereco_raw = ', '.join(endereco_parts)
+                    # Limpar: remover trailing commas e "CEP: XXXXX-XXX"
+                    endereco_raw = re.sub(r',\s*,', ',', endereco_raw)
+                    # Extrair bairro e cidade da string
+                    # Formato: "Avenida JOSE FERREIRA CHUCRE, 2669, JARDIM FELICIDADE, MACAPA, AP, - CEP: 68909-115"
+                    m = re.match(r'(.+?),\s*([A-ZÀ-Ú\s]+?),\s*([A-Z]{2}),\s*-?\s*CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', endereco_raw)
+                    if m:
+                        resultado["Endereco"] = m.group(1).strip()
+                        resultado["Bairro"] = m.group(2).strip()
+                        resultado["Cidade"] = m.group(3).strip().capitalize()
+                        resultado["UF"] = m.group(4)  # Wait, that's CEP
+                    # Reparse corretamente
+                    # "Avenida JOSE FERREIRA CHUCRE, 2669, JARDIM FELICIDADE, MACAPA, AP, - CEP: 68909-115"
+                    # Grupos: (endereço),(número),(bairro),(cidade),(UF),- CEP: (cep)
+                    m = re.match(r'(.+?),\s*(\d+),\s*([A-ZÀ-Ú\s]+?),\s*([A-ZÀ-Ú]+),\s*([A-Z]{2}),\s*-?\s*CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', endereco_raw)
+                    if m:
+                        resultado["Endereco"] = f"{m.group(1).strip()}, {m.group(2).strip()}"
+                        resultado["Bairro"] = m.group(3).strip()
+                        resultado["Cidade"] = m.group(4).strip().capitalize()
+                        resultado["UF"] = m.group(5).strip()
+                        resultado["CEP"] = m.group(6).strip()
+                    else:
+                        # Fallback: pelo menos o endereço
+                        resultado["Endereco"] = endereco_parts[0] if endereco_parts else ""
+                    break
+        
+        # Layout A: Vale-Transporte "Residir a RUA ..." ou "Endereço:" após "Dados Pessoais"
+        if "Endereco" not in resultado:
+            m_vt = re.search(r'[Rr]esidir\s+a\s+([A-Za-zÀ-ú0-9\s,.\-]+?)(?:\s*Bairro|\n)', texto_completo, re.IGNORECASE)
+            if m_vt:
+                resultado["Endereco"] = m_vt.group(1).strip().rstrip(',')
+            else:
+                secao_pessoal = False
+                for i, linha in enumerate(linhas):
+                    if 'Dados Pessoais' in linha:
+                        secao_pessoal = True
+                    if secao_pessoal and re.match(r'Endere[cç]o:\s*\w', linha):
+                        conteudo = linha.split(':', 1)[1].strip()
+                        m = re.match(r'(.+?)(?:\s+Código\s+Munic[ií]pio)?$', conteudo)
+                        if m:
+                            resultado["Endereco"] = m.group(1).strip()
+                        else:
+                            resultado["Endereco"] = conteudo
+                        break
+        
+        # =============================================================
+        # BAIRRO — se não capturou com endereço
+        # =============================================================
+        if "Bairro" not in resultado:
+            m_vt_bairro = re.search(r'Bairro\s+([A-ZÀ-Úa-z\s]+?)(?:,|\s+localizado|\s+CEP|\n)', texto_completo)
+            if m_vt_bairro:
+                resultado["Bairro"] = m_vt_bairro.group(1).strip()
+            else:
+                matches_bairro = list(re.finditer(r'Bairro[:\s]*([A-ZÀ-Úa-z\s]+?)(?:\s*Cidade|\s*CEP|,|\n)', texto_completo))
+                if matches_bairro:
+                    resultado["Bairro"] = matches_bairro[-1].group(1).strip()
+        
+        # =============================================================
+        # CEP — se não capturou com endereço
+        # =============================================================
+        if "CEP" not in resultado:
+            matches_cep = list(re.finditer(r'CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', texto_mono))
+            if matches_cep:
+                resultado["CEP"] = matches_cep[-1].group(1).strip()
+        
+        # =============================================================
+        # CIDADE — se não capturou com endereço
+        # =============================================================
+        if "Cidade" not in resultado:
+            m_vt_cidade = re.search(r'localizado\s+em\s+([A-ZÀ-Úa-z]+)\s*-\s*([A-Z]{2})', texto_completo, re.IGNORECASE)
+            if m_vt_cidade:
+                resultado["Cidade"] = m_vt_cidade.group(1).strip()
+                resultado["UF"] = m_vt_cidade.group(2).strip()
+            else:
+                matches_cidade = list(re.finditer(r'Cidade[:\s]*([A-ZÀ-Úa-z][A-ZÀ-Úa-z\s]+?)(?:\s*UF|\s*[-–]|\n)', texto_completo))
+                if matches_cidade:
+                    resultado["Cidade"] = matches_cidade[-1].group(1).strip()
+        
+        if "Cidade" not in resultado:
+            m = re.search(r'([A-ZÀ-Ú]+),\s*([A-Z]{2})', texto_mono)
+            if m and m.group(2) in ('AM','AP','PA','PE','SP','RJ','MG','BA','CE','MA','GO','MT','MS','DF','PR','SC','RS','RN','PB','AL','SE','PI','RO','RR','AC','TO','ES'):
+                resultado["Cidade"] = m.group(1).strip().capitalize()
+        
+        # =============================================================
+        # UF — se não capturou com endereço
+        # =============================================================
+        if "UF" not in resultado:
+            matches_uf = list(re.finditer(r'UF[:\s]*(AM|AP|PA|PE|SP|RJ|MG|BA|CE|MA|GO|MT|MS|DF|PR|SC|RS|RN|PB|AL|SE|PI|RO|RR|AC|TO|ES)', texto_mono))
+            if matches_uf:
+                resultado["UF"] = matches_uf[-1].group(1)
+            else:
+                m = re.search(r'([A-ZÀ-Ú]+),\s*([A-Z]{2})', texto_mono)
+                if m:
+                    resultado["UF"] = m.group(2)
+        
+        # =============================================================
+        # NOME DO PAI
+        # =============================================================
+        m = re.search(r'Pai[:\s]*([A-ZÀ-Ú\s]+?)(?:\s*\n|M[aã]e)', texto_completo)
+        if m and len(m.group(1).strip()) > 1:
+            resultado["NomePai"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if linha.strip() == 'Pai' and i + 1 < len(linhas):
+                    nome_pai = linhas[i + 1].strip()
+                    if re.match(r'^[A-ZÀ-Ú][A-ZÀ-Ú\s]+$', nome_pai) and len(nome_pai) > 2:
+                        resultado["NomePai"] = nome_pai
+                        break
+        
+        # =============================================================
+        # NOME DA MÃE
+        # =============================================================
+        m = re.search(r'M[aã]e[:\s]*([A-ZÀ-Ú\s]+?)(?:\s*\n|CTPS|Cédula|RG|CPF)', texto_completo)
+        if m and len(m.group(1).strip()) > 1:
+            resultado["NomeMae"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if linha.strip() == 'Mãe' and i + 1 < len(linhas):
+                    nome_mae = linhas[i + 1].strip()
+                    if re.match(r'^[A-ZÀ-Ú][A-ZÀ-Ú\s]+$', nome_mae) and len(nome_mae) > 2:
+                        resultado["NomeMae"] = nome_mae
+                        break
+        
+        # =============================================================
+        # CTPS
+        # =============================================================
+        m = re.search(r'CTPS\s*N[oº]?mero[:\s]*(\d+)', texto_mono)
+        if m:
+            resultado["CTPSNumero"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'CTPS' in linha and 'Série' in linha and i + 1 < len(linhas):
+                    nums = re.findall(r'\d+', linhas[i + 1])
+                    if len(nums) >= 2:
+                        resultado["CTPSNumero"] = nums[0]
+                        resultado["CTPSSerie"] = nums[1]
+                    elif len(nums) == 1:
+                        resultado["CTPSNumero"] = nums[0]
+                    break
+        
+        if "CTPSSerie" not in resultado:
+            m = re.search(r'[Ss][eé]rie[:\s]*(\d+)', texto_mono)
+            if m:
+                resultado["CTPSSerie"] = m.group(1).strip()
+        
+        # =============================================================
+        # TÍTULO ELEITOR — não sobrescrever se já capturado com RG
+        # =============================================================
+        if "TituloEleitor" not in resultado:
+            m = re.search(r'T[ií]tulo[:\s]*(\d+)', texto_mono)
+            if m:
+                resultado["TituloEleitor"] = m.group(1).strip()
+            else:
+                for i, linha in enumerate(linhas):
+                    if 'Título Eleitoral' in linha and i + 1 < len(linhas):
+                        m = re.match(r'(\d+)\s+(\d{2}/\d{2}/\d{4})\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)', linhas[i + 1].strip())
+                        if m:
+                            resultado["TituloEleitor"] = m.group(4)
+                        else:
+                            nums = re.findall(r'\d{5,}', linhas[i + 1])
+                            if nums:
+                                rg_val = resultado.get("RG", "")
+                                if nums[0] == rg_val and len(nums) > 1:
+                                    resultado["TituloEleitor"] = nums[1]
+                                else:
+                                    resultado["TituloEleitor"] = nums[0]
+                        break
+        
+        # =============================================================
+        # TELEFONE / CELULAR
+        # =============================================================
+        m = re.search(r'(?:Celular|Telefone|Fone)[:\s]*([\d\s()\-]+\d)', texto_mono)
+        if m:
+            resultado["Telefone"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Telefone' in linha and 'Celular' in linha and i + 1 < len(linhas):
+                    m = re.search(r'[\d]{2}[-\s]?[\d]{4,}[\d]', linhas[i + 1])
+                    if m:
+                        resultado["Telefone"] = m.group(0).strip()
+                    break
+        
+        # =============================================================
+        # EMAIL
+        # =============================================================
+        m = re.search(r'Email[:\s]*([\w.-]+@[\w.-]+)', texto_mono)
+        if m:
+            resultado["Email"] = m.group(1).strip()
+        
+        # =============================================================
+        # DATA DE ADMISSÃO
+        # =============================================================
+        m = re.search(r'(?:Admiss[aã]o|Data de Admiss[aã]o)[:\s]*(\d{2}/\d{2}/\d{4})', texto_mono)
+        if m:
+            resultado["Admissao"] = m.group(1)
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Data de Admissão' in linha and i + 1 < len(linhas):
+                    m = re.search(r'(\d{2}/\d{2}/\d{4})', linhas[i + 1])
+                    if m:
+                        resultado["Admissao"] = m.group(1)
+                        break
+        
+        # =============================================================
+        # CARGO / FUNÇÃO
+        # =============================================================
+        m = re.search(r'CBO/Cargo:\d+[-\s]*([A-ZÀ-Úa-z\s]+?)(?:\s*M[eê]s/Ano|\s*Fun[cç]|\n)', texto_completo)
+        if m:
+            cargo_limpo = m.group(1).strip()
+            resultado["Cargo"] = cargo_limpo
+        
+        m = re.search(r'Fun[cç][aã]o[:\s]*([A-ZÀ-Úa-z\s]+?)(?:\n|Hist|\s*M[eê]s)', texto_completo)
+        if m:
+            resultado["Funcao"] = m.group(1).strip()
+        
+        if "Cargo" in resultado and "Funcao" not in resultado:
+            resultado["Funcao"] = resultado["Cargo"]
+        elif "Funcao" in resultado and "Cargo" not in resultado:
+            resultado["Cargo"] = resultado["Funcao"]
+        
+        if "Cargo" not in resultado:
+            for i, linha in enumerate(linhas):
+                if 'Cargo' in linha and 'Função' in linha and 'C.B.O.' in linha and i + 1 < len(linhas):
+                    texto_cargo = re.sub(r'\d+$', '', linhas[i + 1]).strip()
+                    metade = len(texto_cargo) // 2
+                    cargo_cand = texto_cargo[:metade].strip()
+                    funcao_cand = texto_cargo[metade:].strip()
+                    if cargo_cand == funcao_cand:
+                        resultado["Cargo"] = cargo_cand
+                        resultado["Funcao"] = funcao_cand
+                    else:
+                        resultado["Cargo"] = texto_cargo
+                        resultado["Funcao"] = texto_cargo
+                    break
+        
+        # =============================================================
+        # CBO
+        # =============================================================
+        m = re.search(r'(?:C\.?B\.?O[:\s/]+|CBO/Cargo:\s*)(\d{6})', texto_mono)
+        if m:
+            resultado["CBO"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Cargo' in linha and 'C.B.O.' in linha and i + 1 < len(linhas):
+                    m = re.search(r'(\d{6})\s*$', linhas[i + 1].strip())
+                    if m:
+                        resultado["CBO"] = m.group(1)
+                    break
+        
+        # =============================================================
+        # SALÁRIO
+        # =============================================================
+        m = re.search(r'Valor[:\s]*([\d.,]+)', texto_mono)
+        if m:
+            resultado["Salario"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Salário' in linha and i + 1 < len(linhas):
+                    m = re.search(r'R\$\s*([\d.,]+)', linhas[i + 1])
+                    if m:
+                        resultado["Salario"] = m.group(1).strip()
+                    break
+        if "Salario" not in resultado:
+            m = re.search(r'(?:Sal[aá]rio|remunera[cç][aã]o)[:\s]*R\$?\s*([\d.,]+)', texto_mono, re.IGNORECASE)
+            if m:
+                resultado["Salario"] = m.group(1).strip()
+        
+        # =============================================================
+        # MATRÍCULA e SOCIAL
+        # =============================================================
+        m = re.search(r'Matr[ií]cula\s*(?:do\s*)?eSocial[:\s]*(\d{10,})', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["MatriculaeSocial"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Matrícula eSocial' in linha and i + 1 < len(linhas):
+                    m = re.search(r'(\d{4,})', linhas[i + 1])
+                    if m:
+                        resultado["MatriculaeSocial"] = m.group(1)
+                    break
+        
+        if "MatriculaeSocial" not in resultado:
+            m = re.search(r'Matr[ií]cula[:\s]*(\d{4,})', texto_mono)
+            if m:
+                resultado["Matricula"] = m.group(1).strip()
+        
+        # =============================================================
+        # SETOR / LOTAÇÃO
+        # =============================================================
+        m = re.search(r'Setor[:\s]*([\d\s]*[-–]?\s*[A-ZÀ-Úa-z0-9\s/-]+?)(?:\s*Desligamento|\n)', texto_completo)
+        if m and len(m.group(1).strip()) > 1:
+            resultado["Setor"] = m.group(1).strip()
+        
+        # =============================================================
+        # FORMA DE PAGAMENTO
+        # =============================================================
+        m = re.search(r'(?:Forma de Pgto|FormaPgto)[:\s.]*(Mensal|Quinzenal|Semanal)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["FormaPgto"] = m.group(1).strip()
+        else:
+            for i, linha in enumerate(linhas):
+                if 'Salário' in linha and 'Por' in linha and i + 1 < len(linhas):
+                    m = re.search(r'M[eê]s', linhas[i + 1])
+                    if m:
+                        resultado["FormaPgto"] = "Mensal"
+                    break
+        
+        # =============================================================
+        # HORÁRIO DE TRABALHO
+        # =============================================================
+        m_jornada = re.search(r'(\d{1,2}:\d{2})\s*(?:HRS|hrs)\s*(?:AS|as|Às|às)\s*(\d{1,2}:\d{2})', texto_mono, re.IGNORECASE)
+        if m_jornada:
+            resultado["HorarioTrabalho"] = f"{m_jornada.group(1)} às {m_jornada.group(2)}"
+        else:
+            m = re.search(r'(\d{1,2}:\d{2})\s*[aà]s\s*(\d{1,2}:\d{2})(?:\s+e\s+(?:das\s+)?(\d{1,2}:\d{2})\s*[aà]s\s*(\d{1,2}:\d{2}))?', texto_mono)
+            if m:
+                if m.group(3):
+                    resultado["HorarioTrabalho"] = f"{m.group(1)} às {m.group(2)} e {m.group(3)} às {m.group(4)}"
+                else:
+                    resultado["HorarioTrabalho"] = f"{m.group(1)} às {m.group(2)}"
+        
+        # =============================================================
+        # CNPJ DA EMPRESA
+        # =============================================================
+        m = re.search(r'CNPJ[:\s]*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})', texto_mono)
+        if m:
+            resultado["CNPJEmpresa"] = m.group(1).strip()
+        
+    except Exception as e:
+        resultado["_erro"] = str(e)
+    
+    return resultado
+
+
+def extrair_dados_contrato_experiencia(pdf_bytes):
+    """Extrai dados do Contrato de Experiência (PDF).
+    
+    Suporta diferentes layouts de contrato. Retorna dict com os campos encontrados.
+    """
+    import pdfplumber
+    resultado = {}
+    
+    try:
+        with pdfplumber.open(pdf_bytes) as pdf:
+            texto_completo = ""
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    texto_completo += t + "\n"
+        
+        linhas = texto_completo.split('\n')
+        texto_mono = re.sub(r'\s+', ' ', texto_completo)
+        
+        # ============ NOME DO EMPREGADO ============
+        m = re.search(r'Sr\.?\s*\(?a\)?[\s:]*([A-ZÀ-Ú][A-ZÀ-Ú\s]+?)(?:,|\s+domiciliado|\s+portador)', texto_mono)
+        if m and len(m.group(1).strip()) > 2:
+            resultado["Nome"] = m.group(1).strip()
+        else:
+            m = re.search(r'e[,\s]+([A-ZÀ-Ú][A-ZÀ-Ú\s]+?)\s+portador', texto_mono)
+            if m and len(m.group(1).strip()) > 2:
+                resultado["Nome"] = m.group(1).strip()
+        
+        # ============ CPF ============
+        m = re.search(r'CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})', texto_mono)
+        if m:
+            resultado["CPF"] = m.group(1).strip()
+        
+        # ============ RG ============
+        m = re.search(r'RG[:\s]*(\d+)', texto_mono)
+        if m:
+            resultado["RG"] = m.group(1).strip()
+        
+        # ============ CTPS ============
+        # Padrão 1: "CTPS Nº: 7072300 série 1200"
+        m = re.search(r'(?:CTPS|Carteira Profissional)\s*(?:N[oº]?\s*)?[:\s]*(\d+)[\s/]+[Ss][eé]rie[:\s]*(\d+)', texto_mono)
+        if m:
+            resultado["CTPSNumero"] = m.group(1).strip()
+            resultado["CTPSSerie"] = m.group(2).strip()
+        else:
+            m = re.search(r'(?:CTPS|Carteira Profissional)\s*(?:N[oº]?\s*)?[:\s]*(\d+)', texto_mono)
+            if m:
+                resultado["CTPSNumero"] = m.group(1).strip()
+            m2 = re.search(r'[Ss][eé]rie[:\s]*(\d+)', texto_mono)
+            if m2 and "CTPSSerie" not in resultado:
+                resultado["CTPSSerie"] = m2.group(1).strip()
+        
+        # ============ MATRÍCULA E SOCIAL ============
+        m = re.search(r'matr[ií]cula\s*(?:do\s*)?eSocial[:\s]*(\d+)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["MatriculaeSocial"] = m.group(1).strip()
+        
+        # ============ ENDEREÇO DO EMPREGADO ============
+        # Prioridade 1: "domiciliado na Avenida JOSE FERREIRA CHUCRE, 2669, , Bairro: JARDIM FELICIDADE, CEP: 68.909-115, cidade de MACAPA-AP"
+        m = re.search(r'domiciliado\s*(?:na|no)\s*([A-Za-zÀ-ú0-9\s,.\-]+?)(?:,\s*Bairro|,\s*CEP|\s+portador)', texto_mono)
+        if m:
+            resultado["Endereco"] = m.group(1).strip().rstrip(',').strip()
+            # Limpar vírgulas duplas
+            resultado["Endereco"] = re.sub(r',\s*,', ',', resultado["Endereco"])
+        
+        # Prioridade 2: Vale-Transporte "Residir a RUA ..."
+        if "Endereco" not in resultado:
+            m = re.search(r'[Rr]esidir\s+a\s+([A-Za-zÀ-ú0-9\s,.\-]+?)(?:\s*Bairro|\n)', texto_completo, re.IGNORECASE)
+            if m:
+                resultado["Endereco"] = m.group(1).strip().rstrip(',')
+        
+        # ============ BAIRRO ============
+        # Do contrato: "Bairro: JARDIM FELICIDADE"
+        m = re.search(r'Bairro[:\s]*([A-ZÀ-Úa-z\s]+?)(?:,|CEP|\s+cidade|\n)', texto_mono)
+        if m:
+            resultado["Bairro"] = m.group(1).strip()
+        else:
+            # Vale-Transporte: "Bairro CIDADE DE DEUS"
+            m = re.search(r'Bairro\s+([A-ZÀ-Úa-z\s]+?)(?:,|CEP|\n)', texto_completo)
+            if m:
+                resultado["Bairro"] = m.group(1).strip()
+        
+        # ============ CEP ============
+        # Última ocorrência (empregado)
+        matches_cep = list(re.finditer(r'CEP[:\s]*(\d{2}\.?\d{3}-?\d{3})', texto_mono))
+        if matches_cep:
+            resultado["CEP"] = matches_cep[-1].group(1).strip()
+        
+        # ============ CIDADE / UF ============
+        # Prioridade: "cidade de MACAPA-AP"
+        m = re.search(r'cidade\s+de\s+([A-ZÀ-Ú][A-ZÀ-Úa-z]+)\s*-\s*([A-Z]{2})', texto_mono)
+        if m:
+            resultado["Cidade"] = m.group(1).strip()
+            resultado["UF"] = m.group(2).strip()
+        else:
+            # Vale-Transporte: "localizado em Manaus-AM"
+            m = re.search(r'localizado\s+em\s+([A-ZÀ-Úa-z]+)\s*-\s*([A-Z]{2})', texto_completo, re.IGNORECASE)
+            if m:
+                resultado["Cidade"] = m.group(1).strip()
+                resultado["UF"] = m.group(2).strip()
+            else:
+                m = re.search(r'(?:localizado em|em)\s+([A-ZÀ-Úa-z]+)\s*-\s*([A-Z]{2})', texto_mono)
+                if m:
+                    resultado["Cidade"] = m.group(1).strip()
+                    resultado["UF"] = m.group(2).strip()
+        
+        # ============ CARGO / FUNÇÃO ============
+        m = re.search(r'(?:fun[cç][aã]o|cargo)s\s*de\s*([A-ZÀ-Úa-z\s]+?)(?:\s+e\s+mais|\s+mediante|\.|,|\n)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["Cargo"] = m.group(1).strip()
+            resultado["Funcao"] = resultado["Cargo"]
+        
+        # ============ SALÁRIO ============
+        m = re.search(r'remunera[cç][aã]o\s*de[:\s]*R\$?\s*([\d.,]+)', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["Salario"] = m.group(1).strip()
+        else:
+            m = re.search(r'R\$\s*([\d.,]+)\s*\(', texto_mono)
+            if m:
+                resultado["Salario"] = m.group(1).strip()
+        
+        # ============ DATA DE ADMISSÃO ============
+        m = re.search(r'(?:in[ií]cio|inicio)\s*(?:em|da)\s*[:\s]*(\d{2}/\d{2}/\d{4})', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["Admissao"] = m.group(1)
+        
+        # ============ DATA DE TÉRMINO ============
+        m = re.search(r't[eé]rmino\s*em[:\s]*(\d{2}/\d{2}/\d{4})', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["DataTerminoExperiencia"] = m.group(1)
+        
+        # ============ PRAZO DO CONTRATO ============
+        m = re.search(r'(?:prazo[^.]*?[eé]\s*de|vigar[aá]\s*durante|durante)\s*(\d+)\s*\(?\s*\w*\s*\)?\s*dias', texto_mono, re.IGNORECASE)
+        if m:
+            resultado["PrazoExperienciaDias"] = m.group(1).strip()
+        
+        # ============ HORÁRIO DE TRABALHO ============
+        m = re.search(r'(\d{1,2}:\d{2})\s*[aà]s\s*(\d{1,2}:\d{2})(?:\s+e\s+(?:das\s+)?(\d{1,2}:\d{2})\s*[aà]s\s*(\d{1,2}:\d{2}))?', texto_mono)
+        if m:
+            if m.group(3):
+                resultado["HorarioTrabalho"] = f"{m.group(1)} às {m.group(2)} e {m.group(3)} às {m.group(4)}"
+            else:
+                resultado["HorarioTrabalho"] = f"{m.group(1)} às {m.group(2)}"
+        
+        # ============ CNPJ DA EMPRESA ============
+        m = re.search(r'CNPJ(?:/CEI)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})', texto_mono)
+        if m:
+            resultado["CNPJEmpresa"] = m.group(1).strip()
+        
+        # ============ SETOR / LOTAÇÃO (Vale-Transporte) ============
+        m = re.search(r'(?:Lota[cç][aã]o|Setor)[:\s]*([A-ZÀ-Úa-z0-9\s/-]+?)(?:\s+Cargo|\n)', texto_completo)
+        if m and len(m.group(1).strip()) > 1 and m.group(1).strip() not in ('Cargo', 'Função'):
+            resultado["Setor"] = m.group(1).strip()
+        
+    except Exception as e:
+        resultado["_erro"] = str(e)
+    
+    return resultado
+
+
+def mesclar_dados_pdf(dados_registro, dados_contrato, campos_atuais=None):
+    """Mescla os dados extraídos dos dois PDFs e dos campos já preenchidos.
+    
+    Prioridade: campos já preenchidos manualmente > dados do registro > dados do contrato.
+    Isso garante que o usuário não perca nada que já digitou.
+    Campos internos (prefixo _) são excluídos.
+    """
+    mesclado = {}
+    
+    # Primeiro: dados do contrato (menos completo)
+    for k, v in dados_contrato.items():
+        if not k.startswith("_") and v and str(v).strip():
+            mesclado[k] = v
+    
+    # Segundo: dados do registro sobrescreve contrato (mais completo para campos pessoais)
+    for k, v in dados_registro.items():
+        if not k.startswith("_") and v and str(v).strip():
+            mesclado[k] = v
+    
+    # Terceiro: campos já preenchidos manualmente têm prioridade máxima
+    if campos_atuais:
+        for k, v in campos_atuais.items():
+            if v and str(v).strip():
+                mesclado[k] = v
+    
+    # Remove campos internos
+    # Limpa chaves internas e campos não mapeados no formulário
+    for k in list(mesclado.keys()):
+        if k.startswith("_") or k in ("CNPJEmpresa", "CNPPEmpresa", "Empresa", "PrazoExperienciaDias",
+                                       "DataTerminoExperiencia", "LocalTrabalho", "HorarioTrabalho",
+                                       "LojaRaw", "Funcao"):
+            del mesclado[k]
+    
+    return mesclado
+
+
+
+
 # ================ ABA 1 - CADASTRO ================
 with aba1:
     dados = carregar_dados()
@@ -3801,6 +4557,84 @@ with aba1:
     caminho_foto_atual = temp["caminho_foto"]
     avisos_calculo = temp.get("_avisos", [])
 
+    # ========== UPLOAD DE DOCUMENTOS PARA PREENCHIMENTO AUTOMÁTICO ==========
+    st.markdown("---")
+    st.subheader("📄 Importar Dados de Documentos")
+    st.caption("Faça upload do **Registro de Empregado** e/ou **Contrato de Experiência** para preencher automaticamente os campos do cadastro.")
+    
+    col_pdf1, col_pdf2 = st.columns(2)
+    with col_pdf1:
+        pdf_registro = st.file_uploader(
+            "📋 Ficha Registro de Empregado",
+            type=["pdf"],
+            key=f"pdf_registro_{_kf}",
+            help="Upload do PDF da Ficha de Registro do funcionário"
+        )
+    with col_pdf2:
+        pdf_contrato = st.file_uploader(
+            "📝 Contrato de Experiência",
+            type=["pdf"],
+            key=f"pdf_contrato_{_kf}",
+            help="Upload do PDF do Contrato de Experiência do funcionário"
+        )
+    
+    # Processar PDFs quando ambos ou um deles for carregado
+    dados_extraidos_pdf = {}
+    if PDFPLUMBER_OK and (pdf_registro or pdf_contrato):
+        with st.spinner("🔍 Extraindo dados dos documentos..."):
+            dados_reg = {}
+            dados_ct = {}
+            
+            if pdf_registro:
+                try:
+                    dados_reg = extrair_dados_registro_empregado(pdf_registro)
+                    if dados_reg.get("_erro"):
+                        st.warning(f"⚠️ Aviso ao ler Registro: {dados_reg['_erro']}")
+                except Exception as e_reg:
+                    st.warning(f"⚠️ Não foi possível ler o Registro de Empregado: {e_reg}")
+            
+            if pdf_contrato:
+                try:
+                    dados_ct = extrair_dados_contrato_experiencia(pdf_contrato)
+                    if dados_ct.get("_erro"):
+                        st.warning(f"⚠️ Aviso ao ler Contrato: {dados_ct['_erro']}")
+                except Exception as e_ct:
+                    st.warning(f"⚠️ Não foi possível ler o Contrato de Experiência: {e_ct}")
+            
+            # Montar dict de campos atuais do formulário (para dar prioridade ao que já foi digitado)
+            campos_atuais_form = {}
+            if mat_sel:
+                for col in ["Nome","CPF","RG","PIS","Nascimento","Admissao","Telefone","Endereco",
+                            "Loja","Cargo","Salario","Sexo","EstadoCivil","Etnia","GrauInstrucao",
+                            "Naturalidade","Nacionalidade","UF","Cidade","Bairro","CEP",
+                            "NomePai","NomeMae","CTPSNumero","CTPSSerie","TituloEleitor",
+                            "CBO","MatriculaeSocial","Email","Funcao","Setor","HorarioTrabalho",
+                            "FormaPgto","DataTerminoExperiencia","PrazoExperienciaDias"]:
+                    v = val_campo(col)
+                    if v and str(v).strip():
+                        campos_atuais_form[col] = str(v).strip()
+            
+            dados_extraidos_pdf = mesclar_dados_pdf(dados_reg, dados_ct, campos_atuais_form)
+            
+            if dados_extraidos_pdf:
+                campos_preenchidos = [k for k, v in dados_extraidos_pdf.items() if v and str(v).strip()]
+                st.success(f"✅ {len(campos_preenchidos)} campo(s) extraído(s) dos documentos!")
+                with st.expander("📋 Ver campos extraídos", expanded=False):
+                    for k, v in dados_extraidos_pdf.items():
+                        if v and str(v).strip():
+                            st.markdown(f"- **{k}**: {v}")
+            else:
+                st.info("ℹ️ Nenhum dado pôde ser extraído dos documentos enviados.")
+    elif not PDFPLUMBER_OK and (pdf_registro or pdf_contrato):
+        st.error("❌ A biblioteca `pdfplumber` não está instalada. Instale com: `pip install pdfplumber`")
+    
+    # Função auxiliar para pegar valor: prioriza PDF extraído > valor salvo no banco
+    def val_auto(coluna):
+        """Retorna o valor do campo: PDF extraído tem prioridade sobre valor salvo."""
+        if coluna in dados_extraidos_pdf and str(dados_extraidos_pdf[coluna]).strip():
+            return str(dados_extraidos_pdf[coluna]).strip()
+        return str(val_campo(coluna) or "").strip()
+    
     if st.button("🗑️ LIMPAR TODOS OS CAMPOS", use_container_width=True, type="secondary",
                  on_click=_limpar_formulario_cadastro):
         st.rerun()
@@ -3825,32 +4659,75 @@ with aba1:
             excluir_foto = st.checkbox("🗑️ Excluir foto atual", value=False, key=f"exc_foto_{_kf}")
 
         with col_dados:
-            c1,c2,c3 = st.columns(3)
+            c1,c2,c3,c4 = st.columns(4)
             with c1:
-                matricula = st.text_input("Matrícula * (igual planilha)", value=val_campo("Matricula"), key=f"mat_{_kf}")
-                nome = st.text_input("Nome Completo", value=val_campo("Nome"), key=f"nome_{_kf}")
-                cpf = st.text_input("CPF", value=val_campo("CPF"), key=f"cpf_{_kf}")
-                rg = st.text_input("RG", value=val_campo("RG"), key=f"rg_{_kf}")
-                pis = st.text_input("PIS", value=val_campo("PIS"), key=f"pis_{_kf}")
+                matricula = st.text_input("Matrícula * (igual planilha)", value=val_auto("Matricula"), key=f"mat_{_kf}")
+                nome = st.text_input("Nome Completo", value=val_auto("Nome"), key=f"nome_{_kf}")
+                cpf = st.text_input("CPF", value=val_auto("CPF"), key=f"cpf_{_kf}")
+                rg = st.text_input("RG", value=val_auto("RG"), key=f"rg_{_kf}")
+                pis = st.text_input("PIS", value=val_auto("PIS"), key=f"pis_{_kf}")
             with c2:
-                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_campo("Nascimento"), key=f"nasc_{_kf}")
-                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_campo("Admissao"), key=f"adm_{_kf}")
-                telefone = st.text_input("Telefone", value=val_campo("Telefone"), key=f"tel_{_kf}")
-                endereco = st.text_input("Endereço Completo", value=val_campo("Endereco"), key=f"end_{_kf}")
+                nascimento = st.text_input("Data Nascimento (dd/mm/aaaa)", value=val_auto("Nascimento"), key=f"nasc_{_kf}")
+                admissao = st.text_input("Data Admissão (dd/mm/aaaa)", value=val_auto("Admissao"), key=f"adm_{_kf}")
+                telefone = st.text_input("Telefone", value=val_auto("Telefone"), key=f"tel_{_kf}")
+                endereco = st.text_input("Endereço Completo", value=val_auto("Endereco"), key=f"end_{_kf}")
             with c3:
                 lojas = lista_lojas()
-                idx_loja = lojas.index(val_campo("Loja")) if val_campo("Loja") in lojas else 0
+                # Tenta casar a loja extraída do PDF com as cadastradas
+                _loja_auto = val_auto("Loja")
+                idx_loja = lojas.index(_loja_auto) if _loja_auto in lojas else 0
                 loja = st.selectbox("🏬 Loja", lojas, index=idx_loja, key=f"loja_{_kf}")
 
                 cargos = lista_cargos()
-                idx_cargo = cargos.index(val_campo("Cargo")) if val_campo("Cargo") in cargos else 0
+                _cargo_auto = val_auto("Cargo")
+                idx_cargo = cargos.index(_cargo_auto) if _cargo_auto in cargos else 0
                 cargo = st.selectbox("💼 Cargo", cargos, index=idx_cargo, key=f"cargo_{_kf}")
 
-                salario = st.text_input("Salário", value=val_campo("Salario"), key=f"sal_{_kf}")
+                salario = st.text_input("Salário", value=val_auto("Salario"), key=f"sal_{_kf}")
 
                 idx_sit = SITUACOES.index(situacao_val) if situacao_val in SITUACOES else 0
                 # a chave inclui a situacao calculada para o campo se atualizar sozinho
                 situacao = st.selectbox("📊 Situação", SITUACOES, index=idx_sit, key=f"sit_{_kf}_{situacao_val}")
+            with c4:
+                st.markdown("**📄 Dados dos Documentos**")
+                sexo = st.text_input("Sexo", value=val_auto("Sexo"), key=f"sexo_{_kf}")
+                estado_civil = st.text_input("Estado Civil", value=val_auto("EstadoCivil"), key=f"eciv_{_kf}")
+                etnia = st.text_input("Etnia/Raça", value=val_auto("Etnia"), key=f"etnia_{_kf}")
+                grau_instrucao = st.text_input("Grau Instrução", value=val_auto("GrauInstrucao"), key=f"grau_{_kf}")
+        
+        # --- Linha adicional: dados complementares dos documentos ---
+        st.markdown("---")
+        st.subheader("📋 Dados Complementares (extraídos dos documentos)")
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        with dc1:
+            naturalidade = st.text_input("Naturalidade", value=val_auto("Naturalidade"), key=f"nat_{_kf}")
+            nacionalidade = st.text_input("Nacionalidade", value=val_auto("Nacionalidade"), key=f"nac_{_kf}")
+            cidade = st.text_input("Cidade", value=val_auto("Cidade"), key=f"cid_{_kf}")
+            uf_nasc = st.text_input("UF", value=val_auto("UF"), key=f"uf_{_kf}")
+        with dc2:
+            bairro = st.text_input("Bairro", value=val_auto("Bairro"), key=f"bai_{_kf}")
+            cep = st.text_input("CEP", value=val_auto("CEP"), key=f"cep_{_kf}")
+            email = st.text_input("Email", value=val_auto("Email"), key=f"email_{_kf}")
+            setor = st.text_input("Setor/Lotação", value=val_auto("Setor"), key=f"setor_{_kf}")
+        with dc3:
+            ctps_numero = st.text_input("CTPS Nº", value=val_auto("CTPSNumero"), key=f"ctpsn_{_kf}")
+            ctps_serie = st.text_input("CTPS Série", value=val_auto("CTPSSerie"), key=f"ctpss_{_kf}")
+            titulo_eleitor = st.text_input("Título Eleitor", value=val_auto("TituloEleitor"), key=f"tit_{_kf}")
+            cbo = st.text_input("CBO", value=val_auto("CBO"), key=f"cbo_{_kf}")
+        with dc4:
+            matricula_esocial = st.text_input("Matrícula eSocial", value=val_auto("MatriculaeSocial"), key=f"esoc_{_kf}")
+            nome_pai = st.text_input("Nome do Pai", value=val_auto("NomePai"), key=f"pai_{_kf}")
+            nome_mae = st.text_input("Nome da Mãe", value=val_auto("NomeMae"), key=f"mae_{_kf}")
+            funcao = st.text_input("Função", value=val_auto("Funcao"), key=f"func_{_kf}")
+        
+        # Horário e forma de pagamento
+        hc1, hc2 = st.columns(2)
+        with hc1:
+            horario_trabalho = st.text_input("Horário de Trabalho", value=val_auto("HorarioTrabalho"), key=f"hora_{_kf}")
+            forma_pgto = st.text_input("Forma de Pgto.", value=val_auto("FormaPgto"), key=f"fgto_{_kf}")
+        with hc2:
+            data_term_exp = st.text_input("Término Experiência", value=val_auto("DataTerminoExperiencia"), key=f"dtexp_{_kf}")
+            prazo_exp_dias = st.text_input("Prazo Experiência (dias)", value=val_auto("PrazoExperienciaDias"), key=f"pzexp_{_kf}")
 
         if prazos_exp:
             st.markdown("---")
