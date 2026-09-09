@@ -2,7 +2,7 @@
 """
 Sistema RH — Diárias · Viagens · Compras · Lojas · Eventos Trabalhistas
 Banco de dados SQLite embutido: TODOS os dados ficam no próprio sistema.
-Leitura automática de PDFs de admissão (Ficha Registro + Contrato Experiência).
+Nenhum arquivo externo, nenhuma pasta para configurar.
 """
 
 import streamlit as st
@@ -13,23 +13,8 @@ import io
 import zipfile
 import base64
 import hashlib
-import re
 from datetime import datetime, date, timedelta
 import pandas as pd
-
-# Leitura de PDF — pdfplumber (melhor) ou pypdf (fallback)
-try:
-    import pdfplumber
-    TEM_LEITOR_PDF = True
-    LEITOR_PDF = "pdfplumber"
-except ImportError:
-    try:
-        import pypdf
-        TEM_LEITOR_PDF = True
-        LEITOR_PDF = "pypdf"
-    except ImportError:
-        TEM_LEITOR_PDF = False
-        LEITOR_PDF = None
 
 # ════════════════════════════════════════════════════════════════
 # BANCO DE DADOS SQLITE — TUDO DENTRO DO PRÓPRIO SISTEMA
@@ -52,12 +37,9 @@ def _init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nome TEXT NOT NULL, cpf TEXT, rg TEXT, data_nascimento TEXT,
         estado_civil TEXT, endereco TEXT, cidade TEXT, estado TEXT,
-        cep TEXT, telefone TEXT,
-        cargo TEXT, loja TEXT, data_admissao TEXT,
-        salario REAL, banco TEXT,
-        ctps TEXT, pis TEXT, cbo TEXT,
-        naturalidade TEXT, sexo TEXT, raca_cor TEXT,
-        grau_instrucao TEXT, filiacao_pai TEXT, filiacao_mae TEXT,
+        cep TEXT, telefone TEXT, email TEXT, pix TEXT,
+        cargo TEXT, departamento TEXT, loja TEXT, data_admissao TEXT,
+        salario REAL, banco TEXT, agencia TEXT, conta TEXT,
         tipo_contrato TEXT, situacao TEXT DEFAULT 'Ativo',
         data_demissao TEXT, motivo_demissao TEXT,
         inicio_experiencia TEXT, fim_experiencia TEXT,
@@ -148,771 +130,9 @@ def _init_db():
     );
     """)
     con.commit()
-
-    # ── Migração: adicionar colunas novas se não existirem ──
-    _migrar_banco(con)
     con.close()
 
-def _migrar_banco(con):
-    """Adiciona colunas novas em bancos já existentes e remove obsoletas."""
-    existing = {r[1] for r in con.execute("PRAGMA table_info(funcionarios)").fetchall()}
-    novas = {
-        "ctps": "TEXT", "pis": "TEXT", "cbo": "TEXT",
-        "naturalidade": "TEXT", "sexo": "TEXT", "raca_cor": "TEXT",
-        "grau_instrucao": "TEXT", "filiacao_pai": "TEXT", "filiacao_mae": "TEXT",
-    }
-    for col, tipo in novas.items():
-        if col not in existing:
-            try:
-                con.execute(f"ALTER TABLE funcionarios ADD COLUMN {col} {tipo}")
-            except Exception:
-                pass
-    # Colunas obsoletas que podem existir em bancos antigos
-    obsoletas = ["email", "pix", "departamento", "agencia", "conta"]
-    for col in obsoletas:
-        if col in existing:
-            # SQLite não suporta DROP COLUMN em versões antigas;
-            # mantemos a coluna mas removemos do formulário
-            pass
-    con.commit()
-
 _init_db()
-
-# ════════════════════════════════════════════════════════════════
-# LEITURA AUTOMÁTICA DE PDFs DE ADMISSÃO
-# ════════════════════════════════════════════════════════════════
-
-def _ler_pdf_paginas(arquivo_pdf):
-    """Lê um PDF e retorna lista de textos por página (usa pdfplumber ou pypdf)."""
-    pdf_bytes = io.BytesIO(arquivo_pdf.read()) if hasattr(arquivo_pdf, "read") else arquivo_pdf
-    pdf_bytes.seek(0)
-    paginas = []
-
-    if LEITOR_PDF == "pdfplumber":
-        try:
-            pdf = pdfplumber.open(pdf_bytes)
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    paginas.append(t)
-            pdf.close()
-            return paginas
-        except Exception:
-            pdf_bytes.seek(0)
-
-    # Fallback: pypdf
-    if LEITOR_PDF == "pypdf":
-        try:
-            import pypdf as _pypdf
-            reader = _pypdf.PdfReader(pdf_bytes)
-            for page in reader.pages:
-                t = page.extract_text()
-                if t:
-                    paginas.append(t)
-            return paginas
-        except Exception:
-            return []
-
-    return []
-
-
-def _normalizar_texto_pdf(txt):
-    """Normaliza texto de PDF para regex: insere espaço entre letras e números
-    grudados (pypdf faz isso), separa palavras grudadas (CamelCase), etc."""
-    # Insere espaço entre dígito e letra, ou letra e dígito, grudados
-    # Ex: "27/06/1979Nascimento:" -> "27/06/1979 Nascimento:"
-    #     "Naturalidade:Santarém" -> "Naturalidade: Santarém"
-    #     "15132986RG Número:" -> "15132986 RG Número:"
-    txt = re.sub(r'(\d)([A-Za-zÀ-ÿ])', r'\1 \2', txt)
-    txt = re.sub(r'([a-zÀ-ÿ])(\d)', r'\1 \2', txt, flags=re.I)
-    # Insere espaço depois de ":" se grudado com texto (sem espaço)
-    txt = re.sub(r':([A-Za-zÀ-ÿ])', r': \1', txt)
-    # Separa minúscula+MAIÚSCULA grudadas (pypdf colunas)
-    # Mas NÃO separa se a maiúscula é acentuada (parte da mesma palavra)
-    # Ex: "GERAISCBO/Cargo:" -> "GERAIS CBO/Cargo:"
-    #     "Admissão:MensalForma" -> "Admissão: Mensal Forma"
-    #     NÃO separar: "Santarém" -> fica "Santarém"
-    # Detecta CamelCase real: minúscula seguida de MAIÚSCULA sem acento
-    txt = re.sub(r'([a-zà-ÿ])([A-Z])', r'\1 \2', txt)
-    # Normaliza espaços múltiplos
-    txt = re.sub(r'[ \t]+', ' ', txt)
-    return txt
-
-
-def _extrair_campo(txt, padrao_rotulo, padrao_valor, flags=re.I):
-    """Busca campo de 3 formas: (1) rótulo:valor (pdfplumber),
-    (2) valor\nrótulo (pypdf invertido), (3) valorRÓTULO (pypdf grudado).
-    Retorna o valor encontrado ou None."""
-    # Forma 1: rótulo seguido de valor (padrão normal)
-    m = re.search(padrao_rotulo + padrao_valor, txt, flags)
-    if m:
-        return m.group(1).strip()
-    # Forma 2: valor grudado ANTES do rótulo (pypdf inverte ordem)
-    # Ex: "15132986 RG Número:" ou "27/06/1979 Nascimento:"
-    m = re.search(padrao_valor + r'\s*' + padrao_rotulo, txt, flags)
-    if m:
-        return m.group(1).strip()
-    return None
-
-
-def _extrair_campos_de_paginas(paginas):
-    """
-    Recebe uma lista de textos de páginas de UM PDF e retorna dict
-    com os campos extraídos da Ficha de Registro e/ou Contrato de Experiência.
-    Funciona com texto extraído por pdfplumber OU pypdf.
-    """
-    campos = {}
-
-    # ── Normaliza texto (corrige grudações do pypdf) ──
-    paginas_norm = [_normalizar_texto_pdf(p) for p in paginas]
-    txt = "\n".join(paginas_norm)
-
-    # ── Detecta tipo de documento e separa texto por seção ──
-    eh_ficha = bool(re.search(r"REGISTRO DE EMPREGADO|FICHA DE REGISTRO", txt, re.I))
-    eh_contrato = bool(re.search(r"CONTRATO DE EXPERI[ÊE]NCIA", txt, re.I))
-
-    # Texto isolado da ficha (última página que contém REGISTRO DE EMPREGADO)
-    txt_ficha = ""
-    for p in paginas_norm:
-        if re.search(r"REGISTRO DE EMPREGADO|FICHA DE REGISTRO", p, re.I):
-            txt_ficha = p
-
-    # Texto isolado do contrato (primeira página com CONTRATO DE EXPERIÊNCIA)
-    txt_contrato = ""
-    for p in paginas_norm:
-        if re.search(r"CONTRATO DE EXPERI[ÊE]NCIA", p, re.I) and not txt_contrato:
-            txt_contrato = p
-
-    # ═══ EXTRAÇÃO DA FICHA DE REGISTRO ═══
-    if eh_ficha and txt_ficha:
-        f = txt_ficha
-
-        # Detecta se é ficha antiga (layout tabular, sem "Dados Pessoais")
-        eh_ficha_antiga = not bool(re.search(r'Dados Pessoais|Código:', f, re.I))
-        # Ficha antiga também costuma ter "Cédula de Identidade"
-        eh_ficha_antiga = eh_ficha_antiga or bool(re.search(r'C[eé]dula de Identidade', f, re.I))
-        # Mas se tem "Dados Pessoais", é ficha nova
-        if re.search(r'Dados Pessoais', f, re.I):
-            eh_ficha_antiga = False
-
-        # ── EXTRAÇÃO TABULAR FICHA ANTIGA ──
-        # Na ficha antiga, rótulos ficam numa linha e valores na próxima
-        # Ex: "Data de nascimento Local do nascimento País da nacionalidade Estado civil"
-        #     "25/12/1977 ABADIA DE GOIAS - GO BRASIL Solteiro"
-        if eh_ficha_antiga:
-            # Data de nascimento + Naturalidade + UF + País + Estado Civil
-            m = re.search(r'Data de nascimento\s+Local do nascimento[^\n]*\n\s*(\d{2}/\d{2}/\d{4})\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\'\s]+?)\s*[-–]\s*([A-Z]{2})\s+([A-Za-zÀ-ÿ]+)\s+(Solteiro|Casado|Divorciado|Vi[uú]vo|Uni[aã]o Est[aá]vel)', f, re.I)
-            if m:
-                if not campos.get('data_nascimento'):
-                    campos['data_nascimento'] = _converte_data(m.group(1))
-                if not campos.get('naturalidade'):
-                    campos['naturalidade'] = m.group(2).strip()
-                if not campos.get('estado_civil'):
-                    campos['estado_civil'] = m.group(5).strip().capitalize()
-            else:
-                # Tentar sem estado civil (caso não esteja na mesma linha)
-                m = re.search(r'Data de nascimento[^\n]*\n\s*(\d{2}/\d{2}/\d{4})\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\'\s]+?)\s*[-–]\s*([A-Z]{2})', f, re.I)
-                if m:
-                    if not campos.get('data_nascimento'):
-                        campos['data_nascimento'] = _converte_data(m.group(1))
-                    if not campos.get('naturalidade'):
-                        campos['naturalidade'] = m.group(2).strip()
-                else:
-                    # Só data
-                    m = re.search(r'Data de nascimento[^\n]*\n\s*(\d{2}/\d{2}/\d{4})', f, re.I)
-                    if m and not campos.get('data_nascimento'):
-                        campos['data_nascimento'] = _converte_data(m.group(1))
-
-            # CPF — na ficha antiga aparece na linha do CTPS
-            # "CTPS Série Data de expedição da CTPS UF CTPS CPF ..."
-            # "7072300 1200 04/05/2022 AP 707.230.012-00"
-            m = re.search(r'UF\s+CTPS\s+CPF[^\n]*\n[^\n]*?(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})', f, re.I)
-            if m and not campos.get('cpf'):
-                cpf_val = re.sub(r'[^0-9]', '', m.group(1))
-                if len(cpf_val) == 11:
-                    campos['cpf'] = cpf_val
-
-            # Cor/Sexo/Grau Instrução — ficha antiga
-            # "Doc. militar Categoria Cor Sexo Grau de instrução"
-            # "Parda Feminino Ensino Médio Completo"
-            m = re.search(r'Cor\s+Sexo\s+Grau de instru[çc][aã]o[^\n]*\n\s*(Branca?|Preta?|Parda?|Ind[ií]gena|Amarela?)\s+(Feminino|Masculino|F|M)\s+(Ensino[^\n]+|Analfabeto|Fundamental[^\n]*|M[ée]dio[^\n]*|Superior[^\n]*)', f, re.I)
-            if m:
-                if not campos.get('raca_cor'):
-                    val = m.group(1).strip()
-                    if val.lower().startswith('pard'):
-                        campos['raca_cor'] = 'Parda'
-                    elif val.lower().startswith('branc'):
-                        campos['raca_cor'] = 'Branca'
-                    elif val.lower().startswith('pret'):
-                        campos['raca_cor'] = 'Preta'
-                    else:
-                        campos['raca_cor'] = val.capitalize()
-                if not campos.get('sexo'):
-                    val = m.group(2).strip()
-                    if val.upper() == 'F':
-                        campos['sexo'] = 'Feminino'
-                    elif val.upper() == 'M':
-                        campos['sexo'] = 'Masculino'
-                    else:
-                        campos['sexo'] = val
-                if not campos.get('grau_instrucao'):
-                    campos['grau_instrucao'] = m.group(3).strip()
-
-            # Telefone — ficha antiga
-            # "Deficiência Telefone Residencial Telefone Celular"
-            # "Não 96-999145198"
-            m = re.search(r'Telefone\s+(?:Residencial\s+)?Telefone\s+Celular[^\n]*\n[^\n]*?(\d[\d\-]+\d)', f, re.I)
-            if m and not campos.get('telefone'):
-                tel = m.group(1).strip()
-                if len(re.sub(r'\D', '', tel)) >= 8:
-                    campos['telefone'] = tel
-
-            # Data de Admissão — ficha antiga
-            # "Data de Admissão Salário Por ..."
-            # "09/09/2026 R$ 1.649,48 Mês ..."
-            m = re.search(r'Data de Admiss[aã]o[^\n]*\n\s*(\d{2}/\d{2}/\d{4})', f, re.I)
-            if m and not campos.get('data_admissao'):
-                campos['data_admissao'] = _converte_data(m.group(1))
-
-            # PIS — ficha antiga
-            # "PROGRAMA DE INTEGRAÇÃO SOCIAL - PIS"
-            # "Cadastrado em Sob nº Domicílio bancário"
-            # "000.00000.00-0"
-            m = re.search(r'PIS[^\n]*\n[^\n]*\n\s*([\d.]+-\d)', f, re.I)
-            if m and not campos.get('pis'):
-                pis_val = m.group(1).strip()
-                if pis_val and not re.match(r'^[.\s-]+$', pis_val) :
-                    campos['pis'] = pis_val
-
-        # --- Nome ---
-        # pdfplumber: "Nome: ANA PAULA COSTA"
-        # pypdf ficha antiga: "Empregado\nResidência\nBeneficiários\nCLENILZA PANTOJA PALMERIM"
-        # pypdf DOCS: "Nome:\nANA PAULA COSTA" (rótulo antes)
-        m = re.search(r"^Nome:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)$", f, re.M)
-        if m and m.group(1).strip():
-            campos["nome"] = m.group(1).strip()
-        else:
-            m = re.search(r"(?:Empregado\s+Beneficiários|Empregado)\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
-            if m and m.group(1).strip():
-                campos["nome"] = m.group(1).strip()
-        # pypdf ficha antiga: Nome aparece após "Beneficiários" em linha isolada
-        if not campos.get("nome"):
-            m = re.search(r"Benefici[áa]rios\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
-            if m and m.group(1).strip() and len(m.group(1).strip()) > 5:
-                campos["nome"] = m.group(1).strip()
-
-        # --- CPF ---
-        # pdfplumber: "CPF: 652.079.982-34"
-        # pypdf ficha antiga: "04/05/2022 707.230.012-00\nCPF" (invertido, CPF depois)
-        # IMPORTANTE: NÃO sobrescrever CPF já encontrado pelo regex tabular (ficha antiga)
-        if not campos.get('cpf'):
-            m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", f)
-            if m:
-                campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
-            else:
-                # pypdf invertido: número de CPF ANTES de "CPF"
-                m = re.search(r"(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})\s*CPF\b", f)
-                if m:
-                    campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
-        # Validação: CPF deve ter 11 dígitos
-        if campos.get("cpf") and len(campos["cpf"]) != 11:
-            del campos["cpf"]
-
-        # --- RG ---
-        # Se CPF == RG (mesmos dígitos), o regex tabular já pegou o CPF formatado correto
-        # O RG é outro número (Cédula de Identidade)
-        # pdfplumber: "RG Número: 15132986"
-        # pypdf (normalizado): "15132986 RG Número:" (invertido)
-        # Ficha antiga pdfplumber: "Cédula de Identidade...\n70723001200 29/03/2025 PC/AP"
-        # Ficha antiga pypdf: "Cédula de Identidade Data de emissão..." + RG em linha separada
-        m = re.search(r"RG\s*Número[:\s]*(\d{4,})", f, re.I)
-        if m:
-            campos["rg"] = m.group(1).strip()
-        else:
-            # pypdf invertido: "15132986 RG Número:" ou "15132986 RG"
-            m = re.search(r"(\d{5,})\s*RG\b", f)
-            if m:
-                campos["rg"] = m.group(1).strip()
-            else:
-                # Cédula de Identidade — busca número na próxima linha
-                m = re.search(r"C[eé]dula de Identidade[^\n]*\n\s*(\d[\d.-]+)", f, re.I)
-                if m:
-                    campos["rg"] = m.group(1).strip().rstrip(".")
-                else:
-                    # pypdf ficha antiga: RG aparece como número longo sozinho após "Cédula de Identidade"
-                    m = re.search(r"C[eé]dula de Identidade[^\n]*\n(?:[^\n]*\n){0,3}[^\d]*(\d{8,})", f, re.I)
-                    if m:
-                        campos["rg"] = m.group(1).strip()
-
-        # --- CTPS + Série ---
-        # pdfplumber: "CTPS Número: 00006520799 Série:08234"
-        m = re.search(r"CTPS\s*Número[:\s]*(\d[\d/]*)\s*S[eé]rie[:\s]*(\d+)", f, re.I)
-        if m:
-            campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
-        else:
-            # pypdf: "00006520799 CTPS Número:" + "08234 Série:"
-            m = re.search(r"(\d{5,})\s*CTPS\s*Número", f, re.I)
-            if m:
-                ctps_num = m.group(1).strip()
-                m2 = re.search(r"(\d{3,})\s*S[eé]rie", f, re.I)
-                if m2:
-                    campos["ctps"] = f"{ctps_num}/{m2.group(1).strip()}"
-            else:
-                # Layout antigo: "CTPS Série Data ... \n 7072300 1200"
-                m = re.search(r"CTPS[\s\n]+S[eé]rie[^\n]*\n\s*(\d{4,})\s+(\d{3,})", f, re.I)
-                if m:
-                    campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
-
-        # --- PIS ---
-        # pdfplumber: "PIS/PASEP: . . ." (vazio) ou "PIS/PASEP: 123.456"
-        m = re.search(r"PIS\s*/?\s*PASEP[:\s]*([\d.\-]+)", f, re.I)
-        if m:
-            pis_val = m.group(1).strip().rstrip(".")
-            # Descarta se for só pontos (vazio) ou zeros
-            if pis_val and not re.match(r'^[.\s-]+$', pis_val) and not pis_val.replace(".", "").replace("-", "").startswith("000"):
-                campos["pis"] = pis_val
-
-        # --- Data Nascimento ---
-        # pdfplumber: "Nascimento: 27/06/1979"
-        # pypdf: "27/06/1979 Nascimento:" (invertido)
-        val = _extrair_campo(f,
-            r"(?:Data de )?Nascimento[:\s]*",
-            r"(\d{2}/\d{2}/\d{4})")
-        if val:
-            campos["data_nascimento"] = _converte_data(val)
-
-        # --- Naturalidade ---
-        # pdfplumber: "Naturalidade: Santarém UF: PA"
-        # pypdf: "Naturalidade: Santarém" (grudado)
-        m = re.search(r"Naturalidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\s+Estado|\n)", f, re.I)
-        if m:
-            campos["naturalidade"] = m.group(1).strip().rstrip(" -")
-        else:
-            # Tenta sem delimitador (pypdf pode grudar com próximo campo)
-            m = re.search(r"Naturalidade[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:[A-Z][a-z])", f, re.I)
-            if m:
-                campos["naturalidade"] = m.group(1).strip().rstrip(" -")
-            else:
-                m = re.search(r"Local do nascimento[^\n]*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*[-–]\s*([A-Z]{2})", f, re.I)
-                if m:
-                    campos["naturalidade"] = m.group(1).strip()
-
-        # --- Estado Civil ---
-        m = re.search(r"Estado\s*[Cc]ivil[:\s]*(Solteiro|Casado|Divorciado|Vi[uú]vo|Uni[ãa]o Est[áa]vel)", f, re.I)
-        if m:
-            campos["estado_civil"] = m.group(1).strip()
-
-        # --- Sexo ---
-        # pdfplumber: "Sexo: Feminino"
-        # pypdf: "Feminino" sozinho na linha, ou "Sexo: Feminino"
-        m = re.search(r"Sexo[:\s]*(Feminino|Masculino|F|M)\b", f, re.I)
-        if m:
-            val = m.group(1).strip()
-            if val.upper() == "F":
-                campos["sexo"] = "Feminino"
-            elif val.upper() == "M":
-                campos["sexo"] = "Masculino"
-            else:
-                campos["sexo"] = val
-        else:
-            # pypdf: "Feminino" numa linha isolada perto de Instrução/Nascimento
-            m = re.search(r"^\s*(Feminino|Masculino)\s*$", f, re.M)
-            if m:
-                campos["sexo"] = m.group(1).strip()
-
-        # --- Raça/Cor ---
-        # pdfplumber: "Etnia ou Raça: Parda"
-        # pypdf: "Etnia ou Raça: Parda" (grudado)
-        m = re.search(r"(?:Etnia ou Ra[çc]a|Ra[çc]a/Cor|Cor)[:\s]*(Branca?|Preta?|Parda?|Ind[ií]gena|Amarela?)\b", f, re.I)
-        if m:
-            val = m.group(1).strip()
-            if val.lower().startswith("pard"):
-                campos["raca_cor"] = "Parda"
-            elif val.lower().startswith("branc"):
-                campos["raca_cor"] = "Branca"
-            elif val.lower().startswith("pret"):
-                campos["raca_cor"] = "Preta"
-            else:
-                campos["raca_cor"] = val.capitalize()
-
-        # --- Grau Instrução ---
-        # pdfplumber: "Instrução: Ensino Médio completo"
-        # pypdf: "Instrução: Ensino Médio completo" (grudado)
-        m = re.search(r"Instru[çc][aã]o[:\s]*(Ensino[^\n,]+|Analfabeto|Fundamental[^\n]*|M[ée]dio[^\n]*|Superior[^\n]*)", f, re.I)
-        if m:
-            campos["grau_instrucao"] = m.group(1).strip()
-
-        # --- Filiação Pai ---
-        m = re.search(r"Pai[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\n|Mãe|FILIA)", f)
-        if m:
-            val = m.group(1).strip()
-            if val and val != "FILIAÇÃO":
-                campos["filiacao_pai"] = val
-
-        # --- Filiação Mãe ---
-        m = re.search(r"M[ãa]e[:\s]*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\n|C[eé]dula|CTPS|RG|Código)", f)
-        if m:
-            val = m.group(1).strip()
-            if val:
-                campos["filiacao_mae"] = val
-
-        # --- Endereço (Residência) ---
-        # Na ficha nova (DOCS), há 2 "Endereço:": um da empresa e um do funcionário.
-        # O do funcionário vem DEPOIS de "Dados Pessoais" e ANTES de "Cidade:"
-        # Na ficha antiga, vem após "Residência"
-        m = re.search(r"Resid[eê]ncia\s*\n([\s\S]+?)(?:\n\s*\n|Data de nascimento|Nascimento)", f, re.I)
-        if m:
-            end_bloco = m.group(1).strip()
-            m_cep = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", end_bloco)
-            if m_cep:
-                campos["cep"] = re.sub(r"[^0-9]", "", m_cep.group(1))
-                end_bloco = re.sub(r"CEP[:\s]*\d{2}\.?\d{3}[-]?\d{3}", "", end_bloco).strip()
-            linhas = [l.strip() for l in end_bloco.split("\n") if l.strip()]
-            for i, linha in enumerate(reversed(linhas)):
-                m_cid = re.search(r",\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)[,-]\s*([A-Z]{2})", linha)
-                if m_cid and len(m_cid.group(1).strip()) > 2:
-                    campos["cidade"] = m_cid.group(1).strip().rstrip(",")
-                    campos["estado"] = m_cid.group(2).strip()
-                    idx = len(linhas) - 1 - i
-                    linhas = linhas[:idx]
-                    break
-            endereco_limpo = "\n".join(linhas).strip()
-            endereco_limpo = re.sub(r"[-,]?\s*$", "", endereco_limpo)
-            campos["endereco"] = endereco_limpo.strip().rstrip(",")
-        else:
-            # Layout DOCS/Novo: Múltiplos "Endereço:" — precisa pegar o do funcionário
-            # O endereço da empresa vem ANTES de "Dados Pessoais"
-            # O endereço do funcionário vem DEPOIS de "Dados Pessoais"
-            pos_dados = f.find('Dados Pessoais')
-            if pos_dados > 0:
-                # Trabalhar só com o texto APÓS "Dados Pessoais"
-                f_pos_dados = f[pos_dados:]
-            else:
-                f_pos_dados = f
-
-            # Endereço do funcionário (após Dados Pessoais)
-            # DOCS: "Endereço: RUA UACARI, 246 AME 246 Bairro: CIDADE DE DEUS"
-            m = re.search(r"Endereço[:\s]*([^\n]+?)(?:\s+Bairro[:\s]+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?))?\s*(?:Cidade|\n)", f_pos_dados, re.I)
-            if m:
-                end_line = m.group(1).strip()
-                end_line = re.sub(r"\s*Código\s+Município:.*", "", end_line).strip()
-                bairro = m.group(2).strip() if m.group(2) else ""
-                if bairro:
-                    campos["endereco"] = f"{end_line}, {bairro}".rstrip(",")
-                else:
-                    campos["endereco"] = end_line.rstrip(",")
-
-            # Cidade do funcionário (após Dados Pessoais)
-            # Exigir "Cidade:" como rótulo para não capturar "CIDADE DE DEUS" do bairro
-            m = re.search(r"Cidade:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:\s+UF|\n)", f_pos_dados, re.I)
-            if m:
-                campos["cidade"] = m.group(1).strip()
-            else:
-                m = re.search(r"Cidade:\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", f_pos_dados, re.I)
-                if m:
-                    cidade_raw = m.group(1).strip()
-                    cidade_raw = re.sub(r"\s*UF:.*", "", cidade_raw).strip()
-                    campos["cidade"] = cidade_raw
-
-            # UF do funcionário (após Dados Pessoais) — validar contra lista oficial
-            UFS_VALIDAS = {'AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'}
-            m = re.search(r"UF[:\s]*([A-Z]{2})", f_pos_dados)
-            if m:
-                ufs = [x for x in re.findall(r"UF[:\s]*([A-Z]{2})", f_pos_dados) if x in UFS_VALIDAS]
-                if not campos.get("estado") and ufs:
-                    campos["estado"] = ufs[-1] if len(ufs) > 1 else ufs[0]
-
-            # CEP do funcionário (após Dados Pessoais)
-            m = re.search(r"CEP[:\s]*(\d{2}\.?\d{3}[-]?\d{3})", f_pos_dados)
-            if m:
-                campos["cep"] = re.sub(r"[^0-9]", "", m.group(1))
-
-            # Se não encontrou endereço após Dados Pessoais, tenta fallback com múltiplos Endereço:
-            if not campos.get("endereco"):
-                enderecos = list(re.finditer(r"Endereço[:\s]*([^\n]+)", f, re.I))
-                end_pessoal = None
-                for em in enderecos:
-                    end_line = em.group(1).strip()
-                    if end_line and not re.match(r'^(Bairro|\s*)$', end_line, re.I):
-                        pos = em.start()
-                        pos_dados_all = f.find('Dados Pessoais')
-                        if pos_dados_all > 0 and pos > pos_dados_all:
-                            end_pessoal = end_line
-                        elif not end_pessoal:
-                            end_pessoal = end_line
-                if end_pessoal:
-                    end_pessoal = re.sub(r"Código\s+Município:.*", "", end_pessoal).strip()
-                    campos["endereco"] = end_pessoal.rstrip(",")
-
-        # --- Telefone ---
-        # pdfplumber: "Fone: 92 985277054 Celular: Email:"
-        # pypdf: "Fone: Celular: Email: 92 985277054" (desordenado)
-        m = re.search(r"(?:Fone|Telefone)[:\s]*([\d()\s-]+)", f, re.I)
-        if m:
-            tel = m.group(1).strip()
-            if len(re.sub(r"\D", "", tel)) >= 8:
-                campos["telefone"] = tel
-        if not campos.get("telefone"):
-            # Busca celular
-            m = re.search(r"Celular[:\s]*([\d()\s-]+)", f, re.I)
-            if m:
-                tel = m.group(1).strip()
-                if len(re.sub(r"\D", "", tel)) >= 8:
-                    campos["telefone"] = tel
-        if not campos.get("telefone"):
-            # pypdf gruda Fone/Celular/Email — busca número após "Fone:" ou "Celular:"
-            m = re.search(r"(?:Fone|Celular)[:\s]*Email[:\s]*(\d[\d\s-]+)", f, re.I)
-            if m:
-                tel = m.group(1).strip()
-                if len(re.sub(r"\D", "", tel)) >= 8:
-                    campos["telefone"] = tel
-
-        # --- Cargo e CBO ---
-        # pdfplumber: "CBO/Cargo:514320-AUXILIAR DE SERVIOS GERAIS"
-        # pypdf (normalizado): "514320-AUXILIAR DE SERVIOS GERAIS CBO/Cargo:"
-        # pypdf ficha antiga: "Cargo\n AUXILIAR DE SERVIÇOS GERAIS \nFunção"
-        m = re.search(r"CBO/Cargo[:\s]*(\d+)\s*[-]\s*([^\n]+)", f, re.I)
-        if m:
-            campos["cbo"] = m.group(1).strip()
-            campos["cargo"] = m.group(2).strip()
-        else:
-            # pypdf invertido: "514320-AUXILIAR DE SERVIOS GERAIS CBO/Cargo:"
-            m = re.search(r"(\d{4,})\s*[-]\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*CBO/Cargo[:\s]*", f, re.I)
-            if m:
-                campos["cbo"] = m.group(1).strip()
-                campos["cargo"] = m.group(2).strip()
-            else:
-                # Layout antigo: "Cargo Função C.B.O.\n AUXILIAR DE SERVIÇOS GERAIS ... 514320"
-                m = re.search(r"Cargo\s+Fun[çc][aã]o\s+C\.?B\.?O\.?[^\n]*\n\s*(.+?)\s*$", f, re.M)
-                if m:
-                    data_line = m.group(1).strip()
-                    m_cbo = re.search(r"(\d{4,})\s*$", data_line)
-                    if m_cbo:
-                        campos["cbo"] = m_cbo.group(1).strip()
-                        data_line = data_line[:m_cbo.start()].strip()
-                    words = data_line.split()
-                    half = len(words) // 2
-                    if half > 0:
-                        first_half = " ".join(words[:half])
-                        second_half = " ".join(words[half:])
-                        if first_half == second_half:
-                            campos["cargo"] = first_half
-                        else:
-                            campos["cargo"] = data_line
-                    elif data_line:
-                        campos["cargo"] = data_line
-                else:
-                    # pypdf ficha antiga: "Cargo\nAUXILIAR..." separado
-                    m = re.search(r"Cargo\s*\n\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s*\n", f)
-                    if m and len(m.group(1).strip()) > 5:
-                        campos["cargo"] = m.group(1).strip()
-                    else:
-                        m = re.search(r"Fun[çc][aã]o[:\s]*([^\n]+)", f, re.I)
-                        if m:
-                            cargo_raw = m.group(1).strip()
-                            # Evita capturar rótulo de seção
-                            if cargo_raw and not re.match(r'Hist[óo]rico|F[ée]rias|Rescis', cargo_raw, re.I):
-                                campos["cargo"] = cargo_raw
-
-        # --- Data Admissão ---
-        # pdfplumber: "Admissão: 03/09/2026"
-        # pypdf: "03/09/2026 Admissão:" (invertido)
-        val = _extrair_campo(f,
-            r"(?:Data de )?Admiss[aã]o[:\s]*",
-            r"(\d{2}/\d{2}/\d{4})")
-        if val:
-            campos["data_admissao"] = _converte_data(val)
-
-        # --- Salário ---
-        m = re.search(r"(?:Sal[aá]rio|Admiss[aã]o)[^\n]*R\$\s*([\d.,]+)", f, re.I)
-        if m:
-            campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
-        else:
-            m = re.search(r"Valor[:\s]*([\d.,]+)", f, re.I)
-            if m and not campos.get("salario"):
-                campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
-            else:
-                m = re.search(r"R\$\s*([\d.,]+)", f)
-                if m and not campos.get("salario"):
-                    campos["salario"] = m.group(1).replace(".", "").replace(",", ".")
-
-        if not campos.get("tipo_contrato"):
-            campos["tipo_contrato"] = "CLT"
-
-    # ═══ EXTRAÇÃO DO CONTRATO DE EXPERIÊNCIA ═══
-    if eh_contrato and txt_contrato:
-        c = txt_contrato
-
-        if not campos.get("nome"):
-            m = re.search(r"Sr\.?\s*\(a\)\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)(?:,|\s+domiciliado|\s+portador)", c, re.I)
-            if m:
-                campos["nome"] = m.group(1).strip()
-            else:
-                m = re.search(r"[,\s]+(?:e)\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)\s+(?:portador|domiciliado)", c, re.I)
-                if m:
-                    campos["nome"] = m.group(1).strip()
-
-        if not campos.get("ctps"):
-            m = re.search(r"CTPS[^:]*N[º°:]*\s*(\d[\d/]*)\s*[Ss][eé]rie[:\s]*(\d+)", c, re.I)
-            if m:
-                campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
-            else:
-                m = re.search(r"Carteira Profissional\s*No\.?[:\s]*(\d+)[/ ]+S[eé]rie[:\s]*(\d+)", c, re.I)
-                if m:
-                    campos["ctps"] = f"{m.group(1).strip()}/{m.group(2).strip()}"
-
-        if not campos.get("cargo"):
-            m = re.search(r"(?:fun[çc][aã]o|fun[çc][õo]es)\s+de\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ\s]+?)(?:\s+e\s+mais|\s*[,.]|\n)", c, re.I)
-            if m:
-                campos["cargo"] = m.group(1).strip()
-
-        if not campos.get("salario"):
-            m = re.search(r"remunera[çc][aã]o\s*(?:de)?\s*:?\s*R\$\s*([\d.,]+)", c, re.I)
-            if m:
-                campos["salario"] = m.group(1).replace(".", "").replace(",", ".").strip()
-
-        # --- Data Início Experiência ---
-        m = re.search(r"in[ií]cio\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
-        if m:
-            campos["inicio_experiencia"] = _converte_data(m.group(1))
-            if not campos.get("data_admissao"):
-                campos["data_admissao"] = _converte_data(m.group(1))
-        else:
-            # Busca data do contrato na assinatura: "Igarassu, 3 de setembro de 2026"
-            m = re.search(r"\b(\d{1,2})\s+de\s+(jan\w*|fev\w*|mar\w*|abr\w*|mai\w*|jun\w*|jul\w*|ago\w*|set\w*|out\w*|nov\w*|dez\w*)\s+de\s+(\d{4})\b", c, re.I)
-            if m:
-                dia = m.group(1)
-                mes_nome = m.group(2)
-                ano = m.group(3)
-                meses = {"jan":1,"fev":2,"mar":3,"abr":4,"mai":5,"jun":6,"jul":7,"ago":8,"set":9,"out":10,"nov":11,"dez":12}
-                mes_num = next((v for k,v in meses.items() if mes_nome.lower().startswith(k)), None)
-                if mes_num:
-                    data_fmt = f"{int(dia):02d}/{mes_num:02d}/{ano}"
-                    campos["inicio_experiencia"] = _converte_data(data_fmt)
-                    if not campos.get("data_admissao"):
-                        campos["data_admissao"] = _converte_data(data_fmt)
-
-        # --- Data Fim Experiência ---
-        m = re.search(r"t[eé]rmino\s*(?:em)?[:\s]*(\d{2}/\d{2}/\d{4})", c, re.I)
-        if m:
-            campos["fim_experiencia"] = _converte_data(m.group(1))
-        else:
-            m = re.search(r"(?:prorrogado|vencer|terminar).*?(\d{2}/\d{2}/\d{4})", c, re.I)
-            if m:
-                campos["fim_experiencia"] = _converte_data(m.group(1))
-
-        if not campos.get("endereco"):
-            m = re.search(r"domiciliado\s+(?:na|no)\s+([^,]+?)\s*,", c, re.I)
-            if m:
-                campos["endereco"] = m.group(1).strip()
-
-        if not campos.get("cidade"):
-            m = re.search(r"cidade\s+de\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+?)[,-]\s*([A-Z]{2})", c, re.I)
-            if m:
-                campos["cidade"] = m.group(1).strip()
-                if not campos.get("estado"):
-                    campos["estado"] = m.group(2).strip()
-
-        if not campos.get("telefone"):
-            m = re.search(r"(?:Fone|Telefone|Celular)[:\s]*([\d()\s-]+)", c, re.I)
-            if m:
-                tel = m.group(1).strip()
-                if len(re.sub(r"\D", "", tel)) >= 8:
-                    campos["telefone"] = tel
-
-        # Tipo contrato — se a ficha já preencheu como CLT, atualiza para Experiência
-        campos["tipo_contrato"] = "Experiência"
-
-    # ═══ EXTRAÇÃO DO VALE-TRANSPORTE (complementar) ═══
-    # A página do Vale-Transporte pode ter RG e CPF mais legíveis
-    for p in paginas_norm:
-        if re.search(r"VALE.?TRANSPORTE|COMPROMISSO DE VALE", p, re.I):
-            vt = p
-            # CPF
-            if not campos.get("cpf"):
-                m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", vt)
-                if m:
-                    campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
-            # RG
-            if not campos.get("rg"):
-                m = re.search(r"RG[:\s]*(\d{5,})", vt, re.I)
-                if m:
-                    campos["rg"] = m.group(1).strip()
-            break
-
-    # ═══ EXTRAÇÃO GENÉRICA ═══
-    if not eh_ficha and not eh_contrato:
-        m = re.search(r"Nome[:\s]+([A-ZÀÁÂÃÉÊÍÓÔÕÚÜÇ'\s]+)", txt, re.I)
-        if m and not campos.get("nome"):
-            campos["nome"] = m.group(1).strip()
-        m = re.search(r"CPF[:\s]*(\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2})", txt)
-        if m and not campos.get("cpf"):
-            campos["cpf"] = re.sub(r"[^0-9]", "", m.group(1))
-
-    # Limpeza final
-    for k, v in list(campos.items()):
-        if isinstance(v, str):
-            campos[k] = v.strip().strip(".,;: ")
-            if not campos[k]:
-                del campos[k]
-
-    campos["_tipo_detectado"] = []
-    if eh_ficha:
-        campos["_tipo_detectado"].append("Ficha de Registro")
-    if eh_contrato:
-        campos["_tipo_detectado"].append("Contrato de Experiência")
-    if not eh_ficha and not eh_contrato:
-        campos["_tipo_detectado"].append("Documento genérico")
-
-    return campos
-
-
-def extrair_campos_pdf(arquivos_pdf):
-    """
-    Recebe UM arquivo PDF ou uma LISTA de arquivos PDF (UploadedFile ou BytesIO)
-    e retorna dict com os campos extraídos da Ficha de Registro e/ou Contrato de Experiência.
-    Aceita: 1 PDF só, vários PDFs separados (Ficha + Contrato), ou o formato
-    que junta tudo em um único arquivo (DOCS ADMISSIONAIS).
-    """
-    if not TEM_LEITOR_PDF:
-        return {"_erro": "Biblioteca de leitura de PDF não disponível neste servidor."
-                " Instale pdfplumber ou pypdf (pip install pdfplumber pypdf)."}
-
-    # Normaliza para lista
-    if not isinstance(arquivos_pdf, (list, tuple)):
-        arquivos_pdf = [arquivos_pdf]
-
-    # Coleta todas as páginas de todos os PDFs
-    todas_paginas = []
-    erros = []
-    for arq in arquivos_pdf:
-        try:
-            paginas = _ler_pdf_paginas(arq)
-            if paginas:
-                todas_paginas.extend(paginas)
-            else:
-                erros.append("PDF vazio ou ilegível")
-        except Exception as e:
-            erros.append(str(e))
-
-    if not todas_paginas:
-        msg = "Nenhum texto encontrado nos PDFs enviados."
-        if erros:
-            msg += f" Erros: {'; '.join(erros)}"
-        return {"_erro": msg}
-
-    return _extrair_campos_de_paginas(todas_paginas)
-
-
-def _converte_data(data_br):
-    """Converte DD/MM/AAAA para AAAA-MM-DD."""
-    if not data_br:
-        return ""
-    try:
-        return datetime.strptime(data_br.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
-    except (ValueError, TypeError):
-        return data_br
-
 
 # ════════════════════════════════════════════════════════════════
 # FUNÇÕES AUXILIARES BANCO
@@ -971,7 +191,7 @@ st.set_page_config(
 with st.sidebar:
     st.markdown("## 🏢 Sistema RH")
     st.success("✅ Banco de dados integrado — dados salvos no próprio sistema")
-    st.caption("Nenhum arquivo externo. Nenhuma configuração de pasta.\nTudo fica no banco de dados do próprio sistema.")
+    st.caption("Nenhum arquivo externo. Nenhuma configuração de pasta.\nTudo fica em `rh_dados.db` ao lado do programa.")
 
     abas_disponiveis = [
         "👥 Cadastro",
@@ -987,7 +207,7 @@ with st.sidebar:
     ]
     aba_sel = st.radio("Navegação", abas_disponiveis, index=0)
     st.markdown("---")
-    st.caption(f"Versão 3.0 — Leitura automática de PDF — {_agora()}")
+    st.caption(f"Versão 2.0 — Banco integrado — {_agora()}")
 
 # ════════════════════════════════════════════════════════════════
 # ABA 1 — CADASTRO DE FUNCIONÁRIOS
@@ -1015,161 +235,49 @@ if aba_sel == "👥 Cadastro":
             f = None
 
     with col_b:
-        # ── UPLOAD DE PDF PARA PREENCHIMENTO AUTOMÁTICO ──
-        st.subheader("📄 Importar do PDF de Admissão")
-        st.caption("Envie a Ficha de Registro de Empregado e/ou o Contrato de Experiência. "
-                   "Pode enviar os dois separados ou tudo junto em um único arquivo.")
-
-        pdf_uploads = st.file_uploader(
-            "📎 Enviar PDF(s) de admissão",
-            type=["pdf"],
-            key="up_pdf_admissao",
-            accept_multiple_files=True,
-            help="Ficha de Registro, Contrato de Experiência, ou os dois juntos (DOCS ADMISSIONAIS).\n"
-                 "Pode enviar mais de um arquivo — os dados serão mesclados automaticamente."
-        )
-
-        campos_pdf = {}
-        if pdf_uploads:
-            with st.spinner(f"Lendo {len(pdf_uploads)} PDF(s)..."):
-                campos_pdf = extrair_campos_pdf(pdf_uploads)
-
-            if "_erro" in campos_pdf:
-                st.error(campos_pdf["_erro"])
-                campos_pdf = {}
-            elif campos_pdf:
-                tipos = ", ".join(campos_pdf.get("_tipo_detectado", ["PDF"]))
-                qtd = len([k for k in campos_pdf if not k.startswith("_")])
-                st.success(f"✅ {qtd} campo(s) extraído(s) de {len(pdf_uploads)} arquivo(s) — {tipos}")
-
-                with st.expander("📋 Campos extraídos do(s) PDF(s)", expanded=True):
-                    campos_lista = {k: v for k, v in campos_pdf.items() if not k.startswith("_")}
-                    for k, v in campos_lista.items():
-                        rotulo = k.replace("_", " ").title()
-                        st.write(f"**{rotulo}**: {v}")
-
-        # ── FORMULÁRIO DE CADASTRO ──
         with st.form("form_funcionario"):
-            st.subheader("Dados Pessoais")
+            st.subheader("Dados do Funcionário")
             c1, c2, c3 = st.columns(3)
 
-            nome_val = campos_pdf.get("nome", f["nome"] if f else "")
-            cpf_val = campos_pdf.get("cpf", f["cpf"] if f else "")
-            rg_val = campos_pdf.get("rg", f["rg"] if f else "")
-
-            nome = c1.text_input("Nome *", value=nome_val)
-            cpf = c2.text_input("CPF", value=cpf_val)
-            rg = c3.text_input("RG", value=rg_val)
-
-            nasc_val = campos_pdf.get("data_nascimento", f["data_nascimento"] if f else "")
-            nat_val = campos_pdf.get("naturalidade", f["naturalidade"] if f and "naturalidade" in f.keys() else "")
-            ec_val = campos_pdf.get("estado_civil", f["estado_civil"] if f else "")
-
-            data_nascimento = c1.text_input("Data Nascimento (AAAA-MM-DD)", value=nasc_val)
-            naturalidade = c2.text_input("Naturalidade", value=nat_val)
-
-            ec_opcoes = ["Solteiro","Casado","Divorciado","Viúvo","União Estável"]
-            ec_idx = ec_opcoes.index(ec_val) if ec_val in ec_opcoes else (ec_opcoes.index(f["estado_civil"]) if f and f["estado_civil"] else 0)
-            estado_civil = c3.selectbox("Estado Civil", ec_opcoes, index=ec_idx)
-
-            sexo_val = campos_pdf.get("sexo", f["sexo"] if f and "sexo" in f.keys() else "")
-            raca_val = campos_pdf.get("raca_cor", f["raca_cor"] if f and "raca_cor" in f.keys() else "")
-            gi_val = campos_pdf.get("grau_instrucao", f["grau_instrucao"] if f and "grau_instrucao" in f.keys() else "")
-
-            sexo_opcoes = ["", "Feminino", "Masculino"]
-            sexo_idx = sexo_opcoes.index(sexo_val) if sexo_val in sexo_opcoes else 0
-            sexo = c1.selectbox("Sexo", sexo_opcoes, index=sexo_idx)
-
-            raca_opcoes = ["", "Branca", "Preta", "Parda", "Amarela", "Indígena"]
-            raca_idx = raca_opcoes.index(raca_val) if raca_val in raca_opcoes else 0
-            raca_cor = c2.selectbox("Raça/Cor", raca_opcoes, index=raca_idx)
-
-            gi_opcoes = ["", "Analfabeto", "Ensino Fundamental Incompleto", "Ensino Fundamental Completo",
-                         "Ensino Médio Incompleto", "Ensino Médio Completo", "Ensino Superior Incompleto",
-                         "Ensino Superior Completo", "Pós-Graduação"]
-            gi_idx = gi_opcoes.index(gi_val) if gi_val in gi_opcoes else 0
-            grau_instrucao = c3.selectbox("Grau Instrução", gi_opcoes, index=gi_idx)
-
-            end_val = campos_pdf.get("endereco", f["endereco"] if f else "")
-            cid_val = campos_pdf.get("cidade", f["cidade"] if f else "")
-            est_val = campos_pdf.get("estado", f["estado"] if f else "")
-            cep_val = campos_pdf.get("cep", f["cep"] if f else "")
-            tel_val = campos_pdf.get("telefone", f["telefone"] if f else "")
-
-            endereco = c1.text_input("Endereço", value=end_val)
-            cidade = c2.text_input("Cidade", value=cid_val)
-            estado = c3.text_input("UF", value=est_val)
-            cep = c1.text_input("CEP", value=cep_val)
-            telefone = c2.text_input("Telefone", value=tel_val)
-
-            ctps_val = campos_pdf.get("ctps", f["ctps"] if f and "ctps" in f.keys() else "")
-            pis_val = campos_pdf.get("pis", f["pis"] if f and "pis" in f.keys() else "")
-            cbo_val = campos_pdf.get("cbo", f["cbo"] if f and "cbo" in f.keys() else "")
-
-            ctps = c3.text_input("CTPS (Nº/Série)", value=ctps_val)
-            pis = c1.text_input("PIS/PASEP", value=pis_val)
-            cbo = c2.text_input("CBO", value=cbo_val)
-
-            pai_val = campos_pdf.get("filiacao_pai", f["filiacao_pai"] if f and "filiacao_pai" in f.keys() else "")
-            mae_val = campos_pdf.get("filiacao_mae", f["filiacao_mae"] if f and "filiacao_mae" in f.keys() else "")
-
-            filiacao_pai = c3.text_input("Filiação (Pai)", value=pai_val)
-            filiacao_mae = c1.text_input("Filiação (Mãe)", value=mae_val)
+            nome = c1.text_input("Nome *", value=f["nome"] if f else "")
+            cpf = c2.text_input("CPF", value=f["cpf"] if f else "")
+            rg = c3.text_input("RG", value=f["rg"] if f else "")
+            data_nascimento = c1.text_input("Data Nascimento", value=f["data_nascimento"] if f else "")
+            estado_civil = c2.selectbox("Estado Civil", ["Solteiro","Casado","Divorciado","Viúvo","União Estável"],
+                index=["Solteiro","Casado","Divorciado","Viúvo","União Estável"].index(f["estado_civil"]) if f and f["estado_civil"] else 0)
+            endereco = c3.text_input("Endereço", value=f["endereco"] if f else "")
+            cidade = c1.text_input("Cidade", value=f["cidade"] if f else "")
+            estado = c2.text_input("Estado", value=f["estado"] if f else "")
+            cep = c3.text_input("CEP", value=f["cep"] if f else "")
+            telefone = c1.text_input("Telefone", value=f["telefone"] if f else "")
+            email = c2.text_input("E-mail", value=f["email"] if f else "")
+            pix = c3.text_input("Chave PIX", value=f["pix"] if f else "")
 
             st.markdown("---")
             st.subheader("Dados Profissionais")
-            c1, c2, c3 = st.columns(3)
-
-            cargo_val = campos_pdf.get("cargo", f["cargo"] if f else "")
-            adm_val = campos_pdf.get("data_admissao", f["data_admissao"] if f else "")
-            sal_val = campos_pdf.get("salario", "")
-            if not sal_val and f and f["salario"]:
-                sal_val = str(float(f["salario"]))
-
-            cargo = c1.text_input("Cargo", value=cargo_val)
+            cargo = c1.text_input("Cargo", value=f["cargo"] if f else "")
+            departamento = c2.text_input("Departamento", value=f["departamento"] if f else "")
             lojas_lista = _lista_lojas()
-            loja_sel = c2.selectbox("Loja", lojas_lista if lojas_lista else ["Sem loja cadastrada"],
+            loja_sel = c3.selectbox("Loja", lojas_lista if lojas_lista else ["Sem loja cadastrada"],
                 index=lojas_lista.index(f["loja"]) if f and f["loja"] in lojas_lista else 0)
-            data_admissao = c3.text_input("Data Admissão (AAAA-MM-DD)", value=adm_val)
-
-            sal_float = 0.0
-            if sal_val:
-                try:
-                    sal_float = float(sal_val)
-                except (ValueError, TypeError):
-                    pass
-            elif f and f["salario"]:
-                sal_float = float(f["salario"])
-
-            salario = c1.number_input("Salário (R$)", value=sal_float, min_value=0.0, format="%.2f")
-
-            tc_val = campos_pdf.get("tipo_contrato", f["tipo_contrato"] if f else "")
-            tc_opcoes = ["CLT","PJ","Estágio","Temporário","Experiência","Outro"]
-            tc_idx = tc_opcoes.index(tc_val) if tc_val in tc_opcoes else 0
-            tipo_contrato = c2.selectbox("Tipo Contrato", tc_opcoes, index=tc_idx)
-
-            sit_opcoes = ["Ativo","Demitido C/JC","Demitido S/JC","Pedido de Conta",
-                          "Término de Contrato","Rescisão","Abandono","Desistência","Aviso Prévio"]
-            sit_val = f["situacao"] if f else "Ativo"
-            sit_idx = sit_opcoes.index(sit_val) if sit_val in sit_opcoes else 0
-            situacao = c3.selectbox("Situação", sit_opcoes, index=sit_idx)
+            data_admissao = c1.text_input("Data Admissão", value=f["data_admissao"] if f else "")
+            salario = c2.number_input("Salário (R$)", value=float(f["salario"]) if f and f["salario"] else 0.0, min_value=0.0, format="%.2f")
+            tipo_contrato = c3.selectbox("Tipo Contrato", ["CLT","PJ","Estágio","Temporário","Outro"],
+                index=["CLT","PJ","Estágio","Temporário","Outro"].index(f["tipo_contrato"]) if f and f["tipo_contrato"] else 0)
+            situacao = c1.selectbox("Situação", ["Ativo","Demitido C/JC","Demitido S/JC","Pedido de Conta","Término de Contrato","Rescisão","Abandono","Desistência","Aviso Prévio"],
+                index=["Ativo","Demitido C/JC","Demitido S/JC","Pedido de Conta","Término de Contrato","Rescisão","Abandono","Desistência","Aviso Prévio"].index(f["situacao"]) if f and f["situacao"] else 0)
 
             st.markdown("---")
             st.subheader("Dados Bancários")
-            b1, b2 = st.columns(2)
-            banco = b1.text_input("Banco", value=f["banco"] if f else "")
+            banco = c1.text_input("Banco", value=f["banco"] if f else "")
+            agencia = c2.text_input("Agência", value=f["agencia"] if f else "")
+            conta = c3.text_input("Conta", value=f["conta"] if f else "")
 
             st.markdown("---")
-            st.subheader("Período de Experiência")
+            st.subheader("Eventos / Prazos")
             e1, e2, e3 = st.columns(3)
-            ie_val = campos_pdf.get("inicio_experiencia", f["inicio_experiencia"] if f else "")
-            fe_val = campos_pdf.get("fim_experiencia", f["fim_experiencia"] if f else "")
-            inicio_experiencia = e1.text_input("Início Experiência", value=ie_val)
-            fim_experiencia = e2.text_input("Fim Experiência", value=fe_val)
-
-            st.markdown("---")
-            st.subheader("Outros Eventos / Prazos")
-            e1, e2, e3 = st.columns(3)
+            inicio_experiencia = e1.text_input("Início Experiência", value=f["inicio_experiencia"] if f else "")
+            fim_experiencia = e2.text_input("Fim Experiência", value=f["fim_experiencia"] if f else "")
             inicio_ferias = e1.text_input("Início Férias", value=f["inicio_ferias"] if f else "")
             dias_ferias = e2.number_input("Dias Férias", value=int(f["dias_ferias"]) if f and f["dias_ferias"] else 0, min_value=0)
             inicio_licenca = e1.text_input("Início Licença", value=f["inicio_licenca"] if f else "")
@@ -1219,12 +327,9 @@ if aba_sel == "👥 Cadastro":
                 if f:  # atualizar
                     con.execute("""UPDATE funcionarios SET
                         nome=?, cpf=?, rg=?, data_nascimento=?, estado_civil=?,
-                        endereco=?, cidade=?, estado=?, cep=?, telefone=?,
-                        cargo=?, loja=?, data_admissao=?, salario=?,
-                        banco=?, ctps=?, pis=?, cbo=?,
-                        naturalidade=?, sexo=?, raca_cor=?, grau_instrucao=?,
-                        filiacao_pai=?, filiacao_mae=?,
-                        tipo_contrato=?, situacao=?,
+                        endereco=?, cidade=?, estado=?, cep=?, telefone=?, email=?, pix=?,
+                        cargo=?, departamento=?, loja=?, data_admissao=?, salario=?,
+                        banco=?, agencia=?, conta=?, tipo_contrato=?, situacao=?,
                         inicio_experiencia=?, fim_experiencia=?,
                         inicio_ferias=?, dias_ferias=?, fim_ferias=?,
                         inicio_licenca=?, dias_licenca=?, fim_licenca=?,
@@ -1233,12 +338,9 @@ if aba_sel == "👥 Cadastro":
                         observacoes=?, atualizado_em=?
                         WHERE id=?""",
                         (nome.strip(), cpf, rg, data_nascimento, estado_civil,
-                         endereco, cidade, estado, cep, telefone,
-                         cargo, loja_sel, data_admissao, salario,
-                         banco, ctps, pis, cbo,
-                         naturalidade, sexo, raca_cor, grau_instrucao,
-                         filiacao_pai, filiacao_mae,
-                         tipo_contrato, situacao,
+                         endereco, cidade, estado, cep, telefone, email, pix,
+                         cargo, departamento, loja_sel, data_admissao, salario,
+                         banco, agencia, conta, tipo_contrato, situacao,
                          inicio_experiencia, fim_experiencia,
                          inicio_ferias, int(dias_ferias), fim_ferias,
                          inicio_licenca, int(dias_licenca), fim_licenca,
@@ -1250,26 +352,20 @@ if aba_sel == "👥 Cadastro":
                 else:  # novo
                     con.execute("""INSERT INTO funcionarios (
                         nome, cpf, rg, data_nascimento, estado_civil,
-                        endereco, cidade, estado, cep, telefone,
-                        cargo, loja, data_admissao, salario,
-                        banco, ctps, pis, cbo,
-                        naturalidade, sexo, raca_cor, grau_instrucao,
-                        filiacao_pai, filiacao_mae,
-                        tipo_contrato, situacao,
+                        endereco, cidade, estado, cep, telefone, email, pix,
+                        cargo, departamento, loja, data_admissao, salario,
+                        banco, agencia, conta, tipo_contrato, situacao,
                         inicio_experiencia, fim_experiencia,
                         inicio_ferias, dias_ferias, fim_ferias,
                         inicio_licenca, dias_licenca, fim_licenca,
                         inicio_afastamento, dias_afastamento, fim_afastamento,
                         inicio_aviso, dias_aviso, fim_aviso,
                         observacoes, criado_em, atualizado_em
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (nome.strip(), cpf, rg, data_nascimento, estado_civil,
-                         endereco, cidade, estado, cep, telefone,
-                         cargo, loja_sel, data_admissao, salario,
-                         banco, ctps, pis, cbo,
-                         naturalidade, sexo, raca_cor, grau_instrucao,
-                         filiacao_pai, filiacao_mae,
-                         tipo_contrato, situacao,
+                         endereco, cidade, estado, cep, telefone, email, pix,
+                         cargo, departamento, loja_sel, data_admissao, salario,
+                         banco, agencia, conta, tipo_contrato, situacao,
                          inicio_experiencia, fim_experiencia,
                          inicio_ferias, int(dias_ferias), fim_ferias,
                          inicio_licenca, int(dias_licenca), fim_licenca,
@@ -1431,6 +527,7 @@ elif aba_sel == "✈️ Diárias":
         qtd_dias = d1.number_input("Quantidade de Dias", value=1, min_value=1)
         obs_diaria = d2.text_area("Observações")
 
+        # busca id do funcionário
         fid_diaria = None
         for f in func_ativos:
             if f[1] == func_nome:
@@ -1551,7 +648,7 @@ elif aba_sel == "🧳 Viagens":
                  data_saida, data_retorno, transporte, hospedagem,
                  valor_estimado, observacoes, status, criado_em, atualizado_em)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (fid_v, func_nome_v, destino_v.strip(), motivo_v,
+                (fid_v, func_nome_v, destino.strip(), motivo_v,
                  data_saida_v, data_retorno_v, transporte_v, hospedagem_v,
                  valor_v, obs_v, "Pendente", _agora(), _agora()))
             con.commit(); con.close()
@@ -1590,6 +687,7 @@ elif aba_sel == "🛒 Compras":
         data_compra = co1.text_input("Data Compra (AAAA-MM-DD)", value=_hoje())
         obs_c = co2.text_area("Observações")
 
+        # busca id da loja
         lid_c = None
         if lojas_lista:
             con = _conn()
@@ -1664,6 +762,7 @@ elif aba_sel == "📊 Painel":
 
     st.markdown("---")
 
+    # Gráficos
     con = _conn()
     funcs_por_loja = con.execute("""
         SELECT loja, COUNT(*) as qtd FROM funcionarios
@@ -1707,6 +806,7 @@ elif aba_sel == "📎 Documentos":
                     fid_doc = f[0]
                     break
 
+            # FOTO
             st.subheader("📸 Foto do Funcionário")
             foto_up = st.file_uploader("Enviar foto", type=["jpg","jpeg","png"], key="up_foto")
             if foto_up and fid_doc:
@@ -1724,6 +824,7 @@ elif aba_sel == "📎 Documentos":
             if foto_row:
                 st.image(io.BytesIO(foto_row["conteudo"]), caption=foto_row["nome_arquivo"], width=200)
 
+            # DOCUMENTOS
             st.subheader("📄 Documentos")
             doc_up = st.file_uploader("Enviar documento", type=["pdf","jpg","jpeg","png","doc","docx"], key="up_doc_func")
             if doc_up and fid_doc:
@@ -1747,8 +848,7 @@ elif aba_sel == "📎 Documentos":
                         b64 = base64.b64encode(doc['conteudo']).decode()
                         ext = doc['nome_arquivo'].rsplit('.', 1)[-1].lower()
                         mime = "application/pdf" if ext == "pdf" else "image/jpeg" if ext in ("jpg","jpeg") else "image/png" if ext == "png" else "application/octet-stream"
-                        dl_name = doc['nome_arquivo']
-                        st.markdown(f'<a href="data:{mime};base64,{b64}" download="{dl_name}">⬇️ Baixar</a>', unsafe_allow_html=True)
+                        st.markdown(f'<a href="data:{mime};base64,{b64}" download="{doc["nome_arquivo"]}">⬇️ Baixar</a>', unsafe_allow_html=True)
                     with c2:
                         if st.button("🗑️", key=f"exc_doc_func_{doc['id']}"):
                             con = _conn()
@@ -1790,8 +890,7 @@ elif aba_sel == "📎 Documentos":
                             b64 = base64.b64encode(doc['conteudo']).decode()
                             ext = doc['nome_arquivo'].rsplit('.', 1)[-1].lower()
                             mime = "application/pdf" if ext == "pdf" else "image/jpeg" if ext in ("jpg","jpeg") else "image/png" if ext == "png" else "application/octet-stream"
-                            dl_name = doc['nome_arquivo']
-                            st.markdown(f'<a href="data:{mime};base64,{b64}" download="{dl_name}">⬇️ Baixar</a>', unsafe_allow_html=True)
+                            st.markdown(f'<a href="data:{mime};base64,{b64}" download="{doc["nome_arquivo"]}">⬇️ Baixar</a>', unsafe_allow_html=True)
                         with c2:
                             if st.button("🗑️", key=f"exc_doc_loja_v_{doc['id']}"):
                                 con = _conn()
@@ -1844,6 +943,7 @@ elif aba_sel == "⏱️ Eventos Trabalhistas":
                 con.execute("INSERT INTO eventos_trabalhistas (funcionario_id, tipo, data_inicio, data_fim, dias, observacoes, criado_em) VALUES (?,?,?,?,?,?,?)",
                     (fid_ev, tipo_ev, data_inicio_ev, data_fim_ev, int(dias_ev), obs_ev, _agora()))
 
+                # atualiza campos no cadastro do funcionário
                 if tipo_ev == "Férias":
                     con.execute("UPDATE funcionarios SET inicio_ferias=?, dias_ferias=?, fim_ferias=?, atualizado_em=? WHERE id=?",
                         (data_inicio_ev, int(dias_ev), data_fim_ev, _agora(), fid_ev))
@@ -1867,6 +967,7 @@ elif aba_sel == "⏱️ Eventos Trabalhistas":
                 st.success(f"✅ Evento '{tipo_ev}' registrado para {func_ev}!")
                 st.rerun()
 
+        # LISTA DE EVENTOS
         st.markdown("---")
         st.subheader("📋 Eventos Registrados")
         con = _conn()
@@ -1890,16 +991,8 @@ elif aba_sel == "⏱️ Eventos Trabalhistas":
 elif aba_sel == "⚙️ Configurações":
     st.header("⚙️ Configurações do Sistema")
 
-    st.success("✅ Todos os dados são salvos automaticamente no banco de dados integrado.")
+    st.success("✅ Todos os dados são salvos automaticamente no banco de dados integrado (`rh_dados.db`).")
     st.info("Não é preciso configurar pasta externa, Google Sheets ou qualquer outra coisa.\nO banco de dados fica ao lado do programa e nunca se perde ao fechar e reabrir.")
-
-    st.markdown("---")
-    st.subheader("📄 Importação de PDFs")
-    if TEM_LEITOR_PDF:
-        st.success(f"✅ Biblioteca de leitura de PDF disponível ({LEITOR_PDF}) — a importação automática está funcionando.")
-    else:
-        st.warning("⚠️ Nenhuma biblioteca de leitura de PDF disponível. A importação automática não funcionará.\n"
-                    "Instale pdfplumber ou pypdf: `pip install pdfplumber pypdf`")
 
     st.markdown("---")
     st.subheader("📋 Informações do Banco")
@@ -1941,6 +1034,7 @@ elif aba_sel == "💾 Backup":
 
     if st.button("💾 GERAR BACKUP COMPLETO", type="primary", use_container_width=True):
         with st.spinner("Preparando cópia..."):
+            # lê o arquivo .db inteiro
             with open(DB_PATH, "rb") as f:
                 dados_db = f.read()
             nome_zip = f"backup_rh_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
@@ -1967,10 +1061,11 @@ elif aba_sel == "💾 Backup":
             with zipfile.ZipFile(io.BytesIO(arq_rest.read()), "r") as zf:
                 nomes = zf.namelist()
                 if "rh_dados.db" not in nomes:
-                    st.error("❌ Este ZIP não contém o banco de dados. Não é um backup válido.")
+                    st.error("❌ Este ZIP não contém o banco de dados (`rh_dados.db`). Não é um backup válido.")
                 else:
                     if st.button("✅ CONFIRMAR RESTAURAÇÃO", type="primary", use_container_width=True):
                         conteudo_db = zf.read("rh_dados.db")
+                        # substitui o banco atual
                         with open(DB_PATH, "wb") as f:
                             f.write(conteudo_db)
                         st.success("✅ Backup restaurado com sucesso! Feche e abra o sistema para ver os dados.")
@@ -1989,6 +1084,7 @@ elif aba_sel == "💾 Backup":
                 try:
                     rows = con.execute(f"SELECT * FROM {t}").fetchall()
                     df_exp = pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+                    # remover colunas blob
                     for col_b in ["conteudo","fotos","anexos"]:
                         if col_b in df_exp.columns:
                             df_exp = df_exp.drop(columns=[col_b])
