@@ -4482,9 +4482,9 @@ def mesclar_dados_pdf(dados_registro, dados_contrato, campos_atuais=None):
     # Remove campos internos
     # Limpa chaves internas e campos não mapeados no formulário
     for k in list(mesclado.keys()):
-        if k.startswith("_") or k in ("CNPJEmpresa", "CNPPEmpresa", "Empresa", "PrazoExperienciaDias",
-                                       "DataTerminoExperiencia", "LocalTrabalho", "HorarioTrabalho",
-                                       "LojaRaw"):
+        if k.startswith("_") or k in ("CNPJEmpresa", "CNPPEmpresa", "Empresa",
+                                       "PrazoExperienciaDias", "DataTerminoExperiencia",
+                                       "FormaPgto", "LocalTrabalho", "LojaRaw"):
             del mesclado[k]
     
     return mesclado
@@ -4646,8 +4646,7 @@ with aba1:
         "Email": "email_", "Setor": "setor_", "CTPSNumero": "ctpsn_",
         "CTPSSerie": "ctpss_", "TituloEleitor": "tit_", "CBO": "cbo_",
         "MatriculaeSocial": "esoc_", "NomePai": "pai_", "NomeMae": "mae_",
-        "Funcao": "func_", "HorarioTrabalho": "hora_", "FormaPgto": "fgto_",
-        "DataTerminoExperiencia": "dtexp_", "PrazoExperienciaDias": "pzexp_",
+        "Funcao": "func_", "HorarioTrabalho": "hora_",
         "Loja": "loja_", "Cargo": "cargo_",
     }
 
@@ -4704,8 +4703,7 @@ with aba1:
                             "Loja","Cargo","Salario","Sexo","EstadoCivil","Etnia","GrauInstrucao",
                             "Naturalidade","Nacionalidade","UF","Cidade","Bairro","CEP",
                             "NomePai","NomeMae","CTPSNumero","CTPSSerie","TituloEleitor",
-                            "CBO","MatriculaeSocial","Email","Funcao","Setor","HorarioTrabalho",
-                            "FormaPgto","DataTerminoExperiencia","PrazoExperienciaDias"]:
+                            "CBO","MatriculaeSocial","Email","Funcao","Setor","HorarioTrabalho"]:
                     v = val_campo(col)
                     if v and str(v).strip():
                         campos_atuais_form[col] = str(v).strip()
@@ -4722,6 +4720,13 @@ with aba1:
             campos_atuais_form.update(_widget_vals)
             
             dados_extraidos_pdf = mesclar_dados_pdf(dados_reg, dados_ct, campos_atuais_form)
+            
+            # Matrícula eSocial preenche também o campo Matrícula (igual planilha)
+            if dados_extraidos_pdf.get("MatriculaeSocial") and str(dados_extraidos_pdf["MatriculaeSocial"]).strip():
+                _mes = str(dados_extraidos_pdf["MatriculaeSocial"]).strip()
+                # Só copiar se Matricula não tiver valor manual ou do banco
+                if not dados_extraidos_pdf.get("Matricula") or not str(dados_extraidos_pdf.get("Matricula", "")).strip():
+                    dados_extraidos_pdf["Matricula"] = _mes
             
             if dados_extraidos_pdf:
                 # ===== INJETAR VALORES NO SESSION_STATE DOS WIDGETS =====
@@ -4866,14 +4871,8 @@ with aba1:
             nome_mae = st.text_input("Nome da Mãe", value=val_auto("NomeMae"), key=f"mae_{_kf}")
             funcao = st.text_input("Função", value=val_auto("Funcao"), key=f"func_{_kf}")
         
-        # Horário e forma de pagamento
-        hc1, hc2 = st.columns(2)
-        with hc1:
-            horario_trabalho = st.text_input("Horário de Trabalho", value=val_auto("HorarioTrabalho"), key=f"hora_{_kf}")
-            forma_pgto = st.text_input("Forma de Pgto.", value=val_auto("FormaPgto"), key=f"fgto_{_kf}")
-        with hc2:
-            data_term_exp = st.text_input("Término Experiência", value=val_auto("DataTerminoExperiencia"), key=f"dtexp_{_kf}")
-            prazo_exp_dias = st.text_input("Prazo Experiência (dias)", value=val_auto("PrazoExperienciaDias"), key=f"pzexp_{_kf}")
+        # Horário de trabalho
+        horario_trabalho = st.text_input("Horário de Trabalho", value=val_auto("HorarioTrabalho"), key=f"hora_{_kf}")
 
         if prazos_exp:
             st.markdown("---")
