@@ -4452,6 +4452,13 @@ with aba1:
     def _limpar_formulario_cadastro():
         """Zera a busca e todos os campos do cadastro."""
         st.session_state["cad_form_ver"] = st.session_state.get("cad_form_ver", 0) + 1
+        # Limpar flag de injeção do PDF para permitir nova injeção
+        if "_pdf_injetou_id" in st.session_state:
+            del st.session_state["_pdf_injetou_id"]
+        # Limpar PDFs carregados
+        for _k in ("pdf_registro_cadastro", "pdf_contrato_cadastro"):
+            if _k in st.session_state:
+                del st.session_state[_k]
         for _k in ("autocomplete_func", "confirmar_exclusao", "chk_confirma_exclusao"):
             if _k in st.session_state:
                 del st.session_state[_k]
@@ -4557,6 +4564,23 @@ with aba1:
     caminho_foto_atual = temp["caminho_foto"]
     avisos_calculo = temp.get("_avisos", [])
 
+
+    # Mapeamento: campo extraído do PDF → prefixo da chave do widget no formulário
+    _MAPA_PDF_WIDGET = {
+        "Matricula": "mat_", "Nome": "nome_", "CPF": "cpf_", "RG": "rg_",
+        "PIS": "pis_", "Nascimento": "nasc_", "Admissao": "adm_",
+        "Telefone": "tel_", "Endereco": "end_", "Salario": "sal_",
+        "Sexo": "sexo_", "EstadoCivil": "eciv_", "Etnia": "etnia_",
+        "GrauInstrucao": "grau_", "Naturalidade": "nat_", "Nacionalidade": "nac_",
+        "UF": "uf_", "Cidade": "cid_", "Bairro": "bai_", "CEP": "cep_",
+        "Email": "email_", "Setor": "setor_", "CTPSNumero": "ctpsn_",
+        "CTPSSerie": "ctpss_", "TituloEleitor": "tit_", "CBO": "cbo_",
+        "MatriculaeSocial": "esoc_", "NomePai": "pai_", "NomeMae": "mae_",
+        "Funcao": "func_", "HorarioTrabalho": "hora_", "FormaPgto": "fgto_",
+        "DataTerminoExperiencia": "dtexp_", "PrazoExperienciaDias": "pzexp_",
+        "Loja": "loja_", "Cargo": "cargo_",
+    }
+
     # ========== UPLOAD DE DOCUMENTOS PARA PREENCHIMENTO AUTOMÁTICO ==========
     st.markdown("---")
     st.subheader("📄 Importar Dados de Documentos")
@@ -4567,14 +4591,14 @@ with aba1:
         pdf_registro = st.file_uploader(
             "📋 Ficha Registro de Empregado",
             type=["pdf"],
-            key=f"pdf_registro_{_kf}",
+            key="pdf_registro_cadastro",
             help="Upload do PDF da Ficha de Registro do funcionário"
         )
     with col_pdf2:
         pdf_contrato = st.file_uploader(
             "📝 Contrato de Experiência",
             type=["pdf"],
-            key=f"pdf_contrato_{_kf}",
+            key="pdf_contrato_cadastro",
             help="Upload do PDF do Contrato de Experiência do funcionário"
         )
     
@@ -4602,6 +4626,8 @@ with aba1:
                     st.warning(f"⚠️ Não foi possível ler o Contrato de Experiência: {e_ct}")
             
             # Montar dict de campos atuais do formulário (para dar prioridade ao que já foi digitado)
+            # Primeiro: ler valores do banco (se mat_sel)
+            # Segundo: ler valores dos widgets no session_state (edições não-salvas)
             campos_atuais_form = {}
             if mat_sel:
                 for col in ["Nome","CPF","RG","PIS","Nascimento","Admissao","Telefone","Endereco",
@@ -4613,10 +4639,60 @@ with aba1:
                     v = val_campo(col)
                     if v and str(v).strip():
                         campos_atuais_form[col] = str(v).strip()
+            # Capturar também valores editados pelo usuário nos widgets (não-salvos)
+            # Isso garante que edições manuais não sejam perdidas ao incrementar cad_form_ver
+            _widget_vals = {}
+            for campo_pdf, prefixo in _MAPA_PDF_WIDGET.items():
+                chave_widget = f"{prefixo}{_kf}"
+                if chave_widget in st.session_state:
+                    _wv = st.session_state[chave_widget]
+                    if _wv and str(_wv).strip():
+                        _widget_vals[campo_pdf] = str(_wv).strip()
+            # Widget vals têm prioridade máxima (o que o usuário acabou de digitar)
+            campos_atuais_form.update(_widget_vals)
             
             dados_extraidos_pdf = mesclar_dados_pdf(dados_reg, dados_ct, campos_atuais_form)
             
             if dados_extraidos_pdf:
+                # ===== INJETAR VALORES NO SESSION_STATE DOS WIDGETS =====
+                # Streamlit ignora o param value= quando a chave já existe no session_state.
+                # Solução: incrementar cad_form_ver para forçar recriação dos widgets.
+                # Com chaves novas, os widgets leem value= (via val_auto) e index= normalmente.
+                # Ao mesmo tempo, capturamos valores manuais não-salvos para não perdê-los.
+                _pdf_id = f"{mat_sel or 'novo'}_{pdf_registro.name if pdf_registro else 'x'}_{pdf_contrato.name if pdf_contrato else 'x'}"
+                _pdf_injetou = st.session_state.get("_pdf_injetou_id", None)
+                if _pdf_injetou != _pdf_id:
+                    # Capturar valores a injetar dos dados extraídos
+                    _campos_a_injetar = {}
+                    _campos_selectbox = {"Loja": lista_lojas, "Cargo": lista_cargos}
+                    for campo_pdf, valor in dados_extraidos_pdf.items():
+                        if valor and str(valor).strip():
+                            prefixo = _MAPA_PDF_WIDGET.get(campo_pdf)
+                            if prefixo:
+                                # Para selectboxes, só injetar se o valor está na lista de opções
+                                if campo_pdf in _campos_selectbox:
+                                    _opcoes = _campos_selectbox[campo_pdf]()
+                                    if str(valor).strip() in _opcoes:
+                                        _campos_a_injetar[campo_pdf] = str(valor).strip()
+                                # Para text_inputs, injetar sempre
+                                else:
+                                    _campos_a_injetar[campo_pdf] = str(valor).strip()
+                    
+                    # Incrementar versão do formulário para forçar recriação dos widgets
+                    st.session_state["cad_form_ver"] = st.session_state.get("cad_form_ver", 0) + 1
+                    _v_novo = st.session_state["cad_form_ver"]
+                    _kf_novo = f"{_v_novo}_{mat_sel or 'novo'}"
+                    
+                    # Injetar valores nas NOVAS chaves dos widgets
+                    for campo_pdf, valor in _campos_a_injetar.items():
+                        prefixo = _MAPA_PDF_WIDGET.get(campo_pdf)
+                        if prefixo:
+                            chave_nova = f"{prefixo}{_kf_novo}"
+                            st.session_state[chave_nova] = valor
+                    
+                    st.session_state["_pdf_injetou_id"] = _pdf_id
+                    st.rerun()
+                
                 campos_preenchidos = [k for k, v in dados_extraidos_pdf.items() if v and str(v).strip()]
                 st.success(f"✅ {len(campos_preenchidos)} campo(s) extraído(s) dos documentos!")
                 with st.expander("📋 Ver campos extraídos", expanded=False):
