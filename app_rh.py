@@ -5036,13 +5036,15 @@ with aba1:
                     st.stop()
                 add_historico_auto(dados_form["mat"], dados_form["nome"], acao_hist, registro_final)
                 st.success(f"✅ Salvo! Matrícula: **{dados_form['mat']}**")
-                # Depois de um NOVO cadastro os campos ficam vazios, prontos para o proximo.
-                if acao_hist == "Novo Cadastro":
-                    st.session_state["cad_form_ver"] = st.session_state.get("cad_form_ver", 0) + 1
-                    for _k in ("autocomplete_func", "confirmar_exclusao", "chk_confirma_exclusao"):
-                        if _k in st.session_state:
-                            del st.session_state[_k]
-                    st.info("🧹 Campos limpos — pode cadastrar o próximo colaborador.")
+                # Limpar todos os campos do formulário e excluir anexos de PDF após salvar
+                st.session_state["cad_form_ver"] = st.session_state.get("cad_form_ver", 0) + 1
+                if "_pdf_injetou_id" in st.session_state:
+                    del st.session_state["_pdf_injetou_id"]
+                for _k in ("pdf_registro_cadastro", "pdf_contrato_cadastro",
+                           "autocomplete_func", "confirmar_exclusao", "chk_confirma_exclusao"):
+                    if _k in st.session_state:
+                        del st.session_state[_k]
+                st.info("🧹 Campos limpos e anexos removidos — pronto para o próximo cadastro.")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Erro ao salvar: {e}")
