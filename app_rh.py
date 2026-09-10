@@ -5363,13 +5363,20 @@ with aba3:
                 # Ex:  92 meses → ( 92-12) % 12 = 8 → faltam 4 meses para vencer
                 if meses >= 12:
                     pos_concessivo = (meses - 12) % 12
-                    faltam = 12 - pos_concessivo
+                    if pos_concessivo == 0 and meses >= 24:
+                        faltam = 0  # prazo vencido — férias dobradas!
+                    elif pos_concessivo > 0:
+                        faltam = 12 - pos_concessivo
+                    else:
+                        faltam = 12  # acabou de completar 1o aquisitivo
                 else:
                     pos_concessivo = -1
                     faltam = -1
                 # Mostra quem está a 4 meses ou menos do vencimento do prazo concessivo
-                # (pos_concessivo 8-11 = faltam 4-1 meses | pos_concessivo 0 = venceu agora)
-                if meses >= 12 and (pos_concessivo >= 8 or pos_concessivo == 0):
+                # (pos_concessivo 8-11 = faltam 4-1 meses)
+                # E quem já venceu o prazo (pos_concessivo 0 e meses >= 24 = férias dobradas!)
+                # Quem acabou de completar 12m (pos_concessivo=0, meses=12) NÃO aparece
+                if meses >= 12 and (pos_concessivo >= 8 or (pos_concessivo == 0 and meses >= 24)):
                     # Verifica status de férias
                     status_fer = "🔴 Não Tirou"
                     if str(f.get("Situacao","")).strip() == "Férias":
