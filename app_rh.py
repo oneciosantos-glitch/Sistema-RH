@@ -5357,9 +5357,12 @@ with aba3:
                 dt = datetime.combine(_d_ad, datetime.min.time())
                 if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
                 meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
-                # Mostra quem está no período 20-24 meses
-                # (prestes a completar 24 meses / 2º período aquisitivo)
-                if 20 <= meses <= 24:
+                # Posição no ciclo de férias atual (cada ciclo = 24 meses)
+                # Ex: 93 meses → 93 % 24 = 21 → faltam 3 meses para vencer
+                pos_ciclo = meses % 24
+                # Mostra quem está a 4 meses ou menos do vencimento do prazo
+                # (pos_ciclo 20-23 = faltam 4-1 meses | pos_ciclo 0 e meses>=12 = venceu agora)
+                if pos_ciclo >= 20 or (pos_ciclo == 0 and meses >= 12):
                     # Verifica status de férias
                     status_fer = "🔴 Não Tirou"
                     if str(f.get("Situacao","")).strip() == "Férias":
@@ -5380,10 +5383,15 @@ with aba3:
                                 status_fer = "🟢 Já Tirou"
                         elif dt_fer:
                             status_fer = "🟢 Já Tirou"
-                    tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m", status_fer])
+                    tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m (ciclo {pos_ciclo})", status_fer])
             except: pass
-        # Ordena do maior tempo para o menor (quem tem mais meses aparece primeiro — são os mais prioritários)
-        tabela_fer.sort(key=lambda x: int(x[5].replace("m","")), reverse=True)
+        # Ordena: quem está mais perto de vencer (pos_ciclo maior) aparece primeiro
+        def _chave_ordenacao(x):
+            txt = x[5]  # ex: "93m (ciclo 21)" ou "21m (ciclo 21)"
+            import re
+            m = re.search(r'ciclo (\d+)', txt)
+            return int(m.group(1)) if m else 0
+        tabela_fer.sort(key=_chave_ordenacao, reverse=True)
         st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo","Status Férias"]), use_container_width=True, hide_index=True)
 
 # ================ ABA 4 - HISTÓRICO ================
