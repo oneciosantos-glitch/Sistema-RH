@@ -5357,12 +5357,19 @@ with aba3:
                 dt = datetime.combine(_d_ad, datetime.min.time())
                 if filtro_mes != "Todos" and dt.month != [1,2,3,4,5,6,7,8,9,10,11,12][MESES.index(filtro_mes)-1]: continue
                 meses = (hoje.year - dt.year)*12 + (hoje.month - dt.month) - (1 if hoje.day < dt.day else 0)
-                # Posição no ciclo de férias atual (cada ciclo = 24 meses)
-                # Ex: 93 meses → 93 % 24 = 21 → faltam 3 meses para vencer
-                pos_ciclo = meses % 24
-                # Mostra quem está a 4 meses ou menos do vencimento do prazo
-                # (pos_ciclo 20-23 = faltam 4-1 meses | pos_ciclo 0 e meses>=12 = venceu agora)
-                if pos_ciclo >= 20 or (pos_ciclo == 0 and meses >= 12):
+                # Período concessivo: após 12 meses, o empregador tem 12 meses
+                # para conceder as férias. Calcula a posição nesse prazo.
+                # Ex: 105 meses → (105-12) % 12 = 9 → faltam 3 meses para vencer
+                # Ex:  92 meses → ( 92-12) % 12 = 8 → faltam 4 meses para vencer
+                if meses >= 12:
+                    pos_concessivo = (meses - 12) % 12
+                    faltam = 12 - pos_concessivo
+                else:
+                    pos_concessivo = -1
+                    faltam = -1
+                # Mostra quem está a 4 meses ou menos do vencimento do prazo concessivo
+                # (pos_concessivo 8-11 = faltam 4-1 meses | pos_concessivo 0 = venceu agora)
+                if meses >= 12 and (pos_concessivo >= 8 or pos_concessivo == 0):
                     # Verifica status de férias
                     status_fer = "🔴 Não Tirou"
                     if str(f.get("Situacao","")).strip() == "Férias":
@@ -5383,15 +5390,15 @@ with aba3:
                                 status_fer = "🟢 Já Tirou"
                         elif dt_fer:
                             status_fer = "🟢 Já Tirou"
-                    tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m (ciclo {pos_ciclo})", status_fer])
+                    tabela_fer.append([f["Matricula"], f["Nome"], f["Loja"], f["Cargo"], f["Admissao"], f"{meses}m (restam {faltam}m)", status_fer])
             except: pass
-        # Ordena: quem está mais perto de vencer (pos_ciclo maior) aparece primeiro
+        # Ordena: quem tem menos meses restantes aparece primeiro (mais urgente)
+        import re
         def _chave_ordenacao(x):
-            txt = x[5]  # ex: "93m (ciclo 21)" ou "21m (ciclo 21)"
-            import re
-            m = re.search(r'ciclo (\d+)', txt)
-            return int(m.group(1)) if m else 0
-        tabela_fer.sort(key=_chave_ordenacao, reverse=True)
+            txt = x[5]  # ex: "105m (restam 3m)" ou "21m (restam 4m)"
+            m = re.search(r'restam (\d+)m', txt)
+            return int(m.group(1)) if m else 99
+        tabela_fer.sort(key=_chave_ordenacao)
         st.dataframe(pd.DataFrame(tabela_fer, columns=["Matrícula","Nome","Loja","Cargo","Admissão","Tempo","Status Férias"]), use_container_width=True, hide_index=True)
 
 # ================ ABA 4 - HISTÓRICO ================
