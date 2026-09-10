@@ -5372,11 +5372,12 @@ with aba3:
                 else:
                     pos_concessivo = -1
                     faltam = -1
-                # Mostra quem está a 4 meses ou menos do vencimento do prazo concessivo
+                # Só aparece a partir do 2º período (meses >= 24)
+                # No 1º período (12-24m) a empresa tem prazo normal, não é urgência
+                # A partir do 2º, mostra quem está a 4 meses ou menos do vencimento
                 # (pos_concessivo 8-11 = faltam 4-1 meses)
-                # E quem já venceu o prazo (pos_concessivo 0 e meses >= 24 = férias dobradas!)
-                # Quem acabou de completar 12m (pos_concessivo=0, meses=12) NÃO aparece
-                if meses >= 12 and (pos_concessivo >= 8 or (pos_concessivo == 0 and meses >= 24)):
+                # E quem já venceu o prazo (pos_concessivo 0 e meses >= 24 = dobrado!)
+                if meses >= 24 and (pos_concessivo >= 8 or pos_concessivo == 0):
                     # Verifica status de férias
                     status_fer = "🔴 Não Tirou"
                     if str(f.get("Situacao","")).strip() == "Férias":
