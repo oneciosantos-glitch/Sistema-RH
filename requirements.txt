@@ -11,4 +11,4 @@ pydub>=0.25.0
 gspread>=5.10.0
 google-auth>=2.22.0
 folium>=0.14.0
- pip install pdfplumber
+ 
