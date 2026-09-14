@@ -12,216 +12,18 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-import importlib
-
 import calculos as cal
-from calculos import TIPOS_DESLIGAMENTO
 import dashboard as dash
 import exportador
 import estilo
 from database import Banco, DB_PATH
-
-# --- Safety: force reload modules to avoid stale bytecode on Streamlit Cloud ---
-for _mod in (cal, dash, exportador, estilo):
-    try:
-        importlib.reload(_mod)
-    except Exception:
-        pass
-
-# --- Fallback: ensure all dashboard functions are available ---
-# If the deployed dashboard.py is outdated and missing functions,
-# we define them here so the app keeps working.
-
-
-def _fb_turnover_periodo(registros, meses, ref=None):
-    ref = ref or date.today()
-    inicio = cal.add_meses(ref, -meses)
-    admissoes = desligamentos = 0
-    for r in registros:
-        a = cal.parse_data(r["admissao"])
-        d = cal.parse_data(r.get("demissao")) if r.get("demissao") else None
-        if a and inicio <= a <= ref:
-            admissoes += 1
-        if d and inicio <= d <= ref:
-            desligamentos += 1
-    ativos = _fb_ativos_em_data(registros, ref)
-    quadro_atual = len(ativos)
-    quadro_medio = max(quadro_atual + (admissoes + desligamentos) // 2, 1)
-    turno = ((admissoes + desligamentos) / 2) / quadro_medio * 100
-    return {"quadro_atual": quadro_atual, "admissoes": admissoes,
-            "desligamentos": desligamentos, "turnover_medio": round(turno, 1),
-            "quadro_medio": quadro_medio}
-
-
-def _fb_ativos_em_data(registros, ref):
-    resultado = []
-    for r in registros:
-        a = cal.parse_data(r["admissao"])
-        if a and a <= ref:
-            d = cal.parse_data(r.get("demissao")) if r.get("demissao") else None
-            if d is None or d > ref:
-                resultado.append(r)
-    return resultado
-
-
-def _fb_ativos(registros, ref=None):
-    ref = ref or date.today()
-    return _fb_ativos_em_data(registros, ref)
-
-
-def _fb_resumo_eventos(registros, ref=None):
-    ref = ref or date.today()
-    exp_30 = exp_7 = ferias_lib = ferias_venc = 0
-    ferias_prox = ferias_gozo_30 = ferias_alerta_4m = 0
-    for r in registros:
-        if r.get("experiencia_dias"):
-            e = cal.contrato_experiencia(
-                cal.parse_data(r["admissao"]), r["experiencia_dias"], ref)
-            if e["dias_restantes"] <= 30:
-                exp_30 += 1
-            if e["alerta"]:
-                exp_7 += 1
-        f = cal.calcular_ferias(cal.parse_data(r["admissao"]), ref,
-                                  r.get("ferias_ultimo_gozo"))
-        if f["liberada"]:
-            ferias_lib += 1
-        if f["vencida"]:
-            ferias_venc += 1
-        if f["proxima_vencer_gozo"]:
-            ferias_gozo_30 += 1
-        if f["alerta_4_meses"]:
-            ferias_alerta_4m += 1
-        if not f["liberada"]:
-            dias_lib = (f["data_liberacao"] - ref).days
-            if 0 < dias_lib <= 60:
-                ferias_prox += 1
-    return {"experiencia_30": exp_30, "experiencia_7": exp_7,
-            "ferias_liberadas": ferias_lib, "ferias_proximas": ferias_prox,
-            "ferias_vencidas": ferias_venc, "ferias_gozo_30": ferias_gozo_30,
-            "ferias_alerta_4m": ferias_alerta_4m}
-
-
-def _fb_eventos_experiencia(registros, ref=None):
-    ref = ref or date.today()
-    rows = []
-    for r in registros:
-        if not r.get("experiencia_dias"):
-            continue
-        if r["situacao"] in TIPOS_DESLIGAMENTO:
-            continue
-        adm = cal.parse_data(r["admissao"])
-        e = cal.contrato_experiencia(adm, r["experiencia_dias"], ref)
-        _fim_clt = lambda dias: adm + timedelta(days=dias - 1)
-        _etapas = {30: "30", 45: "45", 60: "30 + 30", 90: "45 + 45"}
-        for p in [30, 45, 60, 90]:
-            p_fim = _fim_clt(p)
-            p_dias_rest = max((p_fim - ref).days, 0)
-            p_encerrado = ref > p_fim
-            p_alerta = p_dias_rest <= 7 and not p_encerrado
-            if p_encerrado:
-                p_sit = "Encerrado"
-            elif p_alerta:
-                p_sit = f"Atencao - vence em {p_dias_rest} dia(s)"
-            else:
-                p_sit = f"Dentro do prazo ({p_dias_rest} dias restantes)"
-            rows.append({"Matricula": r["matricula"],
-                         "Funcionario": r["nome"],
-                         "Loja": r.get("loja", ""),
-                         "Cargo": r.get("cargo", ""),
-                         "Prazo": f"{p}d ({_etapas.get(p, str(p))})",
-                         "Fim": cal.fmt(p_fim),
-                         "Dias restantes": p_dias_rest,
-                         "Situacao": p_sit})
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-
-def _fb_eventos_ferias(registros, ref=None):
-    ref = ref or date.today()
-    rows = []
-    for r in _fb_ativos(registros, ref):
-        f = cal.calcular_ferias(cal.parse_data(r["admissao"]), ref,
-                                  r.get("ferias_ultimo_gozo"))
-        if f.get("ja_tirou_periodo"):
-            continue
-        if not (f["alerta_4_meses"] or f["liberada"]):
-            continue
-        if f["vencida"] and not f["liberada"]:
-            continue
-        alerta_4m_txt = "Sim" if f["alerta_4_meses"] else "Nao"
-        dias_lib = (f["data_liberacao"] - ref).days if f["data_liberacao"] > ref else 0
-        dias_gozo = (f["limite_gozo"] - ref).days
-        rows.append({"Matricula": r["matricula"],
-                     "Funcionario": r["nome"],
-                     "Loja": r.get("loja", ""),
-                     "Cargo": r.get("cargo", ""),
-                     "Regra": f["regra"],
-                     "Periodo": f"{cal.fmt(f['inicio_periodo'])} a {cal.fmt(f['fim_periodo'])}",
-                     "Liberacao": cal.fmt(f["data_liberacao"]),
-                     "Limite gozo": cal.fmt(f["limite_gozo"]),
-                     "Progresso": f["progresso"],
-                     "Dias prop.": f["dias_proporcionais"],
-                     "Alerta 4 meses": alerta_4m_txt,
-                     "Situacao": f["situacao"]})
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-
-def _fb_movimentacao_mensal(registros, meses, ref=None):
-    ref = ref or date.today()
-    rows = []
-    for i in range(meses - 1, -1, -1):
-        m = cal.add_meses(ref, -i)
-        mes_str = m.strftime("%Y-%m")
-        mes_label = m.strftime("%b/%y")
-        adm = desl = 0
-        for r in registros:
-            a = cal.parse_data(r["admissao"])
-            d = cal.parse_data(r.get("demissao")) if r.get("demissao") else None
-            if a and a.strftime("%Y-%m") == mes_str:
-                adm += 1
-            if d and d.strftime("%Y-%m") == mes_str:
-                desl += 1
-        quadro_fim = len(_fb_ativos_em_data(registros, m))
-        quadro_med = max(quadro_fim + (adm + desl) // 2, 1)
-        turno = ((adm + desl) / 2) / quadro_med * 100
-        rows.append({"Mes": mes_label, "Admissoes": adm,
-                     "Desligamentos": desl, "Quadro no fim do mes": quadro_fim,
-                     "Turnover %": round(turno, 1),
-                     "Desligamentos %": round(desl / quadro_med * 100, 1)})
-    return pd.DataFrame(rows).set_index("Mes")
-
-
-def _fb_turnover_por_loja(registros, meses, ref=None):
-    ref = ref or date.today()
-    lojas = sorted(set(r.get("loja", "") or "Sem loja" for r in registros))
-    rows = []
-    for loja in lojas:
-        regs = [r for r in registros if (r.get("loja", "") or "Sem loja") == loja]
-        t = _fb_turnover_periodo(regs, meses, ref)
-        rows.append({"Loja": loja, "Quadro": t["quadro_atual"],
-                     "Admissoes": t["admissoes"],
-                     "Desligamentos": t["desligamentos"],
-                     "Turnover %": t["turnover_medio"]})
-    if not rows:
-        return pd.DataFrame(columns=["Loja", "Quadro", "Admissoes",
-                                     "Desligamentos", "Turnover %"]).set_index("Loja")
-    return pd.DataFrame(rows).set_index("Loja")
-
-
-# Bind: use dashboard module functions if available, otherwise fallbacks
-d_turnover_periodo = getattr(dash, "turnover_periodo", _fb_turnover_periodo)
-d_resumo_eventos = getattr(dash, "resumo_eventos", _fb_resumo_eventos)
-d_ativos = getattr(dash, "ativos", _fb_ativos)
-d_eventos_experiencia = getattr(dash, "eventos_experiencia", _fb_eventos_experiencia)
-d_eventos_ferias = getattr(dash, "eventos_ferias", _fb_eventos_ferias)
-d_movimentacao_mensal = getattr(dash, "movimentacao_mensal", _fb_movimentacao_mensal)
-d_turnover_por_loja = getattr(dash, "turnover_por_loja", _fb_turnover_por_loja)
 
 st.set_page_config(page_title="Cadastro de Funcionarios",
                    page_icon="\U0001F465", layout="wide")
 estilo.aplicar()
 
 
-@st.cache_resource(ttl=300)
+@st.cache_resource
 def get_banco():
     return Banco(multiusuario=True)
 
@@ -230,12 +32,8 @@ def get_banco():
 
 def linha_tabela(reg, hoje):
     adm = cal.parse_data(reg["admissao"])
-    f = cal.calcular_ferias(adm, hoje, reg.get("ferias_ultimo_gozo"))
-    # Se desligado, contrato de experiencia esta encerrado
-    _eh_desligado = reg["situacao"] in TIPOS_DESLIGAMENTO
-    if _eh_desligado:
-        exp, exp_sit = "-", "Encerrado (deslig.)"
-    elif reg["experiencia_dias"]:
+    f = cal.calcular_ferias(adm, hoje)
+    if reg["experiencia_dias"]:
         e = cal.contrato_experiencia(adm, reg["experiencia_dias"], hoje)
         exp = f"{e['prazo_dias']}d ate {cal.fmt(e['fim'])}"
         exp_sit = e["situacao"]
@@ -272,91 +70,6 @@ def _filtros(banco, chave):
 
 
 # ============================================================
-# ENCERRAMENTO AUTOMATICO DE EVENTOS VENCIDOS
-# ============================================================
-
-def _encerrar_eventos_vencidos(banco):
-    """Verifica eventos com data de retorno vencida e encerra automaticamente.
-
-    Para cada tipo de evento (ferias, licenca maternidade, afastamento INSS),
-    busca registros com situacao ativa cuja data_retorno ja passou,
-    limpa os campos do evento e reverte situacao para 'Ativo'.
-
-    Returns:
-        int: numero total de eventos encerrados automaticamente.
-    """
-    # Garantir que a coluna ferias_ultimo_gozo existe (migracao)
-    cols = [r[1] for r in banco.conn.execute(
-        "PRAGMA table_info(funcionarios)").fetchall()]
-    if "ferias_ultimo_gozo" not in cols:
-        banco.conn.execute(
-            "ALTER TABLE funcionarios ADD COLUMN ferias_ultimo_gozo TEXT DEFAULT NULL")
-        banco.conn.commit()
-
-    hoje = date.today().isoformat()
-    total = 0
-
-    # --- Férias ---
-    cur = banco.conn.execute(
-        "SELECT id, nome, ferias_inicio FROM funcionarios "
-        "WHERE situacao = 'Está de Férias' "
-        "AND ferias_retorno IS NOT NULL "
-        "AND ferias_retorno < ?",
-        (hoje,)
-    )
-    rows = cur.fetchall()
-    for row in rows:
-        # Preservar ferias_ultimo_gozo = inicio das ferias que estao sendo encerradas
-        banco.atualizar(row["id"], {
-            "ferias_ultimo_gozo": row["ferias_inicio"],
-            "ferias_inicio": None,
-            "ferias_dias": None,
-            "ferias_retorno": None,
-            "situacao": "Ativo",
-        })
-    total += len(rows)
-
-    # --- Licença Maternidade ---
-    cur = banco.conn.execute(
-        "SELECT id, nome FROM funcionarios "
-        "WHERE situacao = 'Licença Maternidade' "
-        "AND licenca_maternidade_retorno IS NOT NULL "
-        "AND licenca_maternidade_retorno < ?",
-        (hoje,)
-    )
-    rows = cur.fetchall()
-    for row in rows:
-        banco.atualizar(row["id"], {
-            "licenca_maternidade_inicio": None,
-            "licenca_maternidade_dias": None,
-            "licenca_maternidade_retorno": None,
-            "situacao": "Ativo",
-        })
-    total += len(rows)
-
-    # --- Afastamento INSS ---
-    cur = banco.conn.execute(
-        "SELECT id, nome FROM funcionarios "
-        "WHERE situacao = 'Afastado INSS' "
-        "AND afastamento_retorno IS NOT NULL "
-        "AND afastamento_retorno < ?",
-        (hoje,)
-    )
-    rows = cur.fetchall()
-    for row in rows:
-        banco.atualizar(row["id"], {
-            "afastamento_tipo": None,
-            "afastamento_inicio": None,
-            "afastamento_dias": None,
-            "afastamento_retorno": None,
-            "situacao": "Ativo",
-        })
-    total += len(rows)
-
-    return total
-
-
-# ============================================================
 # PAGINAS
 # ============================================================
 
@@ -380,7 +93,7 @@ def pagina_consultar(banco):
         st.caption(f"{len(df)} registro(s) \u00B7 atualizado "
                    f"{pd.Timestamp.now():%H:%M:%S}")
         st.dataframe(estilo.estilo_tabela(df),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
     if tempo_real:
         st.fragment(desenhar, run_every=10)()
@@ -389,83 +102,15 @@ def pagina_consultar(banco):
             pass
         desenhar()
 
-    # --- Acoes por funcionario (editar / excluir) ---
-    registros_all = banco.pesquisar(*filtros)
-    if registros_all:
-        st.divider()
-        st.subheader("\U0001F4DD Acoes por funcionario")
-        opcoes_acao = {f"{r['matricula']} - {r['nome']}": r for r in registros_all}
-        escolha_acao = st.selectbox("Selecionar funcionario",
-                                   list(opcoes_acao.keys()),
-                                   key="consulta_acao_sel")
-        reg_acao = opcoes_acao[escolha_acao]
-        ca1, ca2 = st.columns(2)
-        editar = ca1.button("\U0001F4DD Editar cadastro",
-                            key="consulta_btn_editar",
-                            type="primary")
-        excluir = ca2.button("\U0001F5D1 Excluir cadastro",
-                            key="consulta_btn_excluir")
-
-        if editar:
-            st.session_state["_navegar_para"] = "\U0001F4DD Cadastrar"
-            st.session_state["_editar_id"] = reg_acao["id"]
-            st.rerun()
-
-        if excluir:
-            confirma_exc = st.checkbox(
-                f"Confirmo a exclusao de {reg_acao['nome']}",
-                key="consulta_confirma_exc")
-            if confirma_exc:
-                banco.excluir(reg_acao["id"])
-                st.success("Registro excluido com sucesso.")
-                st.rerun()
-            else:
-                st.warning("Marque a confirmacao para excluir.")
-
 
 def pagina_cadastro(banco):
     estilo.cabecalho("Cadastrar / Editar",
                     "Preencha os campos e anexe a foto")
     registros = banco.pesquisar()
     opcoes = _opcoes(banco, registros)
-
-    # Se veio da pagina Consultar (editar por ID), pre-selecionar
-    _editar_id = st.session_state.pop("_editar_id", None)
-    _navegar = st.session_state.pop("_navegar_para", None)
-    _pre_sel = None
-    if _editar_id:
-        for k, v in opcoes.items():
-            if v == _editar_id:
-                _pre_sel = k
-                break
-        # Forcar o widget sel_registro a mostrar o registro correto
-        if _pre_sel:
-            st.session_state["sel_registro"] = _pre_sel
-            # Marcar que este registro e o atual (nao disparar limpeza)
-            st.session_state["_cad_sel_reg"] = _pre_sel
-
     escolha = st.selectbox("Selecionar registro",
-                          ["\U0001F195 Novo cadastro"] + list(opcoes),
-                          index=(list(opcoes).index(_pre_sel) + 1
-                                 if _pre_sel and _pre_sel in list(opcoes) else 0),
-                          key="sel_registro")
+                          ["\U0001F195 Novo cadastro"] + list(opcoes))
     reg = banco.obter(opcoes[escolha]) if escolha in opcoes else None
-
-    # Limpar widget keys do form SOMENTE quando o usuario mudar
-    # intencionalmente o registro selecionado (via sel_registro changes)
-    _sel_key = "_cad_sel_reg"
-    _widget_key = "sel_registro"
-    _prev_sel = st.session_state.get(_sel_key)
-    # So limpa se o valor do selectbox sel_registro mudou (deteccao via callback ou comparacao)
-    _current_sel = st.session_state.get(_widget_key, escolha)
-    if _prev_sel != _current_sel:
-        st.session_state[_sel_key] = _current_sel
-        for _k in ["f_matricula", "f_nome", "f_rg", "f_cpf", "f_telefone",
-                   "f_admissao", "f_obs", "f_demissao", "f_experiencia",
-                   "f_foto", "f_remove_foto",
-                   "sel_loja", "sel_situacao", "sel_cargo",
-                   "f_loja_nova", "f_sit_nova", "f_cargo_novo"]:
-            st.session_state.pop(_k, None)
 
     combos = {t: banco.listar_combo(t) for t in ("loja", "situacao", "cargo")}
 
@@ -526,11 +171,6 @@ def pagina_cadastro(banco):
                         st.session_state["_ocr_aplicar"] = True
                         st.rerun()
 
-                except ImportError as ie:
-                    st.warning(
-                        "⚠️ Módulo de OCR não disponível. "
-                        "Verifique se o arquivo `ocr_cadastro.py` está no repositório."
-                    )
                 except Exception as e:
                     st.error(f"Erro ao ler documentos: {e}")
 
@@ -667,33 +307,23 @@ def pagina_cadastro(banco):
     if cargo.strip() and cargo.strip() not in combos["cargo"]:
         banco.add_combo("cargo", cargo.strip())
 
-    # --- Definir defaults no session_state ANTES do formulario ---
-    # Isso garante que os widgets leem do session_state e nao resetam
-    # com value= ao rerodar apos o submit.
-    for _wk, _wv in [
-        ("f_matricula", _def_matricula),
-        ("f_nome", _def_nome),
-        ("f_rg", _def_rg),
-        ("f_cpf", _def_cpf),
-        ("f_telefone", _def_telefone),
-        ("f_admissao", _def_admissao),
-        ("f_obs", _def_obs),
-        ("f_demissao", cal.parse_data(reg["demissao"]) if reg and reg["demissao"] else None),
-    ]:
-        if _wk not in st.session_state:
-            st.session_state[_wk] = _wv
-
     # --- formulario ---
     with st.form("cadastro", clear_on_submit=False):
         c1, c2, c3, c4 = st.columns(4)
         matricula = c1.text_input(
-            "Matricula *", key="f_matricula")
-        nome = c2.text_input("Funcionario *", key="f_nome")
-        rg = c3.text_input("RG", key="f_rg")
-        cpf = c4.text_input("CPF", key="f_cpf")
-        telefone = c1.text_input("Telefone", key="f_telefone")
+            "Matricula *", key="f_matricula",
+            value=_def_matricula)
+        nome = c2.text_input("Funcionario *", key="f_nome",
+                             value=_def_nome)
+        rg = c3.text_input("RG", key="f_rg",
+                           value=_def_rg)
+        cpf = c4.text_input("CPF", key="f_cpf",
+                            value=_def_cpf)
+        telefone = c1.text_input("Telefone", key="f_telefone",
+                                 value=_def_telefone)
         admissao = c2.date_input(
             "Admissao *", format="DD/MM/YYYY", key="f_admissao",
+            value=_def_admissao,
             min_value=date(1970, 1, 1), max_value=date(2100, 12, 31))
 
         # Loja, Situacao e Cargo ja definidos acima (fora do form)
@@ -714,10 +344,11 @@ def pagina_cadastro(banco):
                                    key="f_experiencia")
         observacao = st.text_area(
             "\U0001F4AC Observacao",
-            key="f_obs")
+            value=_def_obs)
         demissao = c4.date_input(
             "\U0001F4C5 Desligamento (vazio = ativo)", format="DD/MM/YYYY",
-            key="f_demissao",
+            key="f_demissao", value=cal.parse_data(reg["demissao"])
+            if reg and reg["demissao"] else None,
             min_value=date(1970, 1, 1), max_value=date(2100, 12, 31),
             help="Preencha ao desligar o funcionario: e o que alimenta o "
                  "calculo de turnover no dashboard.")
@@ -786,7 +417,7 @@ def pagina_cadastro(banco):
         _prazos = _ct.get("prazos_intermediarios", [])
         if _prazos:
             st.divider()
-            st.subheader("\U0001F4C5 Prazos do contrato selecionado")
+            st.subheader("\U0001F4C5 Prazos do contrato de experiencia")
             for _prazo_dias, _data_fim in _prazos:
                 _dias_rest = max((_data_fim - _hoje).days, 0)
                 if _hoje > _data_fim:
@@ -800,41 +431,6 @@ def pagina_cadastro(banco):
                     data_fim=cal.fmt(_data_fim),
                     dias_restantes=_dias_rest,
                     status_tipo=_status)
-
-        # --- Todos os prazos legais (45, 60, 90) ---
-        _todos = _ct.get("todos_os_prazos", [])
-        if _todos:
-            st.divider()
-            estilo.secao_todos_prazos()
-            for _tp in _todos:
-                _tp_dias = _tp["prazo_dias"]
-                _tp_fim = _tp["fim"]
-                _tp_rest = _tp["dias_restantes"]
-                if _tp["encerrado"]:
-                    _tp_status = "vencido"
-                elif _tp["alerta"]:
-                    _tp_status = "alerta"
-                else:
-                    _tp_status = "ativo"
-                # Mostrar sub-prazos intermediarios dentro de cada prazo
-                _sub_html = ""
-                for _sp_d, _sp_f in _tp.get("prazos_intermediarios", []):
-                    _sp_rest = max((_sp_f - _hoje).days, 0)
-                    _sp_venc = _hoje > _sp_f
-                    _sp_tag = "vencido" if _sp_venc else ("alerta" if _sp_rest <= 7 else "ativo")
-                    _sp_cls = {"ativo": "tag-azul", "alerta": "tag-amarelo", "vencido": "tag-vermelho"}
-                    _sp_txt = {"ativo": f"{_sp_rest}d restantes", "alerta": f"Vencendo ({_sp_rest}d)", "vencido": "Encerrado"}
-                    _sub_html += (f"<span style='margin-left:12px;font-size:12px;color:#7f8c8d'>"
-                                  f"\u2192 {_sp_d}d: {cal.fmt(_sp_f)} "
-                                  f"<span class='tag {_sp_cls[_sp_tag]}'>"
-                                  f"{_sp_txt[_sp_tag]}</span></span><br>")
-                estilo.cartao_prazo_experiencia(
-                    prazo_dias=_tp_dias,
-                    data_fim=cal.fmt(_tp_fim),
-                    dias_restantes=_tp_rest,
-                    status_tipo=_tp_status)
-                if _sub_html:
-                    st.markdown(_sub_html, unsafe_allow_html=True)
 
     if reg:
         st.divider()
@@ -887,7 +483,16 @@ def _registrar_evento_form(banco, reg, tipo_evento, chave):
             "campo_dias": "afastamento_dias",
             "campo_retorno": "afastamento_retorno",
         },
-
+        "afastamento_doenca": {
+            "titulo": "Registrar Afastamento Doença",
+            "icone": "\U0001F9A0",
+            "label_inicio": "Data de início do afastamento",
+            "label_dias": "Quantidade de dias de afastamento",
+            "dias_default": 15,
+            "campo_inicio": "afastamento_inicio",
+            "campo_dias": "afastamento_dias",
+            "campo_retorno": "afastamento_retorno",
+        },
     }
 
     cfg = config[tipo_evento]
@@ -956,7 +561,12 @@ def _cartao_evento_ativo(reg, tipo_evento):
             "campo_retorno": "afastamento_retorno", "cor": "#E67E22",
             "cor_clara": "#F0B27A",
         },
-
+        "afastamento_doenca": {
+            "icone": "\U0001F9A0", "titulo": "Afastamento Doença em Andamento",
+            "campo_inicio": "afastamento_inicio", "campo_dias": "afastamento_dias",
+            "campo_retorno": "afastamento_retorno", "cor": "#E74C3C",
+            "cor_clara": "#F1948A",
+        },
     }
 
     cfg = config.get(tipo_evento)
@@ -967,7 +577,7 @@ def _cartao_evento_ativo(reg, tipo_evento):
     if not inicio:
         return
 
-    dias = int(reg.get(cfg["campo_dias"]) or 0)
+    dias = reg.get(cfg["campo_dias"]) or 0
     retorno = reg.get(cfg["campo_retorno"])
     data_inicio = cal.parse_data(inicio)
     data_retorno = cal.parse_data(retorno)
@@ -1002,7 +612,7 @@ def _cartao_evento_ativo(reg, tipo_evento):
         situacao_texto=sit_texto,
         situacao_tipo=sit_tipo,
         cor_barra=cfg["cor"],
-        cor_barra_clara=cfg["cor_clara"],
+        cor_clara=cfg["cor_clara"],
         progresso_pct=progresso,
     )
 
@@ -1023,24 +633,21 @@ def pagina_eventos(banco):
     ferias_ativas = [r for r in registros if r["situacao"] == "Está de Férias"]
     licenca_ativas = [r for r in registros if r["situacao"] == "Licença Maternidade"]
     afast_inss = [r for r in registros if r["situacao"] == "Afastado INSS"]
+    afast_doenca = [r for r in registros if r["situacao"] == "Afastado Doença"]
     alerta_exp = [r for r in registros if r["experiencia_dias"] and
                   cal.contrato_experiencia(
                       cal.parse_data(r["admissao"]), r["experiencia_dias"],
                       hoje)["alerta"]]
     liberadas = [r for r in registros if cal.calcular_ferias(
-        cal.parse_data(r["admissao"]), hoje,
-        r.get("ferias_ultimo_gozo"))["liberada"]]
-    alerta_4m = [r for r in registros if cal.calcular_ferias(
-        cal.parse_data(r["admissao"]), hoje,
-        r.get("ferias_ultimo_gozo"))["alerta_4_meses"]]
+        cal.parse_data(r["admissao"]), hoje)["liberada"]]
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("\U0001F465 Ativos", len(ativos))
     c2.metric("\U0001F3D6\uFE0F De Férias", len(ferias_ativas))
     c3.metric("\U0001F9EC Lic. Matern.", len(licenca_ativas))
     c4.metric("\U0001F3E5 Afast. INSS", len(afast_inss))
-    c5.metric("\U0001F4DD Exp. vencendo", len(alerta_exp))
-    c6.metric("\U0001F7E1 Ferias 4m", len(alerta_4m))
+    c5.metric("\U0001F9A0 Afast. Doença", len(afast_doenca))
+    c6.metric("\U0001F4DD Exp. vencendo", len(alerta_exp))
 
     # --- selecao do funcionario ---
     opcoes = _opcoes(banco, registros)
@@ -1066,23 +673,7 @@ def pagina_eventos(banco):
     # CONTRATO DE EXPERIENCIA (com prazos e datas)
     # ============================================================
     st.subheader("\U0001F4DD Contrato de Experiencia")
-    # Se o funcionario esta desligado, mostrar contrato encerrado
-    # independentemente de datas
-    _eh_desligado = reg["situacao"] in TIPOS_DESLIGAMENTO
-    if _eh_desligado:
-        estilo.cartao_evento(
-            titulo="Contrato de Experiencia",
-            icon="\U0001F4DD",
-            campos=[
-                ("Status", "Encerrado por desligamento"),
-                ("Motivo", reg["situacao"]),
-            ],
-            situacao_texto="Encerrado",
-            situacao_tipo="perigo",
-            cor_barra="#95A5A6",
-            cor_barra_clara="#BDC3C7",
-        )
-    elif reg["experiencia_dias"]:
+    if reg["experiencia_dias"]:
         e = cal.contrato_experiencia(adm, reg["experiencia_dias"], hoje)
         sit_tipo = ("alerta" if e["alerta"]
                     else ("perigo" if e["encerrado"] else "info"))
@@ -1100,7 +691,7 @@ def pagina_eventos(banco):
             cor_barra_clara="#F9E79F",
         )
 
-        # Prazos intermediarios com datas (contrato selecionado)
+        # Prazos intermediarios com datas
         st.markdown("**Prazos com datas de vencimento:**")
         for prazo_dias, data_fim in e.get("prazos_intermediarios", []):
             dias_restantes_prazo = max((data_fim - hoje).days, 0)
@@ -1116,40 +707,6 @@ def pagina_eventos(banco):
                 dias_restantes=dias_restantes_prazo,
                 status_tipo=status_tipo,
             )
-
-        # Todos os prazos legais (45, 60, 90)
-        _todos = e.get("todos_os_prazos", [])
-        if _todos:
-            st.divider()
-            estilo.secao_todos_prazos()
-            for _tp in _todos:
-                _tp_dias = _tp["prazo_dias"]
-                _tp_fim = _tp["fim"]
-                _tp_rest = _tp["dias_restantes"]
-                if _tp["encerrado"]:
-                    _tp_status = "vencido"
-                elif _tp["alerta"]:
-                    _tp_status = "alerta"
-                else:
-                    _tp_status = "ativo"
-                _sub_html = ""
-                for _sp_d, _sp_f in _tp.get("prazos_intermediarios", []):
-                    _sp_rest = max((_sp_f - hoje).days, 0)
-                    _sp_venc = hoje > _sp_f
-                    _sp_tag = "vencido" if _sp_venc else ("alerta" if _sp_rest <= 7 else "ativo")
-                    _sp_cls = {"ativo": "tag-azul", "alerta": "tag-amarelo", "vencido": "tag-vermelho"}
-                    _sp_txt = {"ativo": f"{_sp_rest}d restantes", "alerta": f"Vencendo ({_sp_rest}d)", "vencido": "Encerrado"}
-                    _sub_html += (f"<span style='margin-left:12px;font-size:12px;color:#7f8c8d'>"
-                                  f"\u2192 {_sp_d}d: {cal.fmt(_sp_f)} "
-                                  f"<span class='tag {_sp_cls[_sp_tag]}'>"
-                                  f"{_sp_txt[_sp_tag]}</span></span><br>")
-                estilo.cartao_prazo_experiencia(
-                    prazo_dias=_tp_dias,
-                    data_fim=cal.fmt(_tp_fim),
-                    dias_restantes=_tp_rest,
-                    status_tipo=_tp_status)
-                if _sub_html:
-                    st.markdown(_sub_html, unsafe_allow_html=True)
     else:
         estilo.cartao_evento(
             titulo="Contrato de Experiencia",
@@ -1168,77 +725,14 @@ def pagina_eventos(banco):
     # ============================================================
     st.subheader("\U0001F3D6\uFE0F Férias")
 
-    # Se desligado, exibir aviso e bloquear registros
-    _eh_desligado_ev = reg["situacao"] in TIPOS_DESLIGAMENTO
-    if _eh_desligado_ev:
-        estilo.cartao_evento(
-            titulo="Férias",
-            icon="\U0001F3D6\uFE0F",
-            campos=[
-                ("Status", "Encerrado por desligamento"),
-                ("Motivo", reg["situacao"]),
-            ],
-            situacao_texto="Encerrado",
-            situacao_tipo="perigo",
-            cor_barra="#95A5A6",
-            cor_barra_clara="#BDC3C7",
-        )
-        st.info("\u26A0\uFE0F Funcionario desligado — eventos trabalhistas encerrados.")
-        st.divider()
-
-        # ============================================================
-        # LICENCA MATERNIDADE
-        # ============================================================
-        st.subheader("\U0001F9EC Licença Maternidade")
-        estilo.cartao_evento(
-            titulo="Licença Maternidade",
-            icon="\U0001F9EC",
-            campos=[
-                ("Status", "Encerrado por desligamento"),
-                ("Motivo", reg["situacao"]),
-            ],
-            situacao_texto="Encerrado",
-            situacao_tipo="perigo",
-            cor_barra="#95A5A6",
-            cor_barra_clara="#BDC3C7",
-        )
-        st.info("\u26A0\uFE0F Funcionario desligado — eventos trabalhistas encerrados.")
-        st.divider()
-
-        # ============================================================
-        # AFASTAMENTOS (INSS)
-        # ============================================================
-        st.subheader("\U0001F3E5 Afastamentos")
-        st.markdown("**Afastamento INSS**")
-        estilo.cartao_evento(
-            titulo="Afastamento INSS",
-            icon="\U0001F3E5",
-            campos=[
-                ("Status", "Encerrado por desligamento"),
-                ("Motivo", reg["situacao"]),
-            ],
-            situacao_texto="Encerrado",
-            situacao_tipo="perigo",
-            cor_barra="#95A5A6",
-            cor_barra_clara="#BDC3C7",
-        )
-        st.info("\u26A0\uFE0F Funcionario desligado — eventos trabalhistas encerrados.")
-        st.divider()
-
-        # Pular toda a logica normal de eventos — ir direto ao desligamento
-        _render_secao_desligamento(banco, reg, hoje)
-        return
-
     # Cartao de calculo de ferias
-    f = cal.calcular_ferias(adm, hoje, reg.get("ferias_ultimo_gozo"))
-    if f.get("ja_tirou_periodo"):
-        sit_tipo_fer = "ok"
+    f = cal.calcular_ferias(adm, hoje)
+    if f["vencida"]:
+        sit_tipo_fer = "perigo"
     elif f["liberada"] and f["proxima_vencer_gozo"]:
         sit_tipo_fer = "alerta"
     elif f["liberada"]:
         sit_tipo_fer = "ok"
-    elif f["alerta_4_meses"]:
-        sit_tipo_fer = "alerta"
     elif f["situacao"] == "Proxima de liberar":
         sit_tipo_fer = "alerta"
     else:
@@ -1261,17 +755,18 @@ def pagina_eventos(banco):
         situacao_tipo=sit_tipo_fer,
         cor_barra="#4CAF50",
         cor_barra_clara="#82E0AA",
-        progresso_pct=min(max(f["meses_cumpridos"], 0) / f["meses_liberacao"], 1.0),
+        progresso_pct=min(f["meses_cumpridos"] / f["meses_liberacao"], 1.0),
     )
 
-    # Alertas de ferias (sem vencidas)
-    if f["alerta_4_meses"]:
-        dias_lib = (f["data_liberacao"] - hoje).days
-        estilo.alerta_ferias_4_meses(
+    # Alertas de ferias
+    if f["vencida"]:
+        dias_vencida = (hoje - f["inicio_periodo"]).days
+        prazo_expirado = cal.fmt(f["inicio_periodo"])
+        estilo.alerta_ferias_vencida(
             f"{reg['matricula']} \u00B7 {reg['nome']}",
-            [("Liberacao em", cal.fmt(f["data_liberacao"])),
-             ("Dias para liberacao", f"{dias_lib} dia(s)"),
-             ("Regra", f["regra"]),
+            [("Liberada em", cal.fmt(f["data_liberacao"])),
+             ("Prazo de gozo expirou em", prazo_expirado),
+             ("Dias em atraso", f"{dias_vencida} dia(s)"),
              ("Dias proporcionais", f"{f['dias_proporcionais']}")])
     elif f["proxima_vencer_gozo"]:
         dias_restantes = (f["limite_gozo"] - hoje).days
@@ -1295,9 +790,7 @@ def pagina_eventos(banco):
             st.success("\u2705 Férias registradas! Situação atualizada para 'Está de Férias'.")
             st.rerun()
         if evento["encerrar"]:
-            # Preservar ferias_ultimo_gozo antes de limpar campos
             banco.atualizar(reg["id"], {
-                "ferias_ultimo_gozo": reg.get("ferias_inicio"),
                 evento["campo_inicio"]: None,
                 evento["campo_dias"]: None,
                 evento["campo_retorno"]: None,
@@ -1342,7 +835,7 @@ def pagina_eventos(banco):
     st.divider()
 
     # ============================================================
-    # AFASTAMENTOS (INSS)
+    # AFASTAMENTOS (INSS e Doenca)
     # ============================================================
     st.subheader("\U0001F3E5 Afastamentos")
 
@@ -1373,17 +866,38 @@ def pagina_eventos(banco):
             st.success("\u2705 Afastamento INSS encerrado! Situação atualizada para 'Ativo'.")
             st.rerun()
 
+    # Afastamento Doenca
+    st.markdown("**Afastamento Doença**")
+    _cartao_evento_ativo(reg, "afastamento_doenca")
+
+    with st.expander("\U0001F4DD Registrar / Editar Afastamento Doença", expanded=False):
+        evento = _registrar_evento_form(banco, reg, "afastamento_doenca", "evt_afast_doenca")
+        if evento["registrar"]:
+            banco.atualizar(reg["id"], {
+                evento["campo_inicio"]: evento["data_inicio"],
+                evento["campo_dias"]: evento["qtd_dias"],
+                evento["campo_retorno"]: evento["data_retorno"],
+                "afastamento_tipo": "Doença",
+                "situacao": "Afastado Doença",
+            })
+            st.success("\u2705 Afastamento Doença registrado! Situação atualizada.")
+            st.rerun()
+        if evento["encerrar"]:
+            banco.atualizar(reg["id"], {
+                evento["campo_inicio"]: None,
+                evento["campo_dias"]: None,
+                evento["campo_retorno"]: None,
+                "afastamento_tipo": None,
+                "situacao": "Ativo",
+            })
+            st.success("\u2705 Afastamento Doença encerrado! Situação atualizada para 'Ativo'.")
+            st.rerun()
+
     st.divider()
 
     # ============================================================
     # DESLIGAMENTO
     # ============================================================
-    _render_secao_desligamento(banco, reg, hoje)
-
-
-def _render_secao_desligamento(banco, reg, hoje):
-    """Renderiza a secao de desligamento (usada tanto no fluxo normal
-    quanto quando o funcionario ja esta desligado)."""
     st.subheader("\U0001F4CB Desligamento")
 
     tipos_deslig = [""] + cal.TIPOS_DESLIGAMENTO
@@ -1405,33 +919,11 @@ def _render_secao_desligamento(banco, reg, hoje):
     col_d1, col_d2 = st.columns([1, 3])
     if col_d1.button("\U0001F4CB Aplicar Desligamento", type="primary",
                      key="btn_deslig", disabled=not tipo_deslig_selecionado):
-        # Ao desligar, encerrar TODOS os eventos ativos e o contrato
-        # de experiencia para dar baixa completa no funcionario
-        dados_deslig = {
+        banco.atualizar(reg["id"], {
             "situacao": tipo_deslig_selecionado,
             "demissao": data_deslig.isoformat(),
-            # Encerrar contrato de experiencia
-            "experiencia_dias": None,
-            # Encerrar ferias
-            "ferias_inicio": None,
-            "ferias_dias": None,
-            "ferias_retorno": None,
-            # Encerrar licenca maternidade
-            "licenca_maternidade_inicio": None,
-            "licenca_maternidade_dias": None,
-            "licenca_maternidade_retorno": None,
-            # Encerrar afastamento
-            "afastamento_inicio": None,
-            "afastamento_dias": None,
-            "afastamento_retorno": None,
-            "afastamento_tipo": None,
-        }
-        banco.atualizar(reg["id"], dados_deslig)
-        st.success(
-            f"\u2705 Desligamento '{tipo_deslig_selecionado}' aplicado! "
-            "Contrato de experiencia, ferias, licencas e afastamentos "
-            "encerrados automaticamente."
-        )
+        })
+        st.success(f"\u2705 Desligamento '{tipo_deslig_selecionado}' aplicado!")
         st.rerun()
     if col_d2.button("\u2705 Reverter para Ativo", key="btn_reverter_deslig",
                      disabled=tipo_deslig_atual == ""):
@@ -1485,61 +977,10 @@ def pagina_config(banco):
     if st.button("\U0001F195 Adicionar", type="primary") and novo.strip():
         banco.add_combo(tipo, novo)
         st.success(f"\u2705 '{novo.strip()}' adicionado em {tipo}.")
-
-    # --- Botoes de excluir combos com callback on_click ---
-    # Inicializar estado de exclusao pendente
-    if "_exc_tipo" not in st.session_state:
-        st.session_state["_exc_tipo"] = None
-        st.session_state["_exc_valor"] = None
-        st.session_state["_exc_msg_ok"] = None
-        st.session_state["_exc_msg_erro"] = None
-
-    # Callback que marca qual item excluir
-    def _marcar_excluir(t, v):
-        st.session_state["_exc_tipo"] = t
-        st.session_state["_exc_valor"] = v
-
-    # Processar exclusao pendente (acontece no rerun apos o clique)
-    _et = st.session_state.get("_exc_tipo")
-    _ev = st.session_state.get("_exc_valor")
-    if _et and _ev:
-        ok = banco.remover_combo(_et, _ev)
-        if ok:
-            st.session_state["_exc_msg_ok"] = (
-                f"\u2705 '{_ev}' removido de {_et}.")
-            st.session_state["_exc_msg_erro"] = None
-        else:
-            st.session_state["_exc_msg_ok"] = None
-            st.session_state["_exc_msg_erro"] = (
-                f"\u274C '{_ev}' nao pode ser removido: "
-                "esta em uso por um ou mais funcionarios.")
-        st.session_state["_exc_tipo"] = None
-        st.session_state["_exc_valor"] = None
-        st.rerun()
-
-    # Exibir mensagens de feedback
-    if st.session_state.get("_exc_msg_ok"):
-        st.success(st.session_state["_exc_msg_ok"])
-        st.session_state["_exc_msg_ok"] = None
-    if st.session_state.get("_exc_msg_erro"):
-        st.error(st.session_state["_exc_msg_erro"])
-        st.session_state["_exc_msg_erro"] = None
-
-    # Renderizar lista com botoes de exclusao
-    valores = banco.listar_combo(tipo)
-    if valores:
-        st.markdown("**Opcoes existentes:**")
-        for idx, v in enumerate(valores):
-            cv1, cv2 = st.columns([3, 1])
-            cv1.markdown(f"\U0001F4CB {v}")
-            cv2.button(
-                "\U0001F5D1 Excluir",
-                key=f"exc_combo_{tipo}_{idx}",
-                on_click=_marcar_excluir,
-                args=(tipo, v),
-            )
-    else:
-        st.info(f"Nenhuma opcao cadastrada em {tipo}.")
+    st.dataframe(
+        estilo.estilo_tabela(
+            pd.DataFrame({tipo.capitalize(): banco.listar_combo(tipo)})),
+        width="stretch", hide_index=True)
 
     st.divider()
     st.subheader("\U0001F3D6\uFE0F Regras de ferias em uso")
@@ -1564,10 +1005,10 @@ def pagina_config(banco):
 
 
 def pagina_dashboard(banco):
-    estilo.cabecalho("Dashboard", "Controle de contratos e eventos trabalhistas")
+    estilo.cabecalho("Dashboard", "Turnover e eventos trabalhistas")
     registros = banco.pesquisar()
     if not registros:
-        st.info("Cadastre funcionarios para ver o painel.")
+        st.info("Cadastre funcionarios para ver os graficos.")
         return
 
     hoje = date.today()
@@ -1581,98 +1022,93 @@ def pagina_dashboard(banco):
         st.info("Nenhum funcionario nas lojas selecionadas.")
         return
 
-    # --- KPI resumo ---
-    tot = d_turnover_periodo(registros, meses, hoje)
-    ev = d_resumo_eventos(registros, hoje)
-    k1, k2, k3, k4, k5 = st.columns(5)
+    tot = dash.turnover_periodo(registros, meses, hoje)
+    ev = dash.resumo_eventos(registros, hoje)
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     k1.metric("Quadro ativo", tot["quadro_atual"])
-    k2.metric("Turnover", f"{tot['turnover_medio']}%")
+    k2.metric("Turnover medio", f"{tot['turnover_medio']}%",
+              help="((admissoes + desligamentos) / 2) / quadro medio")
     k3.metric("Admissoes", tot["admissoes"])
     k4.metric("Desligamentos", tot["desligamentos"])
-    k5.metric("\U0001F7E1 Alerta 4 meses", ev.get("ferias_alerta_4m", 0))
+    k5.metric("Ferias liberadas", ev["ferias_liberadas"])
+    k6.metric("\U0001F6A8 Ferias VENCIDAS", ev["ferias_vencidas"])
+    k7.metric("\u26A0\uFE0F Gozo vence 30d", ev["ferias_gozo_30"])
 
     st.divider()
 
-    # --- Abas principais: Experiencia e Ferias ---
-    tab_exp, tab_fer = st.tabs(
-        ["\U0001F4DD Contratos de experiencia",
-         "\U0001F3D6\uFE0F Ferias"])
+    col = estilo.CORES_GRAFICO
+    mov = dash.movimentacao_mensal(registros, meses, hoje)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### \U0001F4C8 Turnover mensal (%)")
+        st.line_chart(mov[["Turnover %", "Desligamentos %"]],
+                      color=[col[0], col[3]], height=290)
+    with c2:
+        st.markdown("#### \U0001F4CA Admissoes x desligamentos")
+        st.bar_chart(mov[["Admissoes", "Desligamentos"]],
+                     color=[col[1], col[3]], height=290)
 
-    # ========== TAB EXPERIENCIA ==========
-    with tab_exp:
-        exp = d_eventos_experiencia(registros, hoje)
-        if exp.empty:
-            st.success("\u2705 Nenhum funcionario com contrato de experiencia registrado.")
-        else:
-            # Filtros rapidos
-            f1, f2, f3 = st.columns(3)
-            filtro_loja_exp = f1.selectbox(
-                "Filtrar por loja", ["Todas"] + sorted(exp["Loja"].unique().tolist()),
-                key="exp_filtro_loja")
-            filtro_sit = f2.selectbox(
-                "Filtrar por situacao",
-                ["Todas"] + sorted(exp["Situacao"].unique().tolist()),
-                key="exp_filtro_sit")
-            filtro_prazo = f3.selectbox(
-                "Filtrar por prazo",
-                ["Todos"] + sorted(exp["Prazo"].unique().tolist()),
-                key="exp_filtro_prazo")
-
-            df_exp = exp.copy()
-            if filtro_loja_exp != "Todas":
-                df_exp = df_exp[df_exp["Loja"] == filtro_loja_exp]
-            if filtro_sit != "Todas":
-                df_exp = df_exp[df_exp["Situacao"] == filtro_sit]
-            if filtro_prazo != "Todos":
-                df_exp = df_exp[df_exp["Prazo"] == filtro_prazo]
-
-            st.caption(f"{len(df_exp)} contrato(s) de experiencia")
-            st.dataframe(
-                estilo.estilo_tabela_saas(df_exp, tipo="experiencia"),
-                use_container_width=True, hide_index=True)
-
-    # ========== TAB FERIAS ==========
-    with tab_fer:
-        fer = d_eventos_ferias(registros, hoje)
-        if fer.empty:
-            st.info("Sem funcionarios ativos com alerta de ferias.")
-        else:
-            f1, f2 = st.columns(2)
-            filtro_loja_fer = f1.selectbox(
-                "Filtrar por loja", ["Todas"] + sorted(fer["Loja"].unique().tolist()),
-                key="fer_filtro_loja")
-            filtro_sit_fer = f2.selectbox(
-                "Filtrar por situacao",
-                ["Todas"] + sorted(fer["Situacao"].unique().tolist()),
-                key="fer_filtro_sit")
-
-            df_fer = fer.copy()
-            if filtro_loja_fer != "Todas":
-                df_fer = df_fer[df_fer["Loja"] == filtro_loja_fer]
-            if filtro_sit_fer != "Todas":
-                df_fer = df_fer[df_fer["Situacao"] == filtro_sit_fer]
-
-            st.caption(f"{len(df_fer)} funcionario(s) com alerta de ferias")
-            st.dataframe(
-                estilo.estilo_tabela_saas(df_fer, tipo="ferias"),
-                use_container_width=True, hide_index=True)
+    st.markdown("#### \U0001F4C9 Evolucao do quadro")
+    st.area_chart(mov[["Quadro no fim do mes"]],
+                  color=col[2], height=250)
 
     st.divider()
+    st.markdown("#### \U0001F3E2 Turnover por loja")
+    por_loja = dash.turnover_por_loja(registros, meses, hoje)
+    c1, c2 = st.columns([2, 3])
+    c1.bar_chart(por_loja[["Turnover %"]], color=col[3], height=260)
+    c2.dataframe(por_loja.style.format({"Turnover %": "{:.1f}%"}),
+                 width="stretch")
 
-    # --- Alertas visuais de ferias (so gozo proximo e 4 meses, SEM vencidas) ---
-    gozo_30 = [r for r in d_ativos(registros, hoje)
-               if cal.calcular_ferias(
-                   cal.parse_data(r["admissao"]), hoje,
-                   r.get("ferias_ultimo_gozo"))["proxima_vencer_gozo"]]
-    alerta_4m = [r for r in d_ativos(registros, hoje)
+    c1, c2, c3 = st.columns(3)
+    ativos_lista = dash.ativos(registros, hoje)
+    with c1:
+        st.markdown("#### \U0001F4BC Por cargo")
+        st.bar_chart(dash.por_categoria(ativos_lista, "cargo", "Cargo"),
+                     color=col[0], height=260)
+    with c2:
+        st.markdown("#### \U0001F4CB Por situacao")
+        st.bar_chart(dash.por_categoria(registros, "situacao", "Situacao"),
+                     color=col[1], height=260)
+    with c3:
+        st.markdown("#### \u23F1 Tempo de casa")
+        st.bar_chart(dash.faixas_tempo_casa(registros, hoje),
+                     color=col[2], height=260)
+
+    st.divider()
+    st.markdown("#### \U0001F4C4 Eventos trabalhistas")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("\U0001F4CB Experiencia vencendo em 30d",
+              ev["experiencia_30"])
+    k2.metric("\u26A0 Experiencia vencendo em 7d",
+              ev["experiencia_7"])
+    k3.metric("\U0001F3D6 Ferias liberando em 60d",
+              ev["ferias_proximas"])
+    k4.metric("\U0001F6A8 Ferias VENCIDAS",
+              ev["ferias_vencidas"])
+
+    # --- alerta visual urgente: ferias vencidas ---
+    vencidas = [r for r in dash.ativos(registros, hoje)
                 if cal.calcular_ferias(
-                    cal.parse_data(r["admissao"]), hoje,
-                    r.get("ferias_ultimo_gozo"))["alerta_4_meses"]]
-
+                    cal.parse_data(r["admissao"]), hoje)["vencida"]]
+    if vencidas:
+        for r in vencidas:
+            f = cal.calcular_ferias(cal.parse_data(r["admissao"]), hoje)
+            dias_vencida = (hoje - f["inicio_periodo"]).days
+            prazo_expirado = cal.fmt(f["inicio_periodo"])
+            estilo.alerta_ferias_vencida(
+                f"{r['matricula']} \u00B7 {r['nome']} \u00B7 "
+                f"{r.get('cargo', '') or '-'} \u00B7 {r.get('loja', '') or '-'}",
+                [("Liberada em", cal.fmt(f["data_liberacao"])),
+                 ("Prazo de gozo expirou em", prazo_expirado),
+                 ("Dias em atraso", f"{dias_vencida} dia(s)"),
+                 ("Dias proporcionais", f"{f['dias_proporcionais']}")])
+    gozo_30 = [r for r in dash.ativos(registros, hoje)
+               if cal.calcular_ferias(
+                   cal.parse_data(r["admissao"]), hoje)["proxima_vencer_gozo"]]
     if gozo_30:
         for r in gozo_30:
-            f = cal.calcular_ferias(cal.parse_data(r["admissao"]), hoje,
-                                     r.get("ferias_ultimo_gozo"))
+            f = cal.calcular_ferias(cal.parse_data(r["admissao"]), hoje)
             dias_restantes = (f["limite_gozo"] - hoje).days
             estilo.alerta_ferias_gozo_proximo(
                 f"{r['matricula']} \u00B7 {r['nome']} \u00B7 "
@@ -1681,45 +1117,32 @@ def pagina_dashboard(banco):
                  ("Prazo de gozo expira em", cal.fmt(f["limite_gozo"])),
                  ("Dias restantes", f"{dias_restantes} dia(s)"),
                  ("Dias proporcionais", f"{f['dias_proporcionais']}")])
-    if alerta_4m:
-        for r in alerta_4m:
-            f = cal.calcular_ferias(cal.parse_data(r["admissao"]), hoje,
-                                     r.get("ferias_ultimo_gozo"))
-            dias_lib = (f["data_liberacao"] - hoje).days
-            estilo.alerta_ferias_4_meses(
-                f"{r['matricula']} \u00B7 {r['nome']} \u00B7 "
-                f"{r.get('cargo', '') or '-'} \u00B7 {r.get('loja', '') or '-'}",
-                [("Liberacao em", cal.fmt(f["data_liberacao"])),
-                 ("Dias para liberacao", f"{dias_lib} dia(s)"),
-                 ("Regra", f["regra"]),
-                 ("Dias proporcionais", f"{f['dias_proporcionais']}")])
 
-    if not gozo_30 and not alerta_4m:
-        st.success("\u2705 Nenhuma ferias com alerta de 4 meses ou prazo de gozo vencendo.")
+    if not vencidas and not gozo_30:
+        st.success("\u2705 Nenhuma ferias vencida ou com prazo de gozo "
+                   "vencendo em 30 dias.")
 
-    # --- Graficos de turnover (colapsaveis) ---
-    with st.expander("\U0001F4CA Turnover e movimentacao", expanded=False):
-        col = estilo.CORES_GRAFICO
-        mov = d_movimentacao_mensal(registros, meses, hoje)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("##### Turnover mensal (%)")
-            st.line_chart(mov[["Turnover %", "Desligamentos %"]],
-                          color=[col[0], col[3]], height=250)
-        with c2:
-            st.markdown("##### Admissoes x desligamentos")
-            st.bar_chart(mov[["Admissoes", "Desligamentos"]],
-                         color=[col[1], col[3]], height=250)
-
-        st.markdown("##### Evolucao do quadro")
-        st.area_chart(mov[["Quadro no fim do mes"]],
-                      color=col[2], height=220)
-
-        por_loja = d_turnover_por_loja(registros, meses, hoje)
-        c1, c2 = st.columns([2, 3])
-        c1.bar_chart(por_loja[["Turnover %"]], color=col[3], height=240)
-        c2.dataframe(por_loja.style.format({"Turnover %": "{:.1f}%"}),
-                     use_container_width=True)
+    tab1, tab2 = st.tabs(
+        ["\U0001F4DD Contratos de experiencia",
+         "\U0001F3D6 Ferias"])
+    with tab1:
+        exp = dash.eventos_experiencia(registros, hoje)
+        if exp.empty:
+            st.success("\u2705 Nenhum contrato de experiencia vencendo "
+                       "em 30 dias.")
+        else:
+            st.dataframe(estilo.estilo_tabela(exp,
+                         coluna_exp="Situacao"),
+                         width="stretch", hide_index=True)
+    with tab2:
+        fer = dash.eventos_ferias(registros, hoje)
+        if fer.empty:
+            st.info("Sem funcionarios ativos.")
+        else:
+            st.dataframe(
+                estilo.estilo_tabela(fer, coluna_ferias="Liberada",
+                                     coluna_vencida="Vencida"),
+                width="stretch", hide_index=True)
 
 
 # ============================================================
@@ -1728,29 +1151,11 @@ def pagina_dashboard(banco):
 
 def main():
     banco = get_banco()
-
-    # Encerrar automaticamente eventos com data de retorno vencida
-    _vencidos = _encerrar_eventos_vencidos(banco)
-    if _vencidos:
-        st.toast(
-            f"✅ {_vencidos} evento(s) encerrado(s) automaticamente "
-            f"(data de retorno vencida)",
-            icon="🔄")
-
     estilo.marca()
-
-    # Se veio de outra pagina (ex: Editar cadastro), navegar automaticamente
-    _nav_dest = st.session_state.pop("_navegar_para", None)
-    if _nav_dest and _nav_dest not in st.session_state.get("_nav_atual", ""):
-        st.session_state["nav_radio"] = _nav_dest
-        st.rerun()
-    _nav_atual = st.session_state.get("nav_radio", "\U0001F4CA Dashboard")
-
     pagina = st.sidebar.radio(
         "Navegacao", ["\U0001F4CA Dashboard", "\U0001F50D Consultar",
                      "\U0001F4DD Cadastrar", "\U0001F4CB Eventos",
-                     "\U0001F4E5 Exportar", "\U0001F527 Ajustes"],
-        key="nav_radio")
+                     "\U0001F4E5 Exportar", "\U0001F527 Ajustes"])
     st.sidebar.divider()
     st.sidebar.caption(
         f"\U0001F4C5 {cal.fmt(date.today())}  \u00B7  "
