@@ -84,9 +84,11 @@ except Exception as _e:
     DB_PATH = None  # type: ignore
 
 # --- Safety: force reload modules to avoid stale bytecode on Streamlit Cloud ---
-for _mod in (cal, dash, exportador, _estilo_real):
+for _mod_name in ("calculos", "dashboard", "exportador", "estilo"):
     try:
-        importlib.reload(_mod)
+        _m = sys.modules.get(_mod_name)
+        if _m is not None:
+            importlib.reload(_m)
     except Exception:
         pass
 
@@ -448,7 +450,13 @@ def pagina_consultar(banco):
                      use_container_width=True, hide_index=True)
 
     if tempo_real:
-        st.fragment(desenhar, run_every=10)()
+        try:
+            st.fragment(desenhar, run_every=10)()
+        except (AttributeError, TypeError):
+            # Fallback para Streamlit < 1.33 (sem st.fragment)
+            if st.button("\U0001F504 Atualizar agora"):
+                pass
+            desenhar()
     else:
         if st.button("\U0001F504 Atualizar agora"):
             pass
@@ -1847,4 +1855,5 @@ if __name__ == "__main__":
     except Exception as _e:
         _msg = ''.join(_tb.format_exception(type(_e), _e, _e.__traceback__))
         st.error("❌ Erro ao iniciar o aplicativo:\n" + _msg)
+        st.code(_msg, language="python")
         st.info("Copie o erro acima e envie para o suporte.")
