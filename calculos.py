@@ -1,0 +1,365 @@
+"""Calculos de experiencia, ferias, CPF e datas."""
+
+from datetime import date, timedelta
+
+try:
+    from dateutil.relativedelta import relativedelta
+except ImportError:
+    # Fallback simples sem dateutil
+    def _add_meses(d, n):
+        """Soma n meses a uma data, sem dateutil."""
+        total = d.month + n
+        y = d.year + (total - 1) // 12
+        m = (total - 1) % 12 + 1
+        # Ajustar dia se necessario (ex: 31/jan + 1m = 28/fev)
+        max_dia = (date(y, m + 1, 1) - timedelta(days=1)).day if m < 12 else (date(y + 1, 1, 1) - timedelta(days=1)).day
+        return d.replace(year=y, month=m, day=min(d.day, max_dia))
+
+    def _meses_entre(inicio, ref):
+        """Calcula meses completos entre duas datas, sem dateutil."""
+        return (ref.year - inicio.year) * 12 + (ref.month - inicio.month)
+
+    # Substituir as funcoes abaixo
+    _HAS_DATEUTIL = False
+else:
+    _HAS_DATEUTIL = True
+
+PRAZOS_EXPERIENCIA = [30, 45, 60, 90]
+
+# ---- Tipos de desligamento ----
+TIPOS_DESLIGAMENTO = [
+    "Desligado com J/C",
+    "Desligado sem J/C",
+    "Abandono",
+    "Desistente",
+    "Rescisão Indireta",
+    "Pedido de Demissão",
+]
+
+# ---- Tipos de afastamento ----
+TIPOS_AFASTAMENTO = ["INSS", "Licença Maternidade"]
+
+
+def parse_data(valor):
+    """Converte string 'YYYY-MM-DD' ou Date para date."""
+    if isinstance(valor, date):
+        return valor
+    if isinstance(valor, str) and valor.strip():
+        return date.fromisoformat(valor.strip())
+    return None
+
+
+def fmt(d):
+    """Formata date como dd/mm/aaaa."""
+    return d.strftime("%d/%m/%Y") if d else "-"
+
+
+def add_meses(d, n):
+    """Soma n meses a uma data."""
+    if _HAS_DATEUTIL:
+        return d + relativedelta(months=n)
+    return _add_meses(d, n)
+
+
+def meses_completos(inicio, ref=None):
+    """Quantos meses completos entre inicio e ref (hoje se None)."""
+    ref = ref or date.today()
+    if _HAS_DATEUTIL:
+        delta = relativedelta(ref, inicio)
+        return delta.years * 12 + delta.months
+    return _meses_entre(inicio, ref)
+
+
+def calcular_retorno(inicio, dias):
+    """Calcula data de retorno a partir de inicio + qtd de dias."""
+    if not inicio or not dias:
+        return None
+    return inicio + timedelta(days=dias)
+
+
+def contrato_experiencia(admissao, prazo_dias, ref=None):
+    """Retorna dict com dados do contrato de experiencia.
+
+    prazo_dias = 30 | 45 | 60 | 90
+    Etapas: 30 = unico | 45 = 45 | 60 = 30+30 | 90 = 45+45
+
+    Sempre retorna todos_os_prazos (45, 60, 90) com datas calculadas
+    a partir da admissao, independente do prazo contratado.
+    """
+    # CLT: o dia da admissao conta como dia 1 (contagem inclusiva)
+    # Por isso subtrai-se 1 do prazo para obter a data final
+    # Ex.: admissao 08/09/2026 + 45 dias -> 22/10/2026
+    def _fim_clt(inicio, dias):
+        return inicio + timedelta(days=dias - 1)
+
+    ref = ref or date.today()
+    fim = _fim_clt(admissao, prazo_dias)
+    alerta = (fim - ref).days <= 7 and (fim - ref).days >= 0
+    encerrado = ref > fim  # no ultimo dia ainda nao esta encerrado
+
+    etapas = {30: "30", 45: "45", 60: "30 + 30", 90: "45 + 45"}
+
+    dias_restantes = max((fim - ref).days, 0)
+    if encerrado:
+        situacao = "Encerrado"
+    elif alerta:
+        situacao = f"Atencao - vence em {dias_restantes} dia(s)"
+    else:
+        situacao = f"Dentro do prazo ({dias_restantes} dias restantes)"
+
+    # Prazos intermediarios com datas (do contrato selecionado)
+    prazos_intermediarios = []
+    if prazo_dias == 60:
+        p1_fim = _fim_clt(admissao, 30)
+        prazos_intermediarios.append((30, p1_fim))
+        prazos_intermediarios.append((60, fim))
+    elif prazo_dias == 90:
+        p1_fim = _fim_clt(admissao, 45)
+        prazos_intermediarios.append((45, p1_fim))
+        prazos_intermediarios.append((90, fim))
+    else:
+        prazos_intermediarios.append((prazo_dias, fim))
+
+    # Todos os prazos legais de experiencia (45, 60, 90)
+    # calculados a partir da data de admissao, independente
+    # do contrato selecionado
+    todos_os_prazos = []
+    for p in [45, 60, 90]:
+        p_fim = _fim_clt(admissao, p)
+        p_dias_rest = max((p_fim - ref).days, 0)
+        p_encerrado = ref > p_fim  # no ultimo dia ainda nao esta encerrado
+        p_alerta = p_dias_rest <= 7 and not p_encerrado
+        if p == 60:
+            p_etapas = "30 + 30"
+            p_inter = [(30, _fim_clt(admissao, 30)),
+                       (60, p_fim)]
+        elif p == 90:
+            p_etapas = "45 + 45"
+            p_inter = [(45, _fim_clt(admissao, 45)),
+                       (90, p_fim)]
+        else:
+            p_etapas = "45"
+            p_inter = [(45, p_fim)]
+        if p_encerrado:
+            p_sit = "Encerrado"
+        elif p_alerta:
+            p_sit = f"Atencao - vence em {p_dias_rest} dia(s)"
+        else:
+            p_sit = f"Dentro do prazo ({p_dias_rest} dias restantes)"
+        todos_os_prazos.append({
+            "prazo_dias": p,
+            "etapas": p_etapas,
+            "fim": p_fim,
+            "dias_restantes": p_dias_rest,
+            "encerrado": p_encerrado,
+            "alerta": p_alerta,
+            "situacao": p_sit,
+            "prazos_intermediarios": p_inter,
+        })
+
+    return {
+        "prazo_dias": prazo_dias,
+        "etapas": etapas.get(prazo_dias, str(prazo_dias)),
+        "inicio": admissao,
+        "fim": fim,
+        "alerta": alerta,
+        "encerrado": encerrado,
+        "situacao": situacao,
+        "dias_restantes": dias_restantes,
+        "prazos_intermediarios": prazos_intermediarios,
+        "todos_os_prazos": todos_os_prazos,
+    }
+
+
+def calcular_ferias(admissao, ref=None, ultimo_gozo=None):
+    """Calcula ferias com as regras customizadas.
+
+    Regras:
+    - 1o periodo (< 24 meses de casa): periodo 24 meses, liberacao aos 20 meses
+    - Periodos seguintes (>= 24 meses de casa): periodo 12 meses, liberacao aos 8 meses
+
+    Alerta de 4 meses: quando faltam 4 meses para a liberacao,\n    para evitar que o colaborador ultrapasse o limite de gozo.
+
+    Ferias vencidas: quando o periodo anterior encerrou sem que as ferias\n    fossem gozadas. O limite de gozo e o fim do periodo aquisitivo.
+
+    ultimo_gozo: data (date ou str 'YYYY-MM-DD') do inicio do ultimo gozo de ferias.
+    Se o ultimo gozo ocorreu dentro do periodo aquisitivo atual, as ferias daquele
+    periodo ja foram tiradas — o sistema avanca para o periodo seguinte e mostra
+    "Ja tirou este periodo" em vez de "Liberada".
+    """
+    ref = ref or date.today()
+    meses_casa = meses_completos(admissao, ref)
+    anos_casa = meses_casa // 12
+
+    # --- Converter ultimo_gozo para date se necessario ---
+    ug = None
+    if ultimo_gozo is not None:
+        ug = parse_data(ultimo_gozo)
+
+    # --- Periodo atual ---
+    if meses_casa < 24:
+        regra = "Menos de 1 ano (20 de 24)"
+        inicio_periodo = admissao
+        meses_periodo = 24
+        meses_liberacao = 20
+    else:
+        regra = "Mais de 1 ano (8 de 12)"
+        aniversario = add_meses(admissao, anos_casa * 12)
+        inicio_periodo = aniversario
+        meses_periodo = 12
+        meses_liberacao = 8
+
+    fim_periodo = add_meses(inicio_periodo, meses_periodo)
+    data_liberacao = add_meses(inicio_periodo, meses_liberacao)
+    limite_gozo = fim_periodo
+    meses_cumpridos = meses_completos(inicio_periodo, ref)
+
+    liberada = ref >= data_liberacao and ref <= fim_periodo
+
+    # --- Verificar se ferias ja foram tiradas neste periodo ---
+    ja_tirou = False
+    if ug is not None and inicio_periodo <= ug <= fim_periodo:
+        ja_tirou = True
+
+    # Se ja tirou neste periodo, avancar para o PROXIMO periodo
+    if ja_tirou:
+        proximo_inicio = add_meses(inicio_periodo, meses_periodo)
+        # Recalcular regra para o novo periodo
+        novos_meses_casa = meses_completos(admissao, ref)
+        if novos_meses_casa < meses_completos(admissao, proximo_inicio):
+            # Depois do primeiro ano completo
+            regra = "Mais de 1 ano (8 de 12)"
+            meses_periodo = 12
+            meses_liberacao = 8
+        elif meses_periodo == 24:
+            # Ainda no primeiro periodo de 24m
+            regra = "Menos de 1 ano (20 de 24)"
+            meses_periodo = 24
+            meses_liberacao = 20
+        else:
+            regra = "Mais de 1 ano (8 de 12)"
+            meses_periodo = 12
+            meses_liberacao = 8
+
+        inicio_periodo = proximo_inicio
+        fim_periodo = add_meses(inicio_periodo, meses_periodo)
+        data_liberacao = add_meses(inicio_periodo, meses_liberacao)
+        limite_gozo = fim_periodo
+        meses_cumpridos = meses_completos(inicio_periodo, ref)
+        liberada = ref >= data_liberacao and ref <= fim_periodo
+
+    # --- Alerta de 4 meses antes da liberacao ---
+    alerta_4_meses = (not liberada
+                      and data_liberacao > ref
+                      and (data_liberacao - ref).days <= 120)
+
+    # --- Verificar periodo anterior (ferias vencidas) ---
+    vencida = False
+    periodo_vencido_fim = None
+
+    if meses_casa >= 24:
+        if inicio_periodo < ref and ref < data_liberacao:
+            vencida = True
+            periodo_vencido_fim = inicio_periodo
+
+    if meses_casa < 24 and ref > fim_periodo:
+        vencida = True
+        periodo_vencido_fim = fim_periodo
+
+    # --- Situacao ---
+    if ja_tirou and not liberada:
+        # Ferias ja foram tiradas no periodo anterior, novo periodo em curso
+        # Se o novo periodo ainda nao comecou (inicio no futuro), mostrar 0
+        meses_cumpridos_display = max(meses_cumpridos, 0)
+        situacao = f"Ja tirou este periodo ({meses_cumpridos_display}/{meses_liberacao})"
+    elif alerta_4_meses and not liberada:
+        dias_lib = (data_liberacao - ref).days
+        situacao = f"Alerta - liberacao em {dias_lib} dia(s)"
+    elif liberada and not vencida:
+        dias_restantes_gozo = (limite_gozo - ref).days
+        situacao = f"Liberada - {dias_restantes_gozo}d para gozo"
+    elif liberada and vencida:
+        situacao = "Liberada (periodo anterior pendente)"
+    elif vencida and not liberada:
+        situacao = "Periodo anterior vencido"
+    elif meses_cumpridos >= meses_liberacao - 2:
+        situacao = "Proxima de liberar"
+    else:
+        situacao = "Em curso"
+
+    proxima_vencer = (liberada and not vencida
+                     and (limite_gozo - ref).days <= 30)
+    progresso = f"{max(meses_cumpridos, 0)}/{meses_liberacao}"
+    dias_proporcionais = round(max(meses_cumpridos, 0) * 2.5, 1)
+
+    # Se ja tirou e novo periodo ainda nao esta liberado,
+    # NAO contar como liberada para metricas e alertas
+    if ja_tirou:
+        liberada = False
+        alerta_4_meses = (not liberada
+                          and data_liberacao > ref
+                          and (data_liberacao - ref).days <= 120)
+        proxima_vencer = False
+        meses_cumpridos = max(meses_cumpridos, 0)
+
+    return {
+        "regra": regra,
+        "tempo_servico_meses": meses_casa,
+        "anos_casa": anos_casa,
+        "inicio_periodo": inicio_periodo,
+        "fim_periodo": fim_periodo,
+        "meses_periodo": meses_periodo,
+        "meses_liberacao": meses_liberacao,
+        "data_liberacao": data_liberacao,
+        "limite_gozo": limite_gozo,
+        "meses_cumpridos": meses_cumpridos,
+        "progresso": progresso,
+        "dias_proporcionais": dias_proporcionais,
+        "liberada": liberada,
+        "vencida": vencida,
+        "proxima_vencer_gozo": proxima_vencer,
+        "alerta_4_meses": alerta_4_meses,
+        "situacao": situacao,
+        "ja_tirou_periodo": ja_tirou,
+    }
+
+
+def situacao_por_evento(tipo_evento):
+    """Retorna a situacao correspondente ao tipo de evento trabalhista."""
+    mapa = {
+        "ferias": "Está de Férias",
+        "licenca_maternidade": "Licença Maternidade",
+        "afastamento_inss": "Afastado INSS",
+    }
+    return mapa.get(tipo_evento, "Ativo")
+
+
+def cpf_valido(cpf):
+    """Valida CPF pelos digitos verificadores."""
+    cpf_limpo = ''.join(filter(str.isdigit, str(cpf)))
+    if len(cpf_limpo) != 11 or cpf_limpo == cpf_limpo[0] * 11:
+        return False
+    for i in range(9, 11):
+        soma = sum(int(cpf_limpo[j]) * (i + 1 - j) for j in range(i))
+        dig = 11 - soma % 11
+        if dig >= 10:
+            dig = 0
+        if int(cpf_limpo[i]) != dig:
+            return False
+    return True
+
+
+def formatar_cpf(cpf):
+    """Formata CPF como XXX.XXX.XXX-XX."""
+    d = ''.join(filter(str.isdigit, str(cpf)))
+    return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:11]}" if len(d) == 11 else cpf
+
+
+def formatar_telefone(tel):
+    """Formata telefone como (XX) XXXXX-XXXX se possivel."""
+    d = ''.join(filter(str.isdigit, str(tel)))
+    if len(d) == 11:
+        return f"({d[:2]}) {d[2:7]}-{d[7:11]}"
+    if len(d) == 10:
+        return f"({d[:2]}) {d[2:6]}-{d[6:10]}"
+    return tel
