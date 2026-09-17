@@ -1,0 +1,15 @@
+streamlit
+pandas
+openpyxl
+gspread
+google-auth
+reportlab
+pdfplumber
+Pillow
+pydeck
+matplotlib
+requests
+SpeechRecognition
+pydub
+gtts
+deep-translator
