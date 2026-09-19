@@ -5237,12 +5237,54 @@ with aba1:
                         "DataRetornoAfastamento": dados_form["retorno_af"],
                         "CaminhoFoto": caminho_final_foto
                     }
-                    indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == dados_form["mat"]].tolist()
+                    # CORRECAO: ao EDITAR um colaborador ja existente, localizamos o
+                    # registro pela matricula ORIGINAL (a que estava selecionada), e nao
+                    # pela matricula digitada. Antes, se a pessoa alterasse a matricula, o
+                    # sistema nao encontrava o registro (procurava pela matricula nova) e
+                    # acabava criando um DUPLICADO em vez de atualizar.
+                    mat_novo = str(dados_form["mat"]).strip()
+                    mat_orig = str(mat_sel).strip() if mat_sel else ""
+
+                    # Se estava editando e a matricula mudou, impede sobrescrever
+                    # acidentalmente outro colaborador que ja use a matricula nova.
+                    if mat_orig and mat_novo and mat_novo != mat_orig:
+                        conflito = dados["Base_Dados"].index[
+                            (dados["Base_Dados"]["Matricula"] == mat_novo)
+                            & (dados["Base_Dados"]["Matricula"] != mat_orig)
+                        ].tolist()
+                        if conflito:
+                            st.error(
+                                f"❌ Já existe outro colaborador com a matrícula **{mat_novo}**. "
+                                "Escolha uma matrícula diferente ou verifique o cadastro existente."
+                            )
+                            st.stop()
+
+                    if mat_orig:
+                        # Fluxo de EDICAO: acha pela matricula original
+                        indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_orig].tolist()
+                    else:
+                        # Fluxo de NOVO cadastro / re-gravacao: acha pela matricula digitada
+                        indice = dados["Base_Dados"].index[dados["Base_Dados"]["Matricula"] == mat_novo].tolist()
+
                     acao_hist = "Atualização Cadastral" if indice else "Novo Cadastro"
                     if indice:
                         idx_linha = indice[0]
                         for coluna, valor in registro_final.items():
                             dados["Base_Dados"].at[idx_linha, coluna] = valor
+                        # Se a matricula mudou, leva a mudanca tambem para o Historico e
+                        # os Documentos, para nao "orfanar" o histórico/anexos do colaborador.
+                        if mat_orig and mat_novo and mat_novo != mat_orig:
+                            try:
+                                if "Historico" in dados and "Matricula" in dados["Historico"].columns:
+                                    dados["Historico"].loc[
+                                        dados["Historico"]["Matricula"] == mat_orig, "Matricula"
+                                    ] = mat_novo
+                                if "Docs_Funcionarios" in dados and "Matricula" in dados["Docs_Funcionarios"].columns:
+                                    dados["Docs_Funcionarios"].loc[
+                                        dados["Docs_Funcionarios"]["Matricula"] == mat_orig, "Matricula"
+                                    ] = mat_novo
+                            except Exception:
+                                pass
                     else:
                         dados["Base_Dados"] = pd.concat([dados["Base_Dados"], pd.DataFrame([registro_final])], ignore_index=True)
                     if not salvar_dados(dados):
