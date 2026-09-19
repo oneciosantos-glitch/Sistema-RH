@@ -2091,11 +2091,12 @@ def _eh_erro_quota(e):
     msg = str(e)
     return ("429" in msg) or ("Quota exceeded" in msg) or ("RESOURCE_EXHAUSTED" in msg) or ("rateLimitExceeded" in msg)
 
-def _gs_retry(func, *args, tentativas=5, espera_base=1.5, **kwargs):
+def _gs_retry(func, *args, tentativas=4, espera_base=1.0, **kwargs):
     """Executa uma operacao do gspread com re-tentativas quando o Google
     responde 429 (limite de leituras por minuto). A espera cresce a cada
-    tentativa (backoff exponencial: 1.5s, 3s, 6s, 12s...). Assim, um pico
-    momentaneo de leituras deixa de virar erro vermelho na tela.
+    tentativa (backoff exponencial: 1s, 2s, 4s...). Assim, um pico
+    momentaneo de leituras deixa de virar erro vermelho na tela, sem deixar
+    a operacao travada por tempo demais.
     """
     ultima_exc = None
     for i in range(tentativas):
@@ -2153,7 +2154,7 @@ def _df_to_gsheet(df, worksheet):
         # registros gravando um DataFrame vazio por cima. So limpamos a aba
         # quando ela ja esta vazia na nuvem (ou so tem o cabecalho).
         try:
-            valores_atuais = worksheet.get_all_values()
+            valores_atuais = _gs_retry(worksheet.get_all_values)
         except Exception:
             valores_atuais = []
         linhas_com_dados = [l for l in valores_atuais if any(str(c).strip() for c in l)]
@@ -2164,19 +2165,19 @@ def _df_to_gsheet(df, worksheet):
                 f"({len(linhas_com_dados) - 1} registro(s) na nuvem) gravando dados vazios. "
                 "Os dados na nuvem foram PRESERVADOS."
             )
-        worksheet.clear()
-        worksheet.update([df.columns.tolist()] if len(df.columns) else [[""]])
+        _gs_retry(worksheet.clear)
+        _gs_retry(worksheet.update, [df.columns.tolist()] if len(df.columns) else [[""]])
         return
     data = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
     linhas_necessarias = len(data) + 50
     colunas_necessarias = max(len(df.columns), 1)
     try:
         if worksheet.row_count < linhas_necessarias or worksheet.col_count < colunas_necessarias:
-            worksheet.resize(rows=linhas_necessarias, cols=max(colunas_necessarias, worksheet.col_count))
+            _gs_retry(worksheet.resize, rows=linhas_necessarias, cols=max(colunas_necessarias, worksheet.col_count))
     except Exception:
         pass
-    worksheet.clear()
-    worksheet.update(data)
+    _gs_retry(worksheet.clear)
+    _gs_retry(worksheet.update, data)
 
 def _garantir_abas_gs(spreadsheet, abas_necessarias, padrao_cols):
     """Garante que todas as abas existam na planilha do Google Sheets."""
@@ -2199,34 +2200,51 @@ def _carregar_dados_gs():
     return dados
 
 def _salvar_dados_gs(dados):
-    """Salva dados no Google Sheets."""
+    """Salva dados no Google Sheets.
+
+    OTIMIZACAO (lentidao + 429): antes, para CADA aba, o sistema consultava o
+    Google para localizar a aba e ainda LIA o cabecalho (uma leitura extra por
+    aba). Com 5 abas isso somava ~10 chamadas de leitura por salvamento, o que
+    deixava tudo lento e ajudava a estourar o limite. Agora listamos as abas
+    UMA unica vez e nao fazemos leitura extra de cabecalho (a aba e reescrita
+    por inteiro, cabecalho incluso), reduzindo drasticamente as chamadas.
+    """
     spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS, GS_ID_DIARIAS)
+    abas_existentes = {ws.title: ws for ws in _gs_listar_abas(spreadsheet)}
     for aba_nome, df in dados.items():
         if aba_nome == "Registro_Alteracoes":
             continue
-        try:
-            ws = spreadsheet.worksheet(aba_nome)
-        except gspread.exceptions.WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(title=aba_nome, rows=1000, cols=len(df.columns) if not df.empty else 10)
-        # Garante que o DataFrame tenha todas as colunas esperadas antes de salvar
-        if not df.empty and ws.row_count > 0:
-            try:
-                header_row = ws.row_values(1)
-                if header_row:
-                    for col in header_row:
-                        if col not in df.columns:
-                            df[col] = ""
-                    df = df[header_row]
-            except Exception:
-                pass
+        ws = abas_existentes.get(aba_nome)
+        if ws is None:
+            ws = spreadsheet.add_worksheet(
+                title=aba_nome,
+                rows=1000,
+                cols=len(df.columns) if not df.empty else 10,
+            )
+            abas_existentes[aba_nome] = ws
         _df_to_gsheet(df, ws)
+
+@st.cache_resource(show_spinner=False)
+def _abrir_planilha_cached(alvo):
+    """Abre a planilha e guarda o objeto na memoria do app.
+
+    OTIMIZACAO (lentidao + 429): abrir a planilha pelo ID (open_by_key) faz
+    uma chamada ao Google a cada vez. Como isso acontecia em TODA leitura e
+    TODO salvamento, gerava muitas chamadas desnecessarias. Agora o objeto da
+    planilha e reaproveitado, cortando bastante o numero de chamadas.
+    """
+    return gc.open_by_key(alvo)
 
 def _abrir_planilha_gs(id_preferido, id_reserva=None):
     """Abre a planilha do Google pelo ID informado; se faltar, usa a reserva."""
     alvo = (id_preferido or "").strip() or (id_reserva or "").strip()
     if not alvo:
         raise RuntimeError("nenhum ID de planilha do Google Sheets configurado")
-    return gc.open_by_key(alvo)
+    try:
+        return _abrir_planilha_cached(alvo)
+    except Exception:
+        # Se por algum motivo o reaproveitamento falhar, abre normalmente.
+        return gc.open_by_key(alvo)
 
 def _aba_gs(spreadsheet, titulo, colunas=None):
     """Devolve a aba pelo nome, criando-a com o cabecalho quando nao existir."""
