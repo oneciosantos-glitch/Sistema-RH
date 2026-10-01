@@ -3828,7 +3828,91 @@ def verificar_retorno_afastamentos_automatico():
         pass
 
 # ====================== INTERFACE PRINCIPAL ======================
-st.set_page_config(page_title="SISTEMA RH COMPLETO", layout="wide", initial_sidebar_state="collapsed")
+# ---------- IDENTIDADE VISUAL FG SERVICES ----------
+# Caminhos do logo (ficam na mesma pasta do app_rh.py)
+_PASTA_APP = os.path.dirname(os.path.abspath(__file__))
+_LOGO_PATH = os.path.join(_PASTA_APP, "logo_fg.png")
+_FAVICON_PATH = os.path.join(_PASTA_APP, "favicon_fg.png")
+
+# Icone da aba do navegador: usa o logo da empresa (em vez do icone do Streamlit)
+_page_icon = "\U0001F4CB"
+try:
+    from PIL import Image as _PILImage
+    if os.path.exists(_FAVICON_PATH):
+        _page_icon = _PILImage.open(_FAVICON_PATH)
+    elif os.path.exists(_LOGO_PATH):
+        _page_icon = _PILImage.open(_LOGO_PATH)
+except Exception:
+    pass
+
+st.set_page_config(
+    page_title="FG Services \u2014 Sistema RH",
+    page_icon=_page_icon,
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+
+def aplicar_identidade_visual():
+    """Aplica a identidade visual da FG Services: esconde a marca do Streamlit
+    e personaliza as cores com base no logo (azul-marinho + vermelho)."""
+    st.markdown(
+        """
+        <style>
+        /* --- Esconder elementos/marca do Streamlit --- */
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        [data-testid="stToolbar"] {display: none !important;}
+        [data-testid="stDecoration"] {display: none !important;}
+        [data-testid="stStatusWidget"] {display: none !important;}
+        .stDeployButton {display: none !important;}
+        header[data-testid="stHeader"] {background: transparent; height: 0;}
+
+        /* --- Faixa de cabecalho da empresa --- */
+        .cabecalho-fg {
+            background: linear-gradient(90deg, #2E4A7D 0%, #3A5A94 100%);
+            border-left: 8px solid #A9292E;
+            border-radius: 10px;
+            padding: 14px 22px;
+            margin: 4px 0 10px 0;
+            box-shadow: 0 2px 8px rgba(46,74,125,0.18);
+        }
+        .cabecalho-fg h1 {
+            color: #FFFFFF; font-size: 1.7rem; margin: 0; font-weight: 700;
+            letter-spacing: .3px;
+        }
+        .cabecalho-fg p {
+            color: #D7E0F2; font-size: .95rem; margin: 2px 0 0 0;
+        }
+
+        /* --- Botoes de destaque em vermelho (acao principal) --- */
+        .stButton button[kind="primary"],
+        .stButton button[data-testid="baseButton-primary"] {
+            background-color: #A9292E !important;
+            border-color: #A9292E !important;
+            color: #FFFFFF !important;
+        }
+        .stButton button[kind="primary"]:hover {
+            background-color: #8E2227 !important;
+            border-color: #8E2227 !important;
+        }
+
+        /* --- Titulos de secao em azul-marinho --- */
+        h2, h3 { color: #2E4A7D; }
+
+        /* --- Abas com destaque azul-marinho --- */
+        .stTabs [aria-selected="true"] { color: #2E4A7D !important; }
+        .stTabs [data-baseweb="tab-highlight"] { background-color: #A9292E !important; }
+
+        /* --- Barra lateral com um leve contorno --- */
+        section[data-testid="stSidebar"] { border-right: 1px solid #D4DEEF; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+aplicar_identidade_visual()
 
 # ---------- PROTEÇÃO POR SENHA (OPCIONAL, NOVO) ----------
 # O sistema guarda CPF, RG, PIS, salário e dados bancários, mas não tinha
@@ -3864,6 +3948,16 @@ def exigir_login():
 def barra_usuario():
     """Mostra na barra lateral quem esta usando o sistema."""
     with st.sidebar:
+        try:
+            if os.path.exists(_LOGO_PATH):
+                st.image(_LOGO_PATH, use_container_width=True)
+                st.markdown(
+                    "<p style='text-align:center;color:#2E4A7D;font-weight:600;"
+                    "margin:2px 0 10px 0;'>FG Services</p>",
+                    unsafe_allow_html=True,
+                )
+        except Exception:
+            pass
         st.markdown("### Quem está usando o sistema")
         atual = st.session_state.get("_usuario", "")
         if atual == "nao identificado":
@@ -3907,7 +4001,22 @@ if "_restaurados_espelho" not in st.session_state:
 if "_espelho_inicial" not in st.session_state:
     st.session_state["_espelho_inicial"] = "pendente"
 
-st.title("📋 SISTEMA RH COMPLETO")
+# Cabecalho da empresa: logo + titulo
+_col_logo, _col_tit = st.columns([1, 6])
+with _col_logo:
+    try:
+        if os.path.exists(_LOGO_PATH):
+            st.image(_LOGO_PATH, use_container_width=True)
+    except Exception:
+        pass
+with _col_tit:
+    st.markdown(
+        '<div class="cabecalho-fg">'
+        '<h1>Sistema RH</h1>'
+        '<p>FG Services \u2022 Gestao de Recursos Humanos</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 aviso_persistencia()
 
 # Verificacoes de retorno de ferias/afastamentos ADIADAS para nao bloquear o startup.
