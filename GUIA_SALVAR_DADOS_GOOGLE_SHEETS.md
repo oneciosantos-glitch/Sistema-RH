@@ -119,3 +119,54 @@ permanente, e ainda com histórico de versões (dá para voltar no tempo se prec
 
 Se travar em algum passo, me diga em qual número você parou e o que apareceu na tela
 que eu te ajudo a destravar.
+
+---
+
+## Guardar os ANEXOS (PDFs, fotos e comprovantes) na nuvem
+
+### Por que isso é importante
+
+Até agora, os **dados** (nomes, matrículas etc.) já ficavam salvos no Google
+Sheets. Mas os **arquivos anexados** (documentos em PDF, fotos dos funcionários
+e comprovantes de diária) ficavam gravados no "disco" do servidor. Na nuvem
+esse disco é apagado toda vez que o app reinicia — por isso aparecia o erro
+**"Arquivo não encontrado no servidor"** e os anexos sumiam.
+
+Agora o sistema envia esses anexos para uma **pasta do Google Drive**, usando a
+mesma conta que já cuida das planilhas. Assim eles ficam guardados de verdade e
+nunca mais se perdem.
+
+### O que você precisa fazer (só uma vez, uns 3 minutos)
+
+1. Entre no seu **Google Drive** (drive.google.com) com a mesma conta das
+   planilhas.
+2. Crie uma pasta nova — pode chamar, por exemplo, **"Anexos RH FG"**.
+3. Abra essa pasta. Olhe o endereço (a barra de cima do navegador). Vai estar
+   mais ou menos assim:
+   `https://drive.google.com/drive/folders/`**`1A2b3C4d5E6f7G8h9...`**
+   Copie **só a parte final** (aquele código comprido depois de `folders/`).
+   Esse é o **ID da pasta**.
+4. Ainda na pasta, clique em **Compartilhar** e adicione o **e-mail da conta de
+   serviço** (é o mesmo `client_email` que está lá nos seus Secrets, algo como
+   `...@...iam.gserviceaccount.com`). Dê a permissão de **Editor**.
+5. Vá nos **Secrets** do app (em share.streamlit.io → seu app → Settings →
+   Secrets) e, dentro do bloco `[gsheets]`, acrescente a linha:
+   `id_drive_anexos = "cole_aqui_o_ID_da_pasta"`
+   (o modelo já vem com essa linha pronta no arquivo `secrets_MODELO.toml`).
+6. Clique em **Save**, depois faça **Reboot app** (menu dos três pontinhos) e,
+   no navegador, aperte **Ctrl + Shift + R** para atualizar sem cache.
+
+### Como saber se funcionou
+
+- Anexe um documento ou foto de teste. Depois, dê um **Reboot app** e abra de
+  novo: o anexo tem que continuar lá, com o botão de baixar funcionando.
+- Se você abrir a pasta no Google Drive, vai ver os arquivos aparecendo lá
+  dentro conforme forem anexados.
+
+### Observações
+
+- Se por acaso você ainda não configurar a pasta do Drive, o sistema continua
+  funcionando normalmente (os anexos vão para o disco, como antes). Mas, na
+  nuvem, eles só ficam guardados de forma permanente **depois** que você fizer
+  os passos acima.
+- Não compartilhe o ID nem o conteúdo dos Secrets com ninguém.
