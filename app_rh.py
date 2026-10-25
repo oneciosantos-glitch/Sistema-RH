@@ -11,6 +11,7 @@ import shutil
 import time
 import io
 import json
+import base64
 import hashlib
 import requests
 from datetime import datetime, timedelta
@@ -104,7 +105,7 @@ try:
 except Exception:
     GS_ID_DRIVE_ANEXOS = ""
 
-DRIVE_ANEXOS_ATIVO = bool(GS_ENABLED and creds is not None and GS_ID_DRIVE_ANEXOS)
+DRIVE_ANEXOS_ATIVO = bool(GS_ENABLED and gc is not None and GS_ID_FUNCIONARIOS)
 
 
 def _drive_token():
@@ -135,74 +136,119 @@ def _mime_por_nome(nome):
     return "application/octet-stream"
 
 
-def drive_upload_bytes(nome_arquivo, conteudo_bytes, mime="application/octet-stream"):
-    """Envia bytes para a pasta de anexos no Drive. Retorna o ID ou None."""
-    if not DRIVE_ANEXOS_ATIVO:
-        return None
-    token = _drive_token()
-    if not token:
-        return None
+# ===================================================================
+# ARMAZENAMENTO DE ANEXOS NA NUVEM (dentro da planilha do Google)
+# -------------------------------------------------------------------
+# Em vez de salvar os anexos no Google Drive (contas de servico nao tem
+# espaco proprio e o envio falha), guardamos o conteudo dos arquivos
+# codificado em texto (base64) dentro de uma aba "Anexos_Blob" da propria
+# planilha de funcionarios. Isso sobrevive a reinicios do servidor e nao
+# consome a cota de armazenamento de ninguem. O marcador gravado na coluna
+# de caminho continua comecando por "drive:" para nao mexer no resto do app.
+# ===================================================================
+
+_BLOB_ABA = "Anexos_Blob"
+_BLOB_TAM_PEDACO = 45000  # tamanho maximo de cada pedaco de texto por celula
+
+
+def _blob_ws():
+    """Abre (criando se preciso) a aba onde os anexos ficam guardados."""
+    spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS)
+    ws = _aba_gs(spreadsheet, _BLOB_ABA, ["NOME", "MIME", "CONTEUDO"])
+    return ws
+
+
+def _blob_proxima_linha(ws):
+    """Devolve a proxima linha livre para gravar um anexo (cursor em F1)."""
     try:
-        boundary = "fgservicesanexoboundary7391"
-        meta = json.dumps({"name": nome_arquivo, "parents": [GS_ID_DRIVE_ANEXOS]})
-        corpo = (
-            ("--%s\r\n" % boundary)
-            + "Content-Type: application/json; charset=UTF-8\r\n\r\n"
-            + meta + "\r\n"
-            + ("--%s\r\n" % boundary)
-            + ("Content-Type: %s\r\n\r\n" % mime)
-        ).encode("utf-8") + bytes(conteudo_bytes) + ("\r\n--%s--" % boundary).encode("utf-8")
-        resp = requests.post(
-            "https://www.googleapis.com/upload/drive/v3/files",
-            params={"uploadType": "multipart", "supportsAllDrives": "true"},
-            headers={
-                "Authorization": "Bearer " + token,
-                "Content-Type": "multipart/related; boundary=%s" % boundary,
-            },
-            data=corpo,
-            timeout=180,
-        )
-        if resp.status_code in (200, 201):
-            return resp.json().get("id")
+        valor = ws.acell("F1").value
+        linha = int(str(valor).strip())
+        if linha >= 2:
+            return linha
+    except Exception:
+        pass
+    return 2
+
+
+def _blob_guardar(nome_arquivo, conteudo_bytes, mime="application/octet-stream"):
+    """Grava os bytes como texto na aba de anexos. Retorna 'linha:qtde' ou None."""
+    try:
+        ws = _blob_ws()
+        texto = base64.b64encode(bytes(conteudo_bytes)).decode("ascii")
+        pedacos = [texto[i:i + _BLOB_TAM_PEDACO] for i in range(0, len(texto), _BLOB_TAM_PEDACO)]
+        if not pedacos:
+            pedacos = [""]
+        qtde = len(pedacos)
+        linha = _blob_proxima_linha(ws)
+        fim = linha + qtde - 1
+        ws.update(values=[[nome_arquivo, mime]], range_name="A%d:B%d" % (linha, linha), value_input_option="RAW")
+        ws.update(values=[[p] for p in pedacos], range_name="C%d:C%d" % (linha, fim), value_input_option="RAW")
+        ws.update(values=[[fim + 1]], range_name="F1", value_input_option="RAW")
+        return "%d:%d" % (linha, qtde)
     except Exception:
         return None
-    return None
+
+
+def _blob_ler(linha, qtde):
+    """Le os pedacos gravados e devolve os bytes originais, ou None."""
+    try:
+        ws = _blob_ws()
+        fim = linha + qtde - 1
+        valores = ws.get("C%d:C%d" % (linha, fim))
+        pedacos = []
+        for linha_vals in valores:
+            pedacos.append(linha_vals[0] if linha_vals else "")
+        texto = "".join(pedacos)
+        return base64.b64decode(texto.encode("ascii"))
+    except Exception:
+        return None
+
+
+def _blob_apagar(linha, qtde):
+    """Limpa as celulas usadas por um anexo."""
+    try:
+        ws = _blob_ws()
+        fim = linha + qtde - 1
+        ws.batch_clear(["A%d:C%d" % (linha, fim)])
+        return True
+    except Exception:
+        return False
+
+
+def _blob_partes(file_id):
+    """Converte 'linha:qtde' em (linha, qtde)."""
+    try:
+        p = str(file_id).split(":")
+        return int(p[0]), int(p[1])
+    except Exception:
+        return None, None
+
+
+def drive_upload_bytes(nome_arquivo, conteudo_bytes, mime="application/octet-stream"):
+    """Guarda os bytes do anexo na nuvem (aba da planilha). Retorna a referencia ou None."""
+    if not DRIVE_ANEXOS_ATIVO:
+        return None
+    return _blob_guardar(nome_arquivo, conteudo_bytes, mime)
 
 
 def drive_download_bytes(file_id):
-    """Baixa o conteudo de um arquivo do Drive pelo ID. Retorna bytes ou None."""
-    token = _drive_token()
-    if not token or not file_id:
+    """Recupera o conteudo de um anexo guardado na nuvem. Retorna bytes ou None."""
+    if not file_id:
         return None
-    try:
-        resp = requests.get(
-            "https://www.googleapis.com/drive/v3/files/" + file_id,
-            params={"alt": "media", "supportsAllDrives": "true"},
-            headers={"Authorization": "Bearer " + token},
-            timeout=180,
-        )
-        if resp.status_code == 200:
-            return resp.content
-    except Exception:
+    linha, qtde = _blob_partes(file_id)
+    if linha is None:
         return None
-    return None
+    return _blob_ler(linha, qtde)
 
 
 def drive_delete(file_id):
-    """Apaga um arquivo do Drive pelo ID."""
-    token = _drive_token()
-    if not token or not file_id:
+    """Apaga um anexo guardado na nuvem."""
+    if not file_id:
         return False
-    try:
-        resp = requests.delete(
-            "https://www.googleapis.com/drive/v3/files/" + file_id,
-            params={"supportsAllDrives": "true"},
-            headers={"Authorization": "Bearer " + token},
-            timeout=60,
-        )
-        return resp.status_code in (200, 204)
-    except Exception:
+    linha, qtde = _blob_partes(file_id)
+    if linha is None:
         return False
+    return _blob_apagar(linha, qtde)
 
 
 def _eh_drive(caminho):
