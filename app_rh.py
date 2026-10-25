@@ -159,15 +159,30 @@ def _blob_ws():
 
 
 def _blob_proxima_linha(ws):
-    """Devolve a proxima linha livre para gravar um anexo (cursor em F1)."""
+    """Descobre a proxima linha livre olhando os anexos realmente existentes.
+
+    Em vez de confiar num contador (que podia 'inchar' depois de varias
+    exclusoes e empurrar os anexos novos para muito longe, parecendo que a
+    aba estava vazia), calculamos a proxima linha a partir dos proprios
+    registros: a coluna D guarda, na primeira linha de cada anexo, quantas
+    linhas ele ocupa. Assim a aba se auto-organiza e os anexos novos sempre
+    aparecem logo no inicio quando nao ha nada guardado.
+    """
     try:
-        valor = ws.acell("F1").value
-        linha = int(str(valor).strip())
-        if linha >= 2:
-            return linha
+        col_qtde = ws.col_values(4)  # coluna D: quantidade de linhas de cada anexo
     except Exception:
-        pass
-    return 2
+        col_qtde = []
+    proxima = 2
+    for indice, valor in enumerate(col_qtde):
+        linha = indice + 1
+        if linha < 2:
+            continue
+        texto = str(valor).strip()
+        if texto.isdigit():
+            fim = linha + int(texto)
+            if fim > proxima:
+                proxima = fim
+    return proxima
 
 
 def _blob_guardar(nome_arquivo, conteudo_bytes, mime="application/octet-stream"):
@@ -182,8 +197,8 @@ def _blob_guardar(nome_arquivo, conteudo_bytes, mime="application/octet-stream")
         linha = _blob_proxima_linha(ws)
         fim = linha + qtde - 1
         ws.update(values=[[nome_arquivo, mime]], range_name="A%d:B%d" % (linha, linha), value_input_option="RAW")
+        ws.update(values=[[qtde]], range_name="D%d" % linha, value_input_option="RAW")
         ws.update(values=[[p] for p in pedacos], range_name="C%d:C%d" % (linha, fim), value_input_option="RAW")
-        ws.update(values=[[fim + 1]], range_name="F1", value_input_option="RAW")
         return "%d:%d" % (linha, qtde)
     except Exception:
         return None
@@ -209,7 +224,7 @@ def _blob_apagar(linha, qtde):
     try:
         ws = _blob_ws()
         fim = linha + qtde - 1
-        ws.batch_clear(["A%d:C%d" % (linha, fim)])
+        ws.batch_clear(["A%d:D%d" % (linha, fim)])
         return True
     except Exception:
         return False
