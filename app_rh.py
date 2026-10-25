@@ -2435,8 +2435,8 @@ def _carregar_dados_gs():
     abas = {ws.title: ws for ws in _gs_listar_abas(spreadsheet)}
     dados = {}
     for aba_nome, ws in abas.items():
-        if aba_nome == "Registro_Alteracoes":
-            continue  # o registro de alteracoes e somente acrescentado, nunca reescrito
+        if aba_nome in ("Registro_Alteracoes", "Anexos_Blob"):
+            continue  # o registro de alteracoes e somente acrescentado; Anexos_Blob guarda arquivos (nao e tabela de dados)
         dados[aba_nome] = _gsheet_to_df(ws)
     return dados
 
@@ -2453,7 +2453,7 @@ def _salvar_dados_gs(dados):
     spreadsheet = _abrir_planilha_gs(GS_ID_FUNCIONARIOS, GS_ID_DIARIAS)
     abas_existentes = {ws.title: ws for ws in _gs_listar_abas(spreadsheet)}
     for aba_nome, df in dados.items():
-        if aba_nome == "Registro_Alteracoes":
+        if aba_nome in ("Registro_Alteracoes", "Anexos_Blob"):
             continue
         ws = abas_existentes.get(aba_nome)
         if ws is None:
