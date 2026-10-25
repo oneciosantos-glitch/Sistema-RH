@@ -6807,12 +6807,28 @@ with aba9:
               transporte = st.selectbox("🚗 Meio de Transporte", ["Carro", "Avião"])
 
               if st.button("🚀 CALCULAR ROTA", type="primary"):
+                  # Memoriza que o usuario pediu o calculo e zera os resultados
+                  # antigos, para recalcular origem/destino do zero.
+                  st.session_state["_rota_go"] = True
+                  st.session_state["_rota_geo"] = None
+                  st.session_state["_rota_carro"] = None
+                  st.session_state["_rota_instr"] = None
+
+              if st.session_state.get("_rota_go"):
                   if not origem_str.strip() or not destino_str.strip():
                       st.warning("⚠️ Preencha cidade, estado e país tanto na origem quanto no destino.")
                   else:
-                      with st.spinner("Consultando rota..."):
-                          lat1, lon1 = geocodificar(origem_str.strip())
-                          lat2, lon2 = geocodificar(destino_str.strip())
+                      # Reaproveita as coordenadas ja consultadas, para que mudar
+                      # o preco da gasolina ou o consumo recalcule na hora, sem
+                      # precisar clicar de novo nem refazer a busca de endereco.
+                      _geo = st.session_state.get("_rota_geo")
+                      if _geo is None:
+                          with st.spinner("Consultando rota..."):
+                              lat1, lon1 = geocodificar(origem_str.strip())
+                              lat2, lon2 = geocodificar(destino_str.strip())
+                          st.session_state["_rota_geo"] = (lat1, lon1, lat2, lon2)
+                      else:
+                          lat1, lon1, lat2, lon2 = _geo
                       if lat1 is None or lat2 is None:
                           st.error("❌ Não foi possível localizar um ou ambos os endereços. Tente incluir a cidade mais próxima ou verificar a grafia.")
                       else:
@@ -6823,7 +6839,12 @@ with aba9:
 
                           # ---- CARRO ----
                           if transporte == "Carro":
-                              distancia, tempo, geometria = calcular_rota(lat1, lon1, lat2, lon2)
+                              _rota_c = st.session_state.get("_rota_carro")
+                              if _rota_c is None:
+                                  distancia, tempo, geometria = calcular_rota(lat1, lon1, lat2, lon2)
+                                  st.session_state["_rota_carro"] = (distancia, tempo, geometria)
+                              else:
+                                  distancia, tempo, geometria = _rota_c
                               if distancia is None:
                                   st.error("❌ Não foi possível calcular a rota de carro. Tente novamente mais tarde.")
                               else:
@@ -6944,10 +6965,13 @@ with aba9:
                                   st.markdown("---")
                                   st.subheader("📝 Instruções de Rota (passo a passo)")
                                   try:
-                                      url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
-                                      params = {"overview": "false", "steps": "true"}
-                                      resp = requests.get(url, params=params, timeout=20)
-                                      dados_inst = resp.json()
+                                      dados_inst = st.session_state.get("_rota_instr")
+                                      if dados_inst is None:
+                                          url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+                                          params = {"overview": "false", "steps": "true"}
+                                          resp = requests.get(url, params=params, timeout=20)
+                                          dados_inst = resp.json()
+                                          st.session_state["_rota_instr"] = dados_inst
                                       if dados_inst.get("routes"):
                                           legs = dados_inst["routes"][0]["legs"][0]
                                           passos = []
